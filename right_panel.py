@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene)
+from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
+                    SegmentSnap, ArcSnap)
 
 
 def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
@@ -126,25 +127,32 @@ class RightPanel(QWidget):
             cb.deleteLater()
 
     def _refresh_nick_combos(self):
-        """全コンボボックスの選択肢を更新"""
-        items = ["(なし)"]
-        for ln in self.scene.lines:
-            items.append(f"{self.scene.get_nickname(ln.id, 'line')} [直線]")
-            for seg in ln.segments:
-                items.append(f"線分#{seg.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分]")
-        for ci in self.scene.circles:
-            items.append(f"{self.scene.get_nickname(ci.id, 'circle')} [円]")
-            for arc in ci.arcs:
-                items.append(f"円弧#{arc.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧]")
-        for clo in self.scene.clothoids:
-            items.append(f"{self.scene.get_nickname(clo.id, 'clothoid')} [クロソイド]")
+        """全コンボボックスの選択肢をタイプ別・名称順で更新"""
+        # タイプ別にラベルを収集
+        lines_items     = sorted(
+            [f"{self.scene.get_nickname(ln.id,'line')} [直線]"
+             for ln in self.scene.lines])
+        seg_items       = sorted(
+            [f"線分#{seg.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分]"
+             for ln in self.scene.lines for seg in ln.segments])
+        circle_items    = sorted(
+            [f"{self.scene.get_nickname(ci.id,'circle')} [円]"
+             for ci in self.scene.circles])
+        arc_items       = sorted(
+            [f"円弧#{arc.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧]"
+             for ci in self.scene.circles for arc in ci.arcs])
+        clothoid_items  = sorted(
+            [f"{self.scene.get_nickname(clo.id,'clothoid')} [クロソイド]"
+             for clo in self.scene.clothoids])
+
+        items = ["(なし)"] + lines_items + seg_items + circle_items + arc_items + clothoid_items
+
         for cb in self._nick_combos:
             cur = cb.currentText()
             cb.clear()
             cb.addItems(items)
             idx = cb.findText(cur)
-            if idx >= 0:
-                cb.setCurrentIndex(idx)
+            cb.setCurrentIndex(idx if idx >= 0 else 0)
 
     def _apply_nick_select(self):
         selected = []
@@ -178,7 +186,46 @@ class RightPanel(QWidget):
         self.scene    = scene
         self._selected = selected
         self._refresh_nick_combos()
+        self._sync_combos_to_selection(selected)
         self._rebuild_props()
+
+    def _sync_combos_to_selection(self, selected: list):
+        """設計画面での選択をコンボボックスに反映する"""
+        # 選択図形のラベルを生成
+        labels = []
+        for obj in selected:
+            label = self._label_for_obj(obj)
+            if label:
+                labels.append(label)
+
+        # コンボ数が足りなければ追加
+        while len(self._nick_combos) < len(labels):
+            self._add_nick_combo()
+
+        # 先頭から順に設定、余りは(なし)に
+        for i, cb in enumerate(self._nick_combos):
+            if i < len(labels):
+                idx = cb.findText(labels[i])
+                if idx >= 0:
+                    cb.setCurrentIndex(idx)
+            else:
+                cb.setCurrentIndex(0)  # "(なし)"
+
+    def _label_for_obj(self, obj) -> str:
+        """図形オブジェクトからコンボラベル文字列を生成する"""
+        if isinstance(obj, Line):
+            return f"{self.scene.get_nickname(obj.id, 'line')} [直線]"
+        if isinstance(obj, Segment):
+            ln = obj.line
+            return f"線分#{obj.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分]"
+        if isinstance(obj, Circle):
+            return f"{self.scene.get_nickname(obj.id, 'circle')} [円]"
+        if isinstance(obj, Arc):
+            ci = obj.circle
+            return f"円弧#{obj.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧]"
+        if isinstance(obj, Clothoid):
+            return f"{self.scene.get_nickname(obj.id, 'clothoid')} [クロソイド]"
+        return ""
 
     def _clear_props(self):
         while self._prop_layout.count():
@@ -204,6 +251,16 @@ class RightPanel(QWidget):
             a, b = sel
             # Segment は親 Line として扱う (接続操作のため)
             la = a.line if isinstance(a, Segment) else a
+            # 線分 + 線分
+            if isinstance(a, Segment) and isinstance(b, Segment) and a is not b:
+                self._build_two_segments(a, b)
+                return
+
+            # 円弧 + 円弧
+            if isinstance(a, Arc) and isinstance(b, Arc) and a is not b:
+                self._build_two_arcs(a, b)
+                return
+
             lb = b.line if isinstance(b, Segment) else b
 
             # 直線 + 直線 (Segment経由も含む)
@@ -244,7 +301,7 @@ class RightPanel(QWidget):
 
     # ─── 単一図形プロパティ ──────────────────────────────────
     def _build_single(self, obj):
-        # ニックネーム
+        # ニックネーム（ID 表示を含む）
         self._add_nickname_editor(obj)
 
         if isinstance(obj, Line):
@@ -262,10 +319,22 @@ class RightPanel(QWidget):
         self._add_related_objects(obj)
 
     def _add_nickname_editor(self, obj):
-        grp = QGroupBox("ニックネーム")
+        grp = QGroupBox("ニックネーム / ID")
         lay = QVBoxLayout(grp)
-        edit = QLineEdit()
+
+        # ID（読み取り専用、最上部）
         oid = getattr(obj, 'id', None)
+        if oid is not None:
+            id_row = QHBoxLayout()
+            id_row.addWidget(QLabel("ID:"))
+            id_val = QLabel(str(oid))
+            id_val.setStyleSheet("font-weight: bold;")
+            id_row.addWidget(id_val)
+            id_row.addStretch()
+            lay.addLayout(id_row)
+
+        # ニックネーム入力欄
+        edit = QLineEdit()
         if oid is not None:
             edit.setText(self.scene.nicknames.get(oid, ""))
         def on_change(text):
@@ -463,6 +532,18 @@ class RightPanel(QWidget):
         lay = QVBoxLayout(grp)
         ln  = seg.line
 
+        # 親の直線情報（読み取り専用）
+        ln_nick = self.scene.get_nickname(ln.id, 'line')
+        lbl_ln = QLabel(f"親直線: {ln_nick}  (ID:{ln.id})")
+        btn_sel_ln = QPushButton("直線を選択")
+        btn_sel_ln.setMaximumWidth(90)
+        btn_sel_ln.clicked.connect(lambda checked=False, _ln=ln:
+            self.request_select.emit([_ln]))
+        row_ln = QHBoxLayout()
+        row_ln.addWidget(lbl_ln)
+        row_ln.addWidget(btn_sel_ln)
+        lay.addLayout(row_ln)
+
         # 線分長 (読み取り専用)
         lay.addWidget(QLabel(f"長さ: {seg.length():.4f} m"))
 
@@ -535,6 +616,18 @@ class RightPanel(QWidget):
         grp = QGroupBox("円弧プロパティ")
         lay = QVBoxLayout(grp)
         ci  = arc.circle
+
+        # 親の円情報（読み取り専用）
+        ci_nick = self.scene.get_nickname(ci.id, 'circle')
+        lbl_ci = QLabel(f"親円: {ci_nick}  (ID:{ci.id})")
+        btn_sel_ci = QPushButton("円を選択")
+        btn_sel_ci.setMaximumWidth(80)
+        btn_sel_ci.clicked.connect(lambda checked=False, _ci=ci:
+            self.request_select.emit([_ci]))
+        row_ci = QHBoxLayout()
+        row_ci.addWidget(lbl_ci)
+        row_ci.addWidget(btn_sel_ci)
+        lay.addLayout(row_ci)
 
         # 弧長角・弧長 (読み取り専用)
         lbl_span = QLabel(f"弧長角: {math.degrees(arc.arc_angle()):.4f}°")
@@ -627,6 +720,190 @@ class RightPanel(QWidget):
                          lambda v: setattr(arc, 'angle_end', v))
 
         self._prop_layout.addWidget(grp)
+
+    # ─── 2線分の接続操作 ─────────────────────────────────────
+    # ─── 2線分の結合操作 ─────────────────────────────────────
+    def _build_two_segments(self, seg_a: Segment, seg_b: Segment):
+        grp = QGroupBox("線分の結合")
+        lay = QVBoxLayout(grp)
+        la_nick = self.scene.get_nickname(seg_a.line.id, 'line')
+        lb_nick = self.scene.get_nickname(seg_b.line.id, 'line')
+        lay.addWidget(QLabel(f"線分#{seg_a.id} (直線:{la_nick})"))
+        lay.addWidget(QLabel(f"線分#{seg_b.id} (直線:{lb_nick})"))
+        lay.addWidget(_separator())
+
+        if seg_a.line is not seg_b.line:
+            lay.addWidget(QLabel("異なる直線上の線分は結合できません。"))
+            self._prop_layout.addWidget(grp)
+            return
+
+        lay.addWidget(QLabel(
+            "近接する端点で結合します。\n"
+            "一方の線分を削除し、もう一方を延長します。"))
+        lay.addWidget(_separator())
+
+        pairs = self._candidate_seg_pairs(seg_a, seg_b)
+        if not pairs:
+            lay.addWidget(QLabel("※ 近接する端点がありません"))
+            self._prop_layout.addWidget(grp)
+            return
+
+        combo = QComboBox()
+        for p in pairs:
+            status = ""
+            if p['blocked_a']: status += f"  ★A.{p['end_a']}束縛"
+            if p['blocked_b']: status += f"  ★B.{p['end_b']}束縛"
+            combo.addItem(p['label'] + status)
+        lay.addWidget(combo)
+
+        btn = QPushButton("結合する")
+        def do_merge(checked=False, _c=combo, _p=pairs, _a=seg_a, _b=seg_b):
+            p = _p[_c.currentIndex()]
+            if p['blocked_a'] or p['blocked_b']:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "結合不可",
+                    "選択した端点は他の図形に束縛されているため結合できません。")
+                return
+            self._merge_segments(_a, _b, p['end_a'], p['end_b'])
+            self.scene_changed.emit()
+        btn.clicked.connect(do_merge)
+        lay.addWidget(btn)
+        self._prop_layout.addWidget(grp)
+
+    def _seg_end_blocked(self, seg: Segment, end: str) -> bool:
+        """線分の端点がクロソイドに束縛されているか確認"""
+        for clo in self.scene.clothoids:
+            if not clo.is_valid:
+                continue
+            if clo.snap_segment and clo.line is seg.line and clo._line_pt is not None:
+                t_x = clo.line.project_t(clo._line_pt)
+                if end == 'end'   and abs(seg.t_end   - t_x) < 1e-4: return True
+                if end == 'start' and abs(seg.t_start - t_x) < 1e-4: return True
+            if seg.id in clo._split_seg_ids:
+                return True
+        return False
+
+    def _candidate_seg_pairs(self, seg_a: Segment, seg_b: Segment) -> list:
+        candidates = []
+        for end_a, pt_a in [('start', seg_a.start), ('end', seg_a.end)]:
+            for end_b, pt_b in [('start', seg_b.start), ('end', seg_b.end)]:
+                dist = math.hypot(pt_a.x - pt_b.x, pt_a.y - pt_b.y)
+                candidates.append({
+                    'end_a': end_a, 'end_b': end_b, 'dist': dist,
+                    'blocked_a': self._seg_end_blocked(seg_a, end_a),
+                    'blocked_b': self._seg_end_blocked(seg_b, end_b),
+                    'label': (f"A.{end_a}({pt_a.x:.1f},{pt_a.y:.1f}) ↔ "
+                              f"B.{end_b}({pt_b.x:.1f},{pt_b.y:.1f})  d={dist:.1f}m"),
+                })
+        return sorted(candidates, key=lambda c: c['dist'])
+
+    def _merge_segments(self, seg_a: Segment, seg_b: Segment,
+                         end_a: str, end_b: str):
+        """
+        seg_b を削除し、seg_a の end_a 側を seg_b の反対端まで延長する。
+        例: end_a='end', end_b='start' → seg_a.t_end = seg_b.t_end; del seg_b
+        """
+        far_t = seg_b.t_start if end_b == 'end' else seg_b.t_end
+        if end_a == 'end':
+            seg_a.t_end = far_t
+        else:
+            seg_a.t_start = far_t
+        ln = seg_a.line
+        if seg_b in ln.segments:
+            ln.segments.remove(seg_b)
+
+    # ─── 2円弧の結合操作 ─────────────────────────────────────
+    def _build_two_arcs(self, arc_a: Arc, arc_b: Arc):
+        grp = QGroupBox("円弧の結合")
+        lay = QVBoxLayout(grp)
+        ca_nick = self.scene.get_nickname(arc_a.circle.id, 'circle')
+        cb_nick = self.scene.get_nickname(arc_b.circle.id, 'circle')
+        lay.addWidget(QLabel(f"円弧#{arc_a.id} (円:{ca_nick})"))
+        lay.addWidget(QLabel(f"円弧#{arc_b.id} (円:{cb_nick})"))
+        lay.addWidget(_separator())
+
+        if arc_a.circle is not arc_b.circle:
+            lay.addWidget(QLabel("異なる円上の円弧は結合できません。"))
+            self._prop_layout.addWidget(grp)
+            return
+
+        lay.addWidget(QLabel(
+            "近接する端点で結合します。\n"
+            "一方の円弧を削除し、もう一方を延長します。"))
+        lay.addWidget(_separator())
+
+        pairs = self._candidate_arc_pairs(arc_a, arc_b)
+        if not pairs:
+            lay.addWidget(QLabel("※ 近接する端点がありません"))
+            self._prop_layout.addWidget(grp)
+            return
+
+        combo = QComboBox()
+        for p in pairs:
+            status = ""
+            if p['blocked_a']: status += f"  ★A.{p['end_a']}束縛"
+            if p['blocked_b']: status += f"  ★B.{p['end_b']}束縛"
+            combo.addItem(p['label'] + status)
+        lay.addWidget(combo)
+
+        btn = QPushButton("結合する")
+        def do_merge(checked=False, _c=combo, _p=pairs, _a=arc_a, _b=arc_b):
+            p = _p[_c.currentIndex()]
+            if p['blocked_a'] or p['blocked_b']:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "結合不可",
+                    "選択した端点は他の図形に束縛されているため結合できません。")
+                return
+            self._merge_arcs(_a, _b, p['end_a'], p['end_b'])
+            self.scene_changed.emit()
+        btn.clicked.connect(do_merge)
+        lay.addWidget(btn)
+        self._prop_layout.addWidget(grp)
+
+    def _arc_end_blocked(self, arc: Arc, end: str) -> bool:
+        """円弧の端点がクロソイドに束縛されているか確認"""
+        for clo in self.scene.clothoids:
+            if not clo.is_valid:
+                continue
+            if clo.snap_arc and clo.circle is arc.circle and clo._circle_pt is not None:
+                import math as _m
+                ang = _m.atan2(clo._circle_pt.y - arc.circle.center.y,
+                               clo._circle_pt.x - arc.circle.center.x)
+                if end == 'start' and abs(arc.angle_start - ang) < 1e-4: return True
+                if end == 'end'   and abs(arc.angle_end   - ang) < 1e-4: return True
+            if arc.id in clo._split_arc_ids:
+                return True
+        return False
+
+    def _candidate_arc_pairs(self, arc_a: Arc, arc_b: Arc) -> list:
+        candidates = []
+        for end_a, ang_a, pt_a in [('start', arc_a.angle_start, arc_a.start),
+                                     ('end',   arc_a.angle_end,   arc_a.end)]:
+            for end_b, ang_b, pt_b in [('start', arc_b.angle_start, arc_b.start),
+                                         ('end',   arc_b.angle_end,   arc_b.end)]:
+                dist = math.hypot(pt_a.x - pt_b.x, pt_a.y - pt_b.y)
+                candidates.append({
+                    'end_a': end_a, 'end_b': end_b, 'dist': dist,
+                    'blocked_a': self._arc_end_blocked(arc_a, end_a),
+                    'blocked_b': self._arc_end_blocked(arc_b, end_b),
+                    'label': (f"A.{end_a}({math.degrees(ang_a):.1f}°) ↔ "
+                              f"B.{end_b}({math.degrees(ang_b):.1f}°)  d={dist:.1f}m"),
+                })
+        return sorted(candidates, key=lambda c: c['dist'])
+
+    def _merge_arcs(self, arc_a: Arc, arc_b: Arc, end_a: str, end_b: str):
+        """
+        arc_b を削除し、arc_a の end_a 側を arc_b の反対端まで延長する。
+        例: end_a='end', end_b='start' → arc_a.angle_end = arc_b.angle_end; del arc_b
+        """
+        far_angle = arc_b.angle_start if end_b == 'end' else arc_b.angle_end
+        if end_a == 'end':
+            arc_a.angle_end = far_angle
+        else:
+            arc_a.angle_start = far_angle
+        ci = arc_a.circle
+        if arc_b in ci.arcs:
+            ci.arcs.remove(arc_b)
 
     # ─── 2直線 ───────────────────────────────────────────────
     def _build_two_lines(self, a: Line, b: Line):

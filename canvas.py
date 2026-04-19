@@ -14,6 +14,7 @@ from typing import Optional, Callable
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
 from PyQt6.QtGui import (QPainter, QPen, QBrush, QColor, QCursor,
+                          QPolygonF,
                           QPainterPath, QFont)
 
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
@@ -161,31 +162,65 @@ class Canvas(QWidget):
 
     def _rebuild_handles(self):
         self._handles.clear()
-        seen_connections = set()  # 同じ LineConnection を2回処理しない
+        seen_connections = set()
+
+        # クロソイドにsnapされている端点を収集（ハンドルを出さない）
+        snapped_seg_ends: set[tuple] = set()   # (seg_id, 'start'|'end')
+        snapped_arc_ends: set[tuple] = set()   # (arc_id, 'start'|'end')
+        for clo in self.scene.clothoids:
+            if not clo.is_valid:
+                continue
+            if clo.snap_segment and clo._line_pt is not None:
+                # snap=on: 線側接点に吸着している端点
+                t_x = clo.line.project_t(clo._line_pt)
+                for seg in clo.line.segments:
+                    if abs(seg.t_end   - t_x) < 1e-4:
+                        snapped_seg_ends.add((seg.id, 'end'))
+                    if abs(seg.t_start - t_x) < 1e-4:
+                        snapped_seg_ends.add((seg.id, 'start'))
+            if not clo.snap_segment and clo._split_seg_ids:
+                # split=on: 分割端点（接点）はハンドル不要
+                segs_by_id = {s.id: s for s in clo.line.segments}
+                for sid in clo._split_seg_ids:
+                    seg = segs_by_id.get(sid)
+                    if seg:
+                        # AX の end と XB の start が接点 → どちらも非表示
+                        snapped_seg_ends.add((sid, 'end'))
+                        snapped_seg_ends.add((sid, 'start'))
+            if clo.snap_arc and clo._circle_pt is not None:
+                import math as _m
+                ang = _m.atan2(clo._circle_pt.y - clo.circle.center.y,
+                               clo._circle_pt.x - clo.circle.center.x)
+                for arc in clo.circle.arcs:
+                    if abs(arc.angle_start - ang) < 1e-4:
+                        snapped_arc_ends.add((arc.id, 'start'))
+                    if abs(arc.angle_end - ang) < 1e-4:
+                        snapped_arc_ends.add((arc.id, 'end'))
+            if not clo.snap_arc and clo._split_arc_ids:
+                for aid in clo._split_arc_ids:
+                    snapped_arc_ends.add((aid, 'end'))
+                    snapped_arc_ends.add((aid, 'start'))
 
         for obj in self._selected:
             if isinstance(obj, Line):
                 conn = obj.connection
-                # 接続の共有点座標（この位置には shared_pt ハンドルを置くので ref ハンドルは省く）
                 shared_pos = conn.shared_point if conn else None
 
                 def is_shared(pt):
                     return shared_pos is not None and (pt - shared_pos).length() < 1e-6
 
-                rs = obj.ref_start
-                re = obj.ref_end
+                rs, re = obj.ref_start, obj.ref_end
                 if not is_shared(rs):
                     self._handles.append(Handle(rs, C_HANDLE_REF, "line_ref_start", obj))
                 if not is_shared(re):
                     self._handles.append(Handle(re, C_HANDLE_REF, "line_ref_end", obj))
 
                 for seg in obj.segments:
-                    if not is_shared(seg.start):
+                    if not is_shared(seg.start) and (seg.id, 'start') not in snapped_seg_ends:
                         self._handles.append(Handle(seg.start, C_HANDLE_END, "seg_start", seg))
-                    if not is_shared(seg.end):
+                    if not is_shared(seg.end) and (seg.id, 'end') not in snapped_seg_ends:
                         self._handles.append(Handle(seg.end, C_HANDLE_END, "seg_end", seg))
 
-                # shared_pt ハンドルは重複なし
                 if conn:
                     cid = id(conn)
                     if cid not in seen_connections:
@@ -197,8 +232,10 @@ class Canvas(QWidget):
                 rad_pt = Vec2(obj.center.x + obj.radius, obj.center.y)
                 self._handles.append(Handle(rad_pt, C_HANDLE_RAD, "circle_radius", obj))
                 for arc in obj.arcs:
-                    self._handles.append(Handle(arc.start, C_HANDLE_END, "arc_start", arc))
-                    self._handles.append(Handle(arc.end,   C_HANDLE_END, "arc_end",   arc))
+                    if (arc.id, 'start') not in snapped_arc_ends:
+                        self._handles.append(Handle(arc.start, C_HANDLE_END, "arc_start", arc))
+                    if (arc.id, 'end') not in snapped_arc_ends:
+                        self._handles.append(Handle(arc.end, C_HANDLE_END, "arc_end", arc))
 
     # ─── ヒットテスト ─────────────────────────────────────────
     def _hit_handle(self, sw: Vec2) -> Optional[Handle]:
@@ -439,6 +476,29 @@ class Canvas(QWidget):
         for p in pts[1:]:
             path.lineTo(self.w2s(p))
         painter.drawPath(path)
+
+        # 接点マーカー（小さい菱形）
+        # ハンドルではない（ドラッグ不可）ので選択状態に関係なく固定色で表示
+        self._draw_contact_diamond(painter, clo._line_pt,   QColor(255, 220,  60))  # 線側: 黄
+        self._draw_contact_diamond(painter, clo._circle_pt, QColor(255, 140,  40))  # 円側: 橙
+
+    def _draw_contact_diamond(self, painter: QPainter, pt,
+                               color: QColor, half: float = 6.0):
+        """接点を菱形マーカーで描画（ハンドルではない表示専用）"""
+        if pt is None:
+            return
+        sp = self.w2s(pt)
+        cx, cy = sp.x(), sp.y()
+        diamond = QPolygonF([
+            QPointF(cx,        cy - half),  # 上
+            QPointF(cx + half, cy),         # 右
+            QPointF(cx,        cy + half),  # 下
+            QPointF(cx - half, cy),         # 左
+        ])
+        painter.setPen(QPen(QColor(0, 0, 0, 160), 1))
+        painter.setBrush(QBrush(color))
+        painter.drawPolygon(diamond)
+        painter.setBrush(Qt.BrushStyle.NoBrush)   # 後続の描画に影響しないようリセット
 
     def _draw_rubber(self, painter: QPainter):
         pen = QPen(QColor(200, 200, 200, 128), 1, Qt.PenStyle.DashLine)
@@ -750,16 +810,80 @@ class Canvas(QWidget):
 
     def _propagate_line(self, ln: Line, _updating_smooth: bool = False):
         """直線変更をクロソイドと、スムーズ接続の円に伝播"""
-        # クロソイドを再計算
         for clo in self.scene.clothoids:
             if clo.line is ln:
                 clo.compute()
-
-        # スムーズ接続の円を二等分線上に追従させる（再帰防止）
+        # SegmentSnap の追従
+        self._propagate_segment_snaps(ln)
         if not _updating_smooth:
             conn = ln.connection
             if conn and conn.kind == "smooth" and conn.circle is not None:
                 self._update_smooth_circle(conn)
+
+    def _propagate_segment_snaps(self, ln: Line):
+        """SegmentSnap で繋がれた線分の端点を追従させる"""
+        seg_map: dict[int, Segment] = {}
+        for line in self.scene.lines:
+            for s in line.segments:
+                seg_map[s.id] = s
+        for sn in self.scene.segment_snaps:
+            sa = seg_map.get(sn.seg_a_id)
+            sb = seg_map.get(sn.seg_b_id)
+            if not sa or not sb:
+                continue
+            if sa.line is ln or sb.line is ln:
+                # a が基準→ b を追従、または b が基準→ a を追従
+                pt_a = sa.start if sn.end_a == 'start' else sa.end
+                pt_b = sb.start if sn.end_b == 'start' else sb.end
+                # どちらが動いた直線上にあるか
+                if sa.line is ln:
+                    # a が動いた → b を追従
+                    t_new = sb.line.project_t(pt_a)
+                    if sn.end_b == 'start':
+                        sb.t_start = t_new
+                    else:
+                        sb.t_end = t_new
+                else:
+                    # b が動いた → a を追従
+                    t_new = sa.line.project_t(pt_b)
+                    if sn.end_a == 'start':
+                        sa.t_start = t_new
+                    else:
+                        sa.t_end = t_new
+
+    def _propagate_circle(self, ci: Circle):
+        for clo in self.scene.clothoids:
+            if clo.circle is ci:
+                clo.compute()
+        # ArcSnap の追従
+        self._propagate_arc_snaps(ci)
+
+    def _propagate_arc_snaps(self, ci: Circle):
+        """ArcSnap で繋がれた円弧の端点を追従させる"""
+        arc_map: dict[int, Arc] = {}
+        for circle in self.scene.circles:
+            for a in circle.arcs:
+                arc_map[a.id] = a
+        for sn in self.scene.arc_snaps:
+            aa = arc_map.get(sn.arc_a_id)
+            ab = arc_map.get(sn.arc_b_id)
+            if not aa or not ab:
+                continue
+            if aa.circle is ci or ab.circle is ci:
+                ang_a = aa.angle_start if sn.end_a == 'start' else aa.angle_end
+                ang_b = ab.angle_start if sn.end_b == 'start' else ab.angle_end
+                if aa.circle is ci:
+                    # a が動いた → b を追従
+                    if sn.end_b == 'start':
+                        ab.angle_start = ang_a
+                    else:
+                        ab.angle_end = ang_a
+                else:
+                    # b が動いた → a を追従
+                    if sn.end_a == 'start':
+                        aa.angle_start = ang_b
+                    else:
+                        aa.angle_end = ang_b
 
     def _update_smooth_circle(self, conn: 'LineConnection'):
         """
@@ -771,7 +895,6 @@ class Canvas(QWidget):
         if ci is None:
             return
 
-        # 現在の交点を計算（共有参照点）
         new_ix = la.intersect(lb)
         if new_ix is None:
             return
@@ -785,43 +908,32 @@ class Canvas(QWidget):
         P = far_end(la, new_ix)
         Q = far_end(lb, new_ix)
 
-        dP = (P - new_ix).normalized()   # new_ix → P 方向 (XU 方向)
-        dQ = (Q - new_ix).normalized()   # new_ix → Q 方向 (XV 方向)
+        dP = (P - new_ix).normalized()
+        dQ = (Q - new_ix).normalized()
         bisect_sum = dP + dQ
         if bisect_sum.length() < 1e-9:
             return
         bisect = bisect_sum.normalized()
 
-        # 旧 bisector 上での円の距離 t を保持
         if ci.bisector_dir is not None and ci.bisector_origin is not None:
             old_t = (ci.center - ci.bisector_origin).dot(ci.bisector_dir)
         else:
             old_t = (ci.center - new_ix).dot(bisect)
 
-        # 円の新しい中心
         ci.center = new_ix + bisect * old_t
-
-        # bisector を更新
         ci.bisector_origin = new_ix
         ci.bisector_dir    = bisect
         conn.shared_point  = new_ix
         conn.bisector_dir  = bisect
 
-        # 接続した両直線の共有参照点も新しい交点に揃える（直接書き換え）
-        for ln in (la, lb):
-            ds = (ln.ref_start - new_ix).length()
-            de = (ln.ref_end   - new_ix).length()
+        for line in (la, lb):
+            ds = (line.ref_start - new_ix).length()
+            de = (line.ref_end   - new_ix).length()
             if ds <= de:
-                ln.ref_start = new_ix
+                line.ref_start = new_ix
             else:
-                ln.ref_end = new_ix
+                line.ref_end = new_ix
 
-        # 円に関連するクロソイドのみ再計算（再帰しない）
-        for clo in self.scene.clothoids:
-            if clo.circle is ci:
-                clo.compute()
-
-    def _propagate_circle(self, ci: Circle):
         for clo in self.scene.clothoids:
             if clo.circle is ci:
                 clo.compute()

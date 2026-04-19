@@ -43,6 +43,11 @@ _id_counter = itertools.count(1)
 def new_id() -> int:
     return next(_id_counter)
 
+def _reset_id_counter_after(max_id: int):
+    """ファイル読み込み後、既存IDより大きい値からカウンタを再開する"""
+    global _id_counter
+    _id_counter = itertools.count(max_id + 1)
+
 # ─── 基本型 ──────────────────────────────────────────────────
 @dataclass
 class Vec2:
@@ -346,6 +351,9 @@ class Clothoid:
         self._line_pt:    Optional[Vec2] = None
         self._circle_pt:  Optional[Vec2] = None
         self._points:     list[Vec2]     = []
+        # snap=off 時の分割管理（分割で生成した Segment/Arc の id リスト）
+        self._split_seg_ids: list[int] = []
+        self._split_arc_ids: list[int] = []
 
         self.compute()
 
@@ -470,16 +478,28 @@ class Clothoid:
     def _update_snaps(self):
         if not self._valid:
             return
-        if self.snap_segment and self._line_pt is not None:
-            self._apply_segment_snap()
-        if self.snap_arc and self._circle_pt is not None:
-            self._apply_arc_snap()
+        # 線分: snap on → 端点移動、snap off → 線分分割
+        if self.snap_segment:
+            if self._line_pt is not None:
+                self._apply_segment_snap()
+        else:
+            if self._line_pt is not None:
+                self._apply_segment_split()
+        # 円弧: snap on → 端点移動、snap off → 円弧分割
+        if self.snap_arc:
+            if self._circle_pt is not None:
+                self._apply_arc_snap()
+        else:
+            if self._circle_pt is not None:
+                self._apply_arc_split()
 
+    # ── snap=on: 線分端点をスナップ ──────────────────────────
     def _apply_segment_snap(self):
-        """線側接点に最も近い線分端点をスナップ"""
+        """線側接点に最も近い線分端点をスナップ（snap_segment=True 専用）"""
         if not self.line.segments:
             return
-        contact = self._line_pt
+        self._clear_segment_split()   # snap=off で作った分割があれば解除
+        contact  = self._line_pt
         best_seg = min(self.line.segments,
                        key=lambda s: min((s.start - contact).length(),
                                          (s.end   - contact).length()))
@@ -493,44 +513,157 @@ class Clothoid:
             if best_seg.t_end <= best_seg.t_start + 1e-9:
                 best_seg.t_end = best_seg.t_start + 0.1
 
+    # ── snap=off: 線分を接点で分割 ───────────────────────────
+    def _apply_segment_split(self):
+        """
+        snap_segment=False 時、線側接点 X で最も近い線分 AB を
+        AX と XB に分割する。既に分割済みなら端点を追従更新する。
+        """
+        if not self.line.segments:
+            return
+        contact = self._line_pt
+        t_x = self.line.project_t(contact)
+
+        # 既存の分割線分があれば追従更新（再分割しない）
+        if self._split_seg_ids:
+            segs_by_id = {s.id: s for s in self.line.segments}
+            seg_ax = segs_by_id.get(self._split_seg_ids[0])
+            seg_xb = segs_by_id.get(self._split_seg_ids[1]) if len(self._split_seg_ids) > 1 else None
+            if seg_ax and seg_xb:
+                seg_ax.t_end   = t_x
+                seg_xb.t_start = t_x
+                return
+            # 分割線分が消えていたらリセット
+            self._split_seg_ids = []
+
+        # 分割元となる線分を選ぶ（自分が作った分割線分は除外）
+        candidates = [s for s in self.line.segments if s.id not in self._split_seg_ids]
+        if not candidates:
+            return
+        best_seg = min(candidates, key=lambda s: self._dist_to_seg(contact, s))
+
+        # t_x が線分の範囲外なら分割しない
+        if t_x <= best_seg.t_start + 1e-6 or t_x >= best_seg.t_end - 1e-6:
+            return
+
+        # 元の線分を AX に縮め、XB を新規追加
+        t_orig_end    = best_seg.t_end
+        best_seg.t_end = t_x                               # AX (元の線分を縮める)
+        seg_xb = Segment(self.line, t_x, t_orig_end)       # XB (新規)
+        self.line.segments.append(seg_xb)
+        self.line.segments.sort(key=lambda s: s.t_start)
+        self._split_seg_ids = [best_seg.id, seg_xb.id]
+
+    def _clear_segment_split(self):
+        """snap=off で作った分割線分を解除（AX+XB を元の AB に戻す）"""
+        if not self._split_seg_ids:
+            return
+        segs_by_id = {s.id: s for s in self.line.segments}
+        seg_ax = segs_by_id.get(self._split_seg_ids[0])
+        seg_xb = segs_by_id.get(self._split_seg_ids[1]) if len(self._split_seg_ids) > 1 else None
+        if seg_ax and seg_xb and seg_xb in self.line.segments:
+            seg_ax.t_end = seg_xb.t_end   # AX の終端を XB の終端に戻す
+            self.line.segments.remove(seg_xb)
+        self._split_seg_ids = []
+
+    @staticmethod
+    def _dist_to_seg(pt: 'Vec2', seg: 'Segment') -> float:
+        s, e = seg.start, seg.end
+        d = e - s
+        l2 = d.dot(d)
+        if l2 < 1e-12:
+            return (pt - s).length()
+        t = max(0.0, min(1.0, (pt - s).dot(d) / l2))
+        return (pt - (s + d * t)).length()
+
+    # ── snap=on: 円弧端点をスナップ ──────────────────────────
     def _apply_arc_snap(self):
         """
-        円側接点に円弧端点をスナップ（円弧がなければ生成）。
+        円側接点に円弧端点をスナップ（snap_arc=True 専用）。
 
         仕様書（数学座標系: y上向き, 反時計=正）:
           左カーブ → 円弧の始点 (angle_start) = circle_pt
           右カーブ → 円弧の終点 (angle_end)   = circle_pt
-
-        arc は angle_start から CCW で angle_end に至る。
-        スムーズ接続では:
-          左カーブ(lb側)接点 → arc.start, 右カーブ(la側)接点 → arc.end
-          arc_angle ≈ 222° の大きい弧
-          道路は arc.end → arc.start 方向(CW)に通る = 内側の小さい弧
         """
+        self._clear_arc_split()       # snap=off で作った分割があれば解除
         circle        = self.circle
         contact       = self._circle_pt
         angle_contact = math.atan2(contact.y - circle.center.y,
                                     contact.x - circle.center.x)
         if circle.arcs:
-            # 更新すべき端点（左カーブ→start, 右カーブ→end）に近い arc を選ぶ
             def arc_dist(arc):
                 a = arc.angle_start if self.is_left_curve else arc.angle_end
                 return abs((a - angle_contact + math.pi) % (2 * math.pi) - math.pi)
             arc = min(circle.arcs, key=arc_dist)
         else:
-            # 新規生成: 45° の仮の弧
             if self.is_left_curve:
-                # 左カーブ: start = 接点, end = 接点 + 45°
                 arc = Arc(circle, angle_contact, angle_contact + math.pi / 4)
             else:
-                # 右カーブ: start = 接点 - 45°, end = 接点
                 arc = Arc(circle, angle_contact - math.pi / 4, angle_contact)
             circle.arcs.append(arc)
 
         if self.is_left_curve:
-            arc.angle_start = angle_contact   # 左カーブ → 始点
+            arc.angle_start = angle_contact
         else:
-            arc.angle_end = angle_contact     # 右カーブ → 終点
+            arc.angle_end = angle_contact
+
+    # ── snap=off: 円弧を接点で分割 ───────────────────────────
+    def _apply_arc_split(self):
+        """
+        snap_arc=False 時、円側接点 X で最も近い円弧を
+        (start→X) と (X→end) に分割する。既に分割済みなら端点を追従更新する。
+        左カーブ: circle_pt = 始点側 → angle_start = X
+        右カーブ: circle_pt = 終点側 → angle_end   = X
+        """
+        if not self.circle.arcs:
+            return
+        contact = self._circle_pt
+        angle_x = math.atan2(contact.y - self.circle.center.y,
+                              contact.x - self.circle.center.x)
+
+        # 既存の分割円弧があれば追従更新
+        if self._split_arc_ids:
+            arcs_by_id = {a.id: a for a in self.circle.arcs}
+            arc_ax = arcs_by_id.get(self._split_arc_ids[0])
+            arc_xb = arcs_by_id.get(self._split_arc_ids[1]) if len(self._split_arc_ids) > 1 else None
+            if arc_ax and arc_xb:
+                # arc_ax: start→X, arc_xb: X→end
+                arc_ax.angle_end   = angle_x
+                arc_xb.angle_start = angle_x
+                return
+            self._split_arc_ids = []
+
+        # 分割元となる円弧を選ぶ（接点が範囲内にあるもの）
+        best_arc = None
+        for a in self.circle.arcs:
+            if a.id in self._split_arc_ids:
+                continue
+            span = a.arc_angle()
+            rel  = (angle_x - a.angle_start) % (2 * math.pi)
+            if 1e-4 < rel < span - 1e-4:   # 端点でなく内部に接点がある
+                best_arc = a
+                break
+        if best_arc is None:
+            return
+
+        # 元の円弧を (start→X) に縮め、(X→end) を新規追加
+        orig_end          = best_arc.angle_end
+        best_arc.angle_end = angle_x                          # start→X
+        arc_xb = Arc(self.circle, angle_x, orig_end)          # X→end
+        self.circle.arcs.append(arc_xb)
+        self._split_arc_ids = [best_arc.id, arc_xb.id]
+
+    def _clear_arc_split(self):
+        """snap=off で作った分割円弧を解除（元の円弧に戻す）"""
+        if not self._split_arc_ids:
+            return
+        arcs_by_id = {a.id: a for a in self.circle.arcs}
+        arc_ax = arcs_by_id.get(self._split_arc_ids[0])
+        arc_xb = arcs_by_id.get(self._split_arc_ids[1]) if len(self._split_arc_ids) > 1 else None
+        if arc_ax and arc_xb and arc_xb in self.circle.arcs:
+            arc_ax.angle_end = arc_xb.angle_end
+            self.circle.arcs.remove(arc_xb)
+        self._split_arc_ids = []
 
     # ── プロパティ ─────────────────────────────────────────────
     @property
@@ -567,6 +700,42 @@ class Clothoid:
             "snap_arc":     self.snap_arc,
         }
 
+
+# ─── 線分・円弧の端点接続 snap ──────────────────────────────
+@dataclass
+class SegmentSnap:
+    """2本の線分の端点を接続する snap 情報"""
+    seg_a_id: int
+    end_a:    str   # 'start' or 'end'
+    seg_b_id: int
+    end_b:    str
+
+    def to_dict(self):
+        return {"seg_a_id": self.seg_a_id, "end_a": self.end_a,
+                "seg_b_id": self.seg_b_id, "end_b": self.end_b}
+
+    @staticmethod
+    def from_dict(d) -> 'SegmentSnap':
+        return SegmentSnap(d["seg_a_id"], d["end_a"],
+                           d["seg_b_id"], d["end_b"])
+
+
+@dataclass
+class ArcSnap:
+    """2本の円弧の端点を接続する snap 情報"""
+    arc_a_id: int
+    end_a:    str   # 'start' or 'end'
+    arc_b_id: int
+    end_b:    str
+
+    def to_dict(self):
+        return {"arc_a_id": self.arc_a_id, "end_a": self.end_a,
+                "arc_b_id": self.arc_b_id, "end_b": self.end_b}
+
+    @staticmethod
+    def from_dict(d) -> 'ArcSnap':
+        return ArcSnap(d["arc_a_id"], d["end_a"],
+                       d["arc_b_id"], d["end_b"])
 
 
 # ─── 縦断線形 ────────────────────────────────────────────────
@@ -609,6 +778,8 @@ class VerticalCurve:
     g1: float = 0.0   # 前勾配 [%]
     g2: float = 0.0   # 後勾配 [%]
     length: float = 50.0
+    prev_line_id: int = -1  # 前の勾配直線の id
+    next_line_id: int = -1  # 次の勾配直線の id
 
     @property
     def vpc_dist(self): return self.pvi_dist - self.length / 2
@@ -631,12 +802,14 @@ class VerticalCurve:
 
     def to_dict(self):
         return {"id": self.id, "pvi_dist": self.pvi_dist, "pvi_elev": self.pvi_elev,
-                "g1": self.g1, "g2": self.g2, "length": self.length}
+                "g1": self.g1, "g2": self.g2, "length": self.length,
+                "prev_line_id": self.prev_line_id, "next_line_id": self.next_line_id}
 
     @staticmethod
     def from_dict(d):
         v = VerticalCurve()
-        for k in d: setattr(v, k, d[k])
+        for k in d:
+            setattr(v, k, d[k])
         return v
 
 
@@ -648,6 +821,8 @@ class Scene:
         self.clothoids: list[Clothoid]      = []
         self.grade_lines:     list[GradeLine]    = []
         self.vertical_curves: list[VerticalCurve] = []
+        self.segment_snaps: list[SegmentSnap] = []
+        self.arc_snaps:     list[ArcSnap]     = []
         self.nicknames: dict[int, str] = {}   # id → nickname
 
     def get_nickname(self, obj_id: int, prefix: str = "") -> str:
@@ -721,13 +896,37 @@ class Scene:
         return result
 
     def to_dict(self):
+        def _with_nick(d: dict) -> dict:
+            """dict の 'id' の次に 'nickname' を挿入して返す"""
+            fid = d.get("id")
+            nick = self.nicknames.get(fid)
+            if nick is None:
+                return d
+            # id の直後に nickname を挿入（Python 3.7+ で dict 順序保証）
+            result = {}
+            for k, v in d.items():
+                result[k] = v
+                if k == "id":
+                    result["nickname"] = nick
+            return result
+
+        def line_dict(ln: 'Line') -> dict:
+            d = _with_nick(ln.to_dict())
+            # 線分にもニックネームは不要（ID ベース）
+            return d
+
+        def circle_dict(ci: 'Circle') -> dict:
+            d = _with_nick(ci.to_dict())
+            return d
+
         return {
-            "lines":   [l.to_dict() for l in self.lines],
-            "circles": [c.to_dict() for c in self.circles],
-            "clothoids": [c.to_dict() for c in self.clothoids],
-            "grade_lines": [g.to_dict() for g in self.grade_lines],
+            "lines":           [line_dict(l) for l in self.lines],
+            "circles":         [circle_dict(c) for c in self.circles],
+            "clothoids":       [_with_nick(c.to_dict()) for c in self.clothoids],
+            "grade_lines":     [g.to_dict() for g in self.grade_lines],
             "vertical_curves": [v.to_dict() for v in self.vertical_curves],
-            "nicknames": {str(k): v for k, v in self.nicknames.items()},
+            "segment_snaps":   [s.to_dict() for s in self.segment_snaps],
+            "arc_snaps":       [a.to_dict() for a in self.arc_snaps],
         }
 
     @staticmethod
@@ -735,24 +934,55 @@ class Scene:
         sc = Scene()
         lines_by_id   = {}
         circles_by_id = {}
+
+        def _extract_nick(raw: dict, sc: 'Scene'):
+            """raw dict から nickname を取り出して nicknames に登録する"""
+            nick = raw.get("nickname")
+            fid  = raw.get("id")
+            if nick and fid is not None:
+                sc.nicknames[fid] = nick
+
         for ld in d.get("lines", []):
+            _extract_nick(ld, sc)
             ln = Line.from_dict(ld)
             sc.lines.append(ln)
             lines_by_id[ln.id] = ln
         for cd in d.get("circles", []):
+            _extract_nick(cd, sc)
             ci = Circle.from_dict(cd)
             sc.circles.append(ci)
             circles_by_id[ci.id] = ci
         for cd in d.get("clothoids", []):
+            _extract_nick(cd, sc)
             ln = lines_by_id.get(cd["line_id"])
             ci = circles_by_id.get(cd["circle_id"])
             if ln and ci:
                 clo = Clothoid(ln, ci, cd.get("reversed_flag", False),
-                               cd.get("snap_segment", True),
-                               cd.get("snap_arc", True),
+                               cd.get("snap_segment", False),
+                               cd.get("snap_arc", False),
                                cd.get("id"))
                 sc.clothoids.append(clo)
         sc.grade_lines     = [GradeLine.from_dict(g) for g in d.get("grade_lines", [])]
         sc.vertical_curves = [VerticalCurve.from_dict(v) for v in d.get("vertical_curves", [])]
-        sc.nicknames = {int(k): v for k, v in d.get("nicknames", {}).items()}
+        sc.segment_snaps   = [SegmentSnap.from_dict(s) for s in d.get("segment_snaps", [])]
+        sc.arc_snaps       = [ArcSnap.from_dict(a)     for a in d.get("arc_snaps", [])]
+
+        # 旧フォーマット互換: トップレベルの nicknames フィールド
+        for k, v in d.get("nicknames", {}).items():
+            sc.nicknames[int(k)] = v
+
+        # 全IDを収集してカウンタを最大ID+1から再開（ID重複防止）
+        all_ids = []
+        for ln in sc.lines:
+            all_ids.append(ln.id)
+            all_ids.extend(s.id for s in ln.segments)
+        for ci in sc.circles:
+            all_ids.append(ci.id)
+            all_ids.extend(a.id for a in ci.arcs)
+        all_ids.extend(c.id for c in sc.clothoids)
+        all_ids.extend(g.id for g in sc.grade_lines)
+        all_ids.extend(v.id for v in sc.vertical_curves)
+        if all_ids:
+            _reset_id_counter_after(max(all_ids))
+
         return sc

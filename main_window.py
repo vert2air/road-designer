@@ -280,7 +280,9 @@ class MainWindow(QMainWindow):
         self._canvas.push_undo()
         existing = self.scene.clothoids_for(ln, ci)
         rev = (len(existing) == 1 and not existing[0].reversed_flag)
-        clo = Clothoid(ln, ci, reversed_flag=rev)
+        # デフォルトは snap なし（ユーザーが右パネルから個別に on にする）
+        clo = Clothoid(ln, ci, reversed_flag=rev,
+                       snap_segment=False, snap_arc=False)
         self.scene.add_clothoid(clo)
         self._canvas.scene_changed.emit()
         self._canvas.update()
