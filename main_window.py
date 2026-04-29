@@ -425,13 +425,14 @@ class MainWindow(QMainWindow):
                        if ep.element_id == obj.id), None)
             if ep is None:
                 ep = ElementProfile()
-                ep.element_id   = obj.id
-                ep.element_type = (
-                    'segment'  if isinstance(obj, Segment)  else
-                    'arc'      if isinstance(obj, Arc)       else
-                    'clothoid')
+                ep.element_id = obj.id
                 self.scene.element_profiles.append(ep)
-            ep.plan_length  = plan_length_of(obj)
+            # 常に最新の情報で上書き（element_type が古い場合に備える）
+            ep.element_type  = (
+                'segment'  if isinstance(obj, Segment)  else
+                'arc'      if isinstance(obj, Arc)       else
+                'clothoid')
+            ep.plan_length   = plan_length_of(obj)
             ep.reversed_flag = rev_flags[elements.index(obj)]
             return ep
 

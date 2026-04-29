@@ -105,28 +105,39 @@ class ProfileCanvas(QWidget):
 
         # 各 profile の grade_lines を累積距離に変換して統合
         # rev=True の要素は dist を (plan_length - dist) に反転する
+        # grade_lines は plan_length の範囲 [0, plan_length] でクリップしてから使う
         self._grade_lines     = []
         self._vertical_curves = []
         for ep, offset, rev in zip(profiles, offsets, self._rev_flags):
             L = ep.plan_length
             for gl in ep.grade_lines:
+                # plan_length の範囲でクリップ
+                gs = max(gl.dist_start, 0.0)
+                ge = min(gl.dist_end,   L)
+                if ge - gs < 0.001:
+                    continue
+                # クリップ後の標高を補間
+                gs_elev = self._elev_at(gs, gl)
+                ge_elev = self._elev_at(ge, gl)
                 if rev:
-                    # 逆順: dist を反転し、標高の始端/終端も入れ替える
                     merged = GradeLine(
-                        dist_start = offset + (L - gl.dist_end),
-                        elev_start = gl.elev_end,
-                        dist_end   = offset + (L - gl.dist_start),
-                        elev_end   = gl.elev_start)
+                        dist_start = offset + (L - ge),
+                        elev_start = ge_elev,
+                        dist_end   = offset + (L - gs),
+                        elev_end   = gs_elev)
                 else:
                     merged = GradeLine(
-                        dist_start = gl.dist_start + offset,
-                        elev_start = gl.elev_start,
-                        dist_end   = gl.dist_end   + offset,
-                        elev_end   = gl.elev_end)
+                        dist_start = gs + offset,
+                        elev_start = gs_elev,
+                        dist_end   = ge + offset,
+                        elev_end   = ge_elev)
                 merged.id = gl.id
                 self._grade_lines.append(merged)
 
             for vc in ep.vertical_curves:
+                # plan_length の範囲でクリップ
+                if vc.vpc_dist >= L - 0.001 or vc.vpt_dist <= 0.001:
+                    continue
                 if rev:
                     merged_vc = VerticalCurve(
                         pvi_dist = offset + (L - vc.pvi_dist),
@@ -277,25 +288,74 @@ class ProfileCanvas(QWidget):
         return None
 
     # ─── ハンドル列挙 ─────────────────────────────────────────
+    def _snap_grade_lines(self, changed_end: str = 'both'):
+        """
+        隣接する勾配直線の端点を強制的に一致させる。
+        changed_end='end'   → 前→後方向に伝播（終点を変更した場合）
+        changed_end='start' → 後→前方向に伝播（始点を変更した場合）
+        changed_end='both'  → 両方向に伝播（追加・ドラッグ後のリセット）
+        """
+        gls = self._grade_lines_sorted()
+        if not gls:
+            return
+
+        if changed_end in ('end', 'both'):
+            # 前→後方向: 前の終端に次の始端を合わせる
+            for i in range(len(gls) - 1):
+                g_next = gls[i + 1]
+                g_cur  = gls[i]
+                g_next.dist_start = g_cur.dist_end
+                g_next.elev_start = g_cur.elev_end
+
+        if changed_end in ('start', 'both'):
+            # 後→前方向: 後の始端に前の終端を合わせる
+            for i in range(len(gls) - 1, 0, -1):
+                g_cur  = gls[i]
+                g_prev = gls[i - 1]
+                g_prev.dist_end = g_cur.dist_start
+                g_prev.elev_end = g_cur.elev_start
+
     def _get_handles(self) -> list[dict]:
         """
-        勾配直線の本来の端点（＝PVI 点）にハンドルを生成する。
-        隣接直線が接続されている（dist 一致）場合は共有ハンドルを1つ。
-        縦断曲線挿入後も勾配直線の端点は変わらないのでハンドルは常に表示。
+        勾配直線の各端点にハンドルを生成する。
+        隣接する直線が接続されている（dist が一致または 0.01m 以内）場合は
+        共有ハンドルを1つだけ生成し、両方の直線を partners に含める。
         """
-        seen: dict[float, dict] = {}
+        gls  = self._grade_lines_sorted()
+        seen: dict[int, dict] = {}   # key=round(dist*100) → ハンドル
         handles = []
-        for gl in self._grade_lines:
+
+        for gl in gls:
             for end in ('start', 'end'):
                 dist = gl.dist_start if end == 'start' else gl.dist_end
                 elev = gl.elev_start if end == 'start' else gl.elev_end
-                key  = round(dist, 4)
+                key  = round(dist * 100)   # 0.01m 単位でグループ化
                 if key in seen:
                     seen[key]['partners'].append((gl, end))
                 else:
                     h = {'dist': dist, 'elev': elev, 'partners': [(gl, end)]}
                     seen[key] = h
                     handles.append(h)
+
+        # 隣接する勾配直線の境界点を共有ハンドルとして統合
+        # gls[i].dist_end ≈ gls[i+1].dist_start → 同じハンドルにまとめる
+        for i in range(len(gls) - 1):
+            g_cur  = gls[i]
+            g_next = gls[i + 1]
+            if abs(g_next.dist_start - g_cur.dist_end) < 0.01:
+                key_end   = round(g_cur.dist_end   * 100)
+                key_start = round(g_next.dist_start * 100)
+                if key_end != key_start and key_end in seen and key_start in seen:
+                    # 2つのハンドルを統合：key_end に key_start の partners を追加
+                    h_end   = seen[key_end]
+                    h_start = seen[key_start]
+                    for p in h_start['partners']:
+                        if p not in h_end['partners']:
+                            h_end['partners'].append(p)
+                    # key_start のハンドルを削除
+                    handles = [h for h in handles if h is not h_start]
+                    seen.pop(key_start, None)
+
         return handles
 
     def _hit_handle(self, sx: float, sy: float) -> Optional[dict]:
@@ -571,69 +631,83 @@ class ProfileCanvas(QWidget):
 
         elif btn == Qt.MouseButton.LeftButton and self._mode == "grade":
             dist, elev = self.s2w(sx, sy)
+
+            # チェーン全体の長さ（area_end）
+            total_len = sum(ep.plan_length for ep in self._profiles) if self._profiles else float('inf')
+
+            # スナップ候補: 既存端点 + 区間端 (0, total_len)
+            snap_pts = [(0.0, None), (total_len, None)]
+            for gl in self._grade_lines:
+                snap_pts.append((gl.dist_start, gl.elev_start))
+                snap_pts.append((gl.dist_end,   gl.elev_end))
+
+            def snap_dist(d, e):
+                """最も近いスナップ点に吸着。標高はスナップ点から取得（なければそのまま）"""
+                best_d, best_e, best_px = d, e, float('inf')
+                for sd, se in snap_pts:
+                    px = abs(d - sd) * self._scale_x
+                    if px < 12 and px < best_px:
+                        best_px = px
+                        best_d  = sd
+                        best_e  = se if se is not None else e
+                return best_d, best_e
+
             if self._grade_first is None:
-                # 既存の端点に近ければスナップ（10px 以内）
-                for gl in self._grade_lines:
-                    for d, e in [(gl.dist_start, gl.elev_start),
-                                  (gl.dist_end,   gl.elev_end)]:
-                        if abs(dist - d) * self._scale_x < 10:
-                            dist, elev = d, e
-                            break
+                dist, elev = snap_dist(dist, elev)
                 self._grade_first = (dist, elev)
             else:
                 d0, e0 = self._grade_first
+                dist, elev = snap_dist(dist, elev)
 
-                # 終点が既存の端点に近い場合はスナップ（標高を合わせる）
-                for gl in self._grade_lines:
-                    for d, e in [(gl.dist_start, gl.elev_start),
-                                  (gl.dist_end,   gl.elev_end)]:
-                        if abs(dist - d) * self._scale_x < 10:
-                            dist, elev = d, e
-                            break
-
-                # 始点と終点が同じ距離は無効
                 if abs(dist - d0) < 0.01:
-                    return
+                    return  # 始点と終点が同じ距離は無効
 
                 new_start = min(d0, dist)
                 new_end   = max(d0, dist)
+                new_elev_start = e0    if d0 <= dist else elev
+                new_elev_end   = elev  if d0 <= dist else e0
 
-                # ─── 重複チェック ───────────────────────────────
-                # 新しい直線 [new_start, new_end] が既存直線と範囲で重複しないか確認。
-                # 端点が一致する（接続する）のは許可。内部で交わる場合のみ拒否。
+                # チェーン範囲外はクリップ
+                if total_len > 0:
+                    new_start = max(0.0, min(new_start, total_len))
+                    new_end   = max(0.0, min(new_end,   total_len))
+                if abs(new_end - new_start) < 0.01:
+                    return
+
+                # 既存勾配直線のうち新しい範囲と重複するものを切り取る
+                # 重複部分を削除し、はみ出し部分を残す
+                new_gls = []
                 for gl in self._grade_lines:
                     gs, ge = gl.dist_start, gl.dist_end
-                    # 2区間 [new_start, new_end] と [gs, ge] が内部で重複する条件:
-                    # new_start < ge  かつ  new_end > gs  (端点一致は除く)
-                    overlap_start = max(new_start, gs)
-                    overlap_end   = min(new_end,   ge)
-                    if overlap_end - overlap_start > 0.01:  # 実質的な重複あり
-                        # 端点での接続のみ許可: 重複区間が端点だけかチェック
-                        # 端点接続: overlap_start==overlap_end (点のみ一致) → 許可
-                        # → overlap_end - overlap_start > 0.01 なら確実に範囲重複
-                        return  # 拒否
+                    if ge <= new_start + 0.001 or gs >= new_end - 0.001:
+                        # 重複なし → そのまま残す
+                        new_gls.append(gl)
+                    else:
+                        # 重複あり → 新範囲の外側部分を残す
+                        if gs < new_start - 0.001:
+                            # 左側はみ出し部分を残す
+                            elev_at_split = self._elev_at(new_start, gl)
+                            left_gl = GradeLine(dist_start=gs, elev_start=gl.elev_start,
+                                                dist_end=new_start, elev_end=elev_at_split)
+                            new_gls.append(left_gl)
+                        if ge > new_end + 0.001:
+                            # 右側はみ出し部分を残す
+                            elev_at_split = self._elev_at(new_end, gl)
+                            right_gl = GradeLine(dist_start=new_end, elev_start=elev_at_split,
+                                                 dist_end=ge, elev_end=gl.elev_end)
+                            new_gls.append(right_gl)
 
-                # ─── 標高一意チェック ────────────────────────────
-                # 既存の端点と同じ dist の点を持つ場合、標高が一致しているか確認
-                new_elev_start = e0 if d0 <= dist else elev
-                new_elev_end   = elev if d0 <= dist else e0
-                for gl in self._grade_lines:
-                    # 新直線の始点 dist が既存の dist と一致する場合
-                    for d_ex, e_ex in [(gl.dist_start, gl.elev_start),
-                                        (gl.dist_end,   gl.elev_end)]:
-                        if abs(new_start - d_ex) < 0.01 and abs(new_elev_start - e_ex) > 0.01:
-                            return  # 同じ dist で標高が違う → 拒否
-                        if abs(new_end   - d_ex) < 0.01 and abs(new_elev_end   - e_ex) > 0.01:
-                            return  # 同じ dist で標高が違う → 拒否
+                # 新しい勾配直線を追加
+                new_gl = GradeLine(dist_start=new_start, elev_start=new_elev_start,
+                                   dist_end=new_end, elev_end=new_elev_end)
+                new_gls.append(new_gl)
+                new_gls.sort(key=lambda g: g.dist_start)
+                self._grade_lines.clear()
+                self._grade_lines.extend(new_gls)
 
-                # ─── 追加 ────────────────────────────────────────
-                new_gl = GradeLine(
-                    dist_start=new_start,
-                    elev_start=new_elev_start,
-                    dist_end=new_end,
-                    elev_end=new_elev_end)
-                self._grade_lines.append(new_gl)
-                self._grade_lines.sort(key=lambda g: g.dist_start)
+                # 隣接する勾配直線の端点を強制スナップ
+                self._snap_grade_lines()
+
                 self._grade_first = (dist, elev)
                 self.selection_changed.emit(None)
                 self.update()
@@ -679,14 +753,15 @@ class ProfileCanvas(QWidget):
 
     def _apply_handle_drag(self, h: dict, new_dist: float, new_elev: float):
         """
-        ハンドル（勾配直線の端点＝PVI 点）をドラッグ。
-        - 関連する勾配直線の端点を更新する
-        - その端点を PVI とする縦断曲線があれば pvi_dist/pvi_elev を追従させ、
-          前後の勾配直線の勾配から g1/g2 を再計算する
+        ハンドル（勾配直線の端点）をドラッグ。
+        - partners に含まれる全ての勾配直線の端点を更新する
+        - 共有ハンドルの場合は両方の勾配直線が追従する
+        - その点を PVI とする縦断曲線があれば追従させる
+        - ドラッグ後にスナップして隙間を解消する
         """
         old_dist = h['dist']
 
-        # 勾配直線の端点を更新
+        # partners の全勾配直線の端点を更新
         for gl, end in h['partners']:
             if end == 'start':
                 gl.dist_start = new_dist
@@ -705,6 +780,9 @@ class ProfileCanvas(QWidget):
                 vc.pvi_dist = new_dist
                 vc.pvi_elev = new_elev
                 self._recalc_vc_gradients(vc)
+
+        # ドラッグ後に隣接直線を強制スナップ（隙間ゼロを保証）
+        self._snap_grade_lines()
 
     def _recalc_vc_gradients(self, vc: 'VerticalCurve'):
         """縦断曲線の前後の勾配直線から g1, g2 を再計算する"""
@@ -1008,35 +1086,58 @@ class VerticalAlignmentWindow(QMainWindow):
         lbl_grad   = QLabel(f"勾配: {gl.gradient:.4f} %")
         lbl_horiz  = QLabel(f"水平長: {gl.dist_end - gl.dist_start:.3f} m")
 
-        def refresh_derived():
+        def refresh_derived(changed_end='end'):
             lbl_grad.setText(f"勾配: {gl.gradient:.4f} %")
             lbl_horiz.setText(f"水平長: {gl.dist_end - gl.dist_start:.3f} m")
-            # 関連する縦断曲線の勾配を再計算
             for vc in self._canvas._vertical_curves:
                 self._canvas._recalc_vc_gradients(vc)
+            self._canvas._snap_grade_lines(changed_end)
             self._canvas.update()
+            # スナップで隣の直線の値も変わるため右パネルを再構築
+            # （ただし無限ループを避けるため _block_grade_sb で保護）
+            if not self._block_grade_sb:
+                self._refresh_props()
 
-        def add_endpoint(label, get_dist, set_dist, get_elev, set_elev):
+        # SpinBox のブロックフラグ（シグナルループ防止）
+        self._block_grade_sb = False
+
+        def add_endpoint(label, get_dist, set_dist, get_elev, set_elev, end_type):
+            """end_type: 'start' or 'end' — どちらの端点か"""
             lay.addWidget(QLabel(label))
             row_d = QHBoxLayout()
             row_e = QHBoxLayout()
             sb_d = _make_spinbox(get_dist(), lo=-1e6, hi=1e6, step=1.0, decimals=3)
             sb_e = _make_spinbox(get_elev(), lo=-1e6, hi=1e6, step=0.1, decimals=3)
 
-            def on_dist(v):
-                set_dist(v)
-                # 縦断曲線の pvi も追従
-                for vc in self._canvas._vertical_curves:
-                    if abs(vc.pvi_dist - get_dist()) < 0.01:
-                        vc.pvi_dist = v
-                refresh_derived()
+            def sync_sb():
+                if self._block_grade_sb:
+                    return
+                self._block_grade_sb = True
+                sb_d.setValue(get_dist())
+                sb_e.setValue(get_elev())
+                self._block_grade_sb = False
 
-            def on_elev(v):
+            def on_dist(v, _end=end_type):
+                if self._block_grade_sb:
+                    return
+                self._block_grade_sb = True
+                set_dist(v)
+                for vc in self._canvas._vertical_curves:
+                    if abs(vc.pvi_dist - v) < 0.01:
+                        vc.pvi_dist = v
+                self._block_grade_sb = False
+                refresh_derived(_end)
+
+            def on_elev(v, _end=end_type):
+                if self._block_grade_sb:
+                    return
+                self._block_grade_sb = True
                 set_elev(v)
                 for vc in self._canvas._vertical_curves:
                     if abs(vc.pvi_dist - get_dist()) < 0.01:
                         vc.pvi_elev = v
-                refresh_derived()
+                self._block_grade_sb = False
+                refresh_derived(_end)
 
             sb_d.valueChanged.connect(on_dist)
             sb_e.valueChanged.connect(on_elev)
@@ -1047,10 +1148,12 @@ class VerticalAlignmentWindow(QMainWindow):
 
         add_endpoint("始点",
                      lambda: gl.dist_start, lambda v: setattr(gl, 'dist_start', v),
-                     lambda: gl.elev_start, lambda v: setattr(gl, 'elev_start', v))
+                     lambda: gl.elev_start, lambda v: setattr(gl, 'elev_start', v),
+                     'start')
         add_endpoint("終点",
                      lambda: gl.dist_end,   lambda v: setattr(gl, 'dist_end',   v),
-                     lambda: gl.elev_end,   lambda v: setattr(gl, 'elev_end',   v))
+                     lambda: gl.elev_end,   lambda v: setattr(gl, 'elev_end',   v),
+                     'end')
 
         lay.addWidget(lbl_horiz)
         lay.addWidget(lbl_grad)

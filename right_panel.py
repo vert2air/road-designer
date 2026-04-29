@@ -318,6 +318,39 @@ class RightPanel(QWidget):
         # 関連図形
         self._add_related_objects(obj)
 
+        # 縦断設計情報
+        self._add_vertical_profile_info(obj)
+
+    def _add_vertical_profile_info(self, obj):
+        """平面線形要素に対応する縦断設計情報（ElementProfile）を表示する"""
+        from models import ElementProfile
+        oid = getattr(obj, 'id', None)
+        if oid is None:
+            return
+        ep = next((ep for ep in self.scene.element_profiles
+                   if ep.element_id == oid), None)
+        if ep is None or not ep.grade_lines:
+            return
+
+        grp = QGroupBox("縦断設計")
+        lay = QVBoxLayout(grp)
+        lay.addWidget(QLabel(f"平面長: {ep.plan_length:.3f} m"))
+        lay.addWidget(QLabel(f"始端標高: {ep.elev_start:.3f} m"))
+        lay.addWidget(QLabel(f"終端標高: {ep.elev_end:.3f} m"))
+        lay.addWidget(QLabel(f"勾配直線数: {len(ep.grade_lines)}"))
+        # 勾配直線の一覧
+        for gl in sorted(ep.grade_lines, key=lambda g: g.dist_start):
+            grad = gl.gradient
+            lay.addWidget(QLabel(
+                f"  {gl.dist_start:.1f}→{gl.dist_end:.1f}m  "
+                f"{grad:+.3f}%"))
+        if ep.vertical_curves:
+            lay.addWidget(QLabel(f"縦断曲線数: {len(ep.vertical_curves)}"))
+            for vc in ep.vertical_curves:
+                lay.addWidget(QLabel(
+                    f"  PVI={vc.pvi_dist:.1f}m  L={vc.length:.1f}m  K={vc.K:.1f}"))
+        self._prop_layout.addWidget(grp)
+
     def _add_nickname_editor(self, obj):
         grp = QGroupBox("ニックネーム / ID")
         lay = QVBoxLayout(grp)
