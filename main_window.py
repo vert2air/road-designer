@@ -305,13 +305,51 @@ class MainWindow(QMainWindow):
 
     # ─── 縦断線形 ────────────────────────────────────────────
     def _open_vertical_window(self):
+        from models import ElementProfile, plan_length_of
         # 選択中の平面線形要素を収集
         elements = []
         for obj in self._canvas._selected:
             if isinstance(obj, (Segment, Arc, Clothoid)):
                 elements.append(obj)
+
+        # 各要素に対応する ElementProfile を取得または新規作成
+        def get_or_create_ep(obj) -> ElementProfile:
+            ep = next((ep for ep in self.scene.element_profiles
+                       if ep.element_id == obj.id), None)
+            if ep is None:
+                ep = ElementProfile()
+                ep.element_id   = obj.id
+                ep.element_type = (
+                    'segment'  if isinstance(obj, Segment)  else
+                    'arc'      if isinstance(obj, Arc)       else
+                    'clothoid'
+                )
+                self.scene.element_profiles.append(ep)
+            # 常に最新の平面長を更新する
+            ep.plan_length = plan_length_of(obj)
+            return ep
+
+        profiles = [get_or_create_ep(obj) for obj in elements] if elements else []
+
+        # 隣接する ElementProfile 間の接点標高を同期する
+        # 前の要素の elev_end == 次の要素の elev_start
+        for i in range(len(profiles) - 1):
+            ep_cur  = profiles[i]
+            ep_next = profiles[i + 1]
+            if ep_cur.grade_lines:
+                # 前要素の終端勾配直線の終端標高を接点に使う
+                last_gl = max(ep_cur.grade_lines, key=lambda g: g.dist_end)
+                shared_elev = last_gl.elev_end
+                ep_cur.elev_end     = shared_elev
+                ep_next.elev_start  = shared_elev
+            elif ep_next.grade_lines:
+                first_gl = min(ep_next.grade_lines, key=lambda g: g.dist_start)
+                shared_elev = first_gl.elev_start
+                ep_cur.elev_end     = shared_elev
+                ep_next.elev_start  = shared_elev
+
         self._vertical_window = VerticalAlignmentWindow(
-            self.scene, elements, parent=None)
+            self.scene, profiles, elements, parent=None)
         self._vertical_window.show()
 
     # ─── デモデータ ──────────────────────────────────────────

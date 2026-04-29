@@ -738,7 +738,99 @@ class ArcSnap:
                        d["arc_b_id"], d["end_b"])
 
 
-# ─── 縦断線形 ────────────────────────────────────────────────
+def plan_length_of(obj) -> float:
+    """平面線形要素（Segment / Arc / Clothoid）の平面長を返す"""
+    if isinstance(obj, Segment):
+        return obj.length()
+    if isinstance(obj, Arc):
+        return obj.arc_length()
+    if isinstance(obj, Clothoid):
+        # クロソイド曲線長 = L = 2R·τ
+        if obj.is_valid and obj._tau > 0:
+            return 2.0 * obj.circle.radius * obj._tau
+        return 0.0
+    return 0.0
+
+
+@dataclass
+class ElementProfile:
+    """
+    平面線形の1要素（Segment / Arc / Clothoid）に対応する縦断計画。
+    element_id で平面線形要素と紐付ける。
+
+    grade_lines の距離はこの要素内の相対距離（始端 = 0、終端 = plan_length）で管理する。
+    要素チェーンを表示する際は、各要素の plan_length を累積して絶対距離に変換する。
+
+    隣接要素との接点（端点）の標高は
+      この要素の elev_end  == 次の要素の elev_start
+    として一致させることで共有する。
+    """
+    id:           int   = field(default_factory=new_id)
+    element_id:   int   = -1    # 対応する Segment/Arc/Clothoid の id
+    element_type: str   = ""    # 'segment' | 'arc' | 'clothoid'
+    plan_length:  float = 0.0   # この要素の平面長 [m]（相対距離の上限）
+    elev_start:   float = 0.0   # 始端標高 [m]（隣接要素と共有）
+    elev_end:     float = 0.0   # 終端標高 [m]（隣接要素と共有）
+    grade_lines:  list  = field(default_factory=list)   # list[GradeLine] 相対距離
+    vertical_curves: list = field(default_factory=list) # list[VerticalCurve]
+
+    def to_dict(self) -> dict:
+        return {
+            "id":              self.id,
+            "element_id":      self.element_id,
+            "element_type":    self.element_type,
+            "plan_length":     self.plan_length,
+            "elev_start":      self.elev_start,
+            "elev_end":        self.elev_end,
+            "grade_lines":     [g.to_dict() for g in self.grade_lines],
+            "vertical_curves": [v.to_dict() for v in self.vertical_curves],
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> 'ElementProfile':
+        ep = ElementProfile()
+        ep.id           = d.get("id", new_id())
+        ep.element_id   = d.get("element_id", -1)
+        ep.element_type = d.get("element_type", "")
+        ep.plan_length  = d.get("plan_length", 0.0)
+        ep.elev_start   = d.get("elev_start", 0.0)
+        ep.elev_end     = d.get("elev_end", 0.0)
+        ep.grade_lines  = [GradeLine.from_dict(g)
+                           for g in d.get("grade_lines", [])]
+        ep.vertical_curves = [VerticalCurve.from_dict(v)
+                              for v in d.get("vertical_curves", [])]
+        return ep
+
+
+@dataclass
+class VerticalAlignment:
+    """
+    後方互換用: 旧フォーマットの grade_lines / vertical_curves を保持する。
+    新規データは ElementProfile を使う。
+    """
+    id: int = field(default_factory=new_id)
+    nickname: str = ""
+    grade_lines:     list = field(default_factory=list)
+    vertical_curves: list = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "id":              self.id,
+            "nickname":        self.nickname,
+            "grade_lines":     [g.to_dict() for g in self.grade_lines],
+            "vertical_curves": [v.to_dict() for v in self.vertical_curves],
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> 'VerticalAlignment':
+        va = VerticalAlignment()
+        va.id             = d.get("id", new_id())
+        va.nickname       = d.get("nickname", "")
+        va.grade_lines    = [GradeLine.from_dict(g)
+                             for g in d.get("grade_lines", [])]
+        va.vertical_curves = [VerticalCurve.from_dict(v)
+                              for v in d.get("vertical_curves", [])]
+        return va
 @dataclass
 class GradeLine:
     id: int = field(default_factory=new_id)
@@ -819,8 +911,8 @@ class Scene:
         self.lines:     list[Line]          = []
         self.circles:   list[Circle]        = []
         self.clothoids: list[Clothoid]      = []
-        self.grade_lines:     list[GradeLine]    = []
-        self.vertical_curves: list[VerticalCurve] = []
+        self.vertical_alignments: list[VerticalAlignment] = []  # 旧フォーマット互換
+        self.element_profiles: list[ElementProfile] = []         # 要素単位の縦断データ
         self.segment_snaps: list[SegmentSnap] = []
         self.arc_snaps:     list[ArcSnap]     = []
         self.nicknames: dict[int, str] = {}   # id → nickname
@@ -920,13 +1012,13 @@ class Scene:
             return d
 
         return {
-            "lines":           [line_dict(l) for l in self.lines],
-            "circles":         [circle_dict(c) for c in self.circles],
-            "clothoids":       [_with_nick(c.to_dict()) for c in self.clothoids],
-            "grade_lines":     [g.to_dict() for g in self.grade_lines],
-            "vertical_curves": [v.to_dict() for v in self.vertical_curves],
-            "segment_snaps":   [s.to_dict() for s in self.segment_snaps],
-            "arc_snaps":       [a.to_dict() for a in self.arc_snaps],
+            "lines":                [line_dict(l) for l in self.lines],
+            "circles":              [circle_dict(c) for c in self.circles],
+            "clothoids":            [_with_nick(c.to_dict()) for c in self.clothoids],
+            "element_profiles":     [ep.to_dict() for ep in self.element_profiles],
+            "vertical_alignments":  [va.to_dict() for va in self.vertical_alignments],
+            "segment_snaps":        [s.to_dict() for s in self.segment_snaps],
+            "arc_snaps":            [a.to_dict() for a in self.arc_snaps],
         }
 
     @staticmethod
@@ -962,8 +1054,22 @@ class Scene:
                                cd.get("snap_arc", False),
                                cd.get("id"))
                 sc.clothoids.append(clo)
-        sc.grade_lines     = [GradeLine.from_dict(g) for g in d.get("grade_lines", [])]
-        sc.vertical_curves = [VerticalCurve.from_dict(v) for v in d.get("vertical_curves", [])]
+        sc.element_profiles    = [ElementProfile.from_dict(ep)
+                                   for ep in d.get("element_profiles", [])]
+        sc.vertical_alignments = [
+            VerticalAlignment.from_dict(va)
+            for va in d.get("vertical_alignments", [])
+        ]
+        # 旧フォーマット互換: トップレベルの grade_lines / vertical_curves を
+        # デフォルトの VerticalAlignment に変換して取り込む
+        old_gls = d.get("grade_lines", [])
+        old_vcs = d.get("vertical_curves", [])
+        if old_gls or old_vcs:
+            va = VerticalAlignment()
+            va.nickname       = "default"
+            va.grade_lines    = [GradeLine.from_dict(g) for g in old_gls]
+            va.vertical_curves = [VerticalCurve.from_dict(v) for v in old_vcs]
+            sc.vertical_alignments.append(va)
         sc.segment_snaps   = [SegmentSnap.from_dict(s) for s in d.get("segment_snaps", [])]
         sc.arc_snaps       = [ArcSnap.from_dict(a)     for a in d.get("arc_snaps", [])]
 
@@ -980,8 +1086,14 @@ class Scene:
             all_ids.append(ci.id)
             all_ids.extend(a.id for a in ci.arcs)
         all_ids.extend(c.id for c in sc.clothoids)
-        all_ids.extend(g.id for g in sc.grade_lines)
-        all_ids.extend(v.id for v in sc.vertical_curves)
+        all_ids.extend(ep.id for ep in sc.element_profiles)
+        for ep in sc.element_profiles:
+            all_ids.extend(g.id for g in ep.grade_lines)
+            all_ids.extend(v.id for v in ep.vertical_curves)
+        for va in sc.vertical_alignments:
+            all_ids.append(va.id)
+            all_ids.extend(g.id for g in va.grade_lines)
+            all_ids.extend(v.id for v in va.vertical_curves)
         if all_ids:
             _reset_id_counter_after(max(all_ids))
 
