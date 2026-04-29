@@ -83,14 +83,17 @@ class ProfileCanvas(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     # ─── 公開メソッド ─────────────────────────────────────────
-    def set_plan_elements(self, elements: list, profiles: list):
+    def set_plan_elements(self, elements: list, profiles: list,
+                          rev_flags: list = None):
         """
         平面線形要素チェーンと対応する ElementProfile リストを設定する。
+        rev_flags[i] が True の要素は逆順（終点→始点）として扱う。
         各 profile の grade_lines を累積距離に変換してチェーン全体の
         _grade_lines / _vertical_curves に統合する。
         """
         self._plan_elements = elements
         self._profiles      = profiles
+        self._rev_flags     = rev_flags if rev_flags else [False] * len(profiles)
 
         # 累積オフセットを計算
         offsets = []
@@ -101,26 +104,43 @@ class ProfileCanvas(QWidget):
         self._elem_offsets = offsets
 
         # 各 profile の grade_lines を累積距離に変換して統合
+        # rev=True の要素は dist を (plan_length - dist) に反転する
         self._grade_lines     = []
         self._vertical_curves = []
-        for ep, offset in zip(profiles, offsets):
+        for ep, offset, rev in zip(profiles, offsets, self._rev_flags):
+            L = ep.plan_length
             for gl in ep.grade_lines:
-                merged = GradeLine(
-                    dist_start = gl.dist_start + offset,
-                    elev_start = gl.elev_start,
-                    dist_end   = gl.dist_end + offset,
-                    elev_end   = gl.elev_end)
-                merged.id = gl.id  # ID を引き継ぐ
+                if rev:
+                    # 逆順: dist を反転し、標高の始端/終端も入れ替える
+                    merged = GradeLine(
+                        dist_start = offset + (L - gl.dist_end),
+                        elev_start = gl.elev_end,
+                        dist_end   = offset + (L - gl.dist_start),
+                        elev_end   = gl.elev_start)
+                else:
+                    merged = GradeLine(
+                        dist_start = gl.dist_start + offset,
+                        elev_start = gl.elev_start,
+                        dist_end   = gl.dist_end   + offset,
+                        elev_end   = gl.elev_end)
+                merged.id = gl.id
                 self._grade_lines.append(merged)
+
             for vc in ep.vertical_curves:
-                # VerticalCurve の pvi_dist も offset 調整
-                merged_vc = VerticalCurve(
-                    pvi_dist = vc.pvi_dist + offset,
-                    pvi_elev = vc.pvi_elev,
-                    g1 = vc.g1, g2 = vc.g2,
-                    length = vc.length,
-                    prev_line_id = vc.prev_line_id,
-                    next_line_id = vc.next_line_id)
+                if rev:
+                    merged_vc = VerticalCurve(
+                        pvi_dist = offset + (L - vc.pvi_dist),
+                        pvi_elev = vc.pvi_elev,
+                        g1 = -vc.g2, g2 = -vc.g1,
+                        length = vc.length)
+                else:
+                    merged_vc = VerticalCurve(
+                        pvi_dist = vc.pvi_dist + offset,
+                        pvi_elev = vc.pvi_elev,
+                        g1 = vc.g1, g2 = vc.g2,
+                        length = vc.length,
+                        prev_line_id = vc.prev_line_id,
+                        next_line_id = vc.next_line_id)
                 merged_vc.id = vc.id
                 self._vertical_curves.append(merged_vc)
 
@@ -131,36 +151,57 @@ class ProfileCanvas(QWidget):
         """
         チェーン全体の _grade_lines / _vertical_curves を
         各 ElementProfile の範囲に切り出して保存する。
+        rev=True の要素は逆順に戻して保存する。
         """
-        for i, (ep, offset) in enumerate(zip(self._profiles, self._elem_offsets)):
+        rev_flags = getattr(self, '_rev_flags', [False] * len(self._profiles))
+        for ep, offset, rev in zip(self._profiles, self._elem_offsets, rev_flags):
+            L = ep.plan_length
             d_start = offset
-            d_end   = offset + ep.plan_length
+            d_end   = offset + L
 
-            # この要素の範囲に含まれる grade_lines を切り出し（相対距離に変換）
+            # この要素の範囲に含まれる grade_lines を切り出し
             ep.grade_lines = []
             for gl in self._grade_lines:
-                # 要素範囲と重なる部分をクリップ
                 s = max(gl.dist_start, d_start)
                 e = min(gl.dist_end,   d_end)
                 if e - s < 0.01:
                     continue
-                new_gl = GradeLine(
-                    dist_start = s - offset,
-                    elev_start = self._elev_at(s, gl),
-                    dist_end   = e - offset,
-                    elev_end   = self._elev_at(e, gl))
+                s_elev = self._elev_at(s, gl)
+                e_elev = self._elev_at(e, gl)
+                if rev:
+                    # 逆順に戻す
+                    new_gl = GradeLine(
+                        dist_start = L - (e - offset),
+                        elev_start = e_elev,
+                        dist_end   = L - (s - offset),
+                        elev_end   = s_elev)
+                else:
+                    new_gl = GradeLine(
+                        dist_start = s - offset,
+                        elev_start = s_elev,
+                        dist_end   = e - offset,
+                        elev_end   = e_elev)
                 ep.grade_lines.append(new_gl)
+            ep.grade_lines.sort(key=lambda g: g.dist_start)
 
-            # 縦断曲線も同様にクリップ
+            # 縦断曲線も同様にクリップして保存
             ep.vertical_curves = []
             for vc in self._vertical_curves:
                 if vc.vpc_dist >= d_end - 0.01 or vc.vpt_dist <= d_start + 0.01:
                     continue
-                new_vc = VerticalCurve(
-                    pvi_dist = vc.pvi_dist - offset,
-                    pvi_elev = vc.pvi_elev,
-                    g1 = vc.g1, g2 = vc.g2,
-                    length = vc.length)
+                rel_pvi = vc.pvi_dist - offset
+                if rev:
+                    new_vc = VerticalCurve(
+                        pvi_dist = L - rel_pvi,
+                        pvi_elev = vc.pvi_elev,
+                        g1 = -vc.g2, g2 = -vc.g1,
+                        length = vc.length)
+                else:
+                    new_vc = VerticalCurve(
+                        pvi_dist = rel_pvi,
+                        pvi_elev = vc.pvi_elev,
+                        g1 = vc.g1, g2 = vc.g2,
+                        length = vc.length)
                 ep.vertical_curves.append(new_vc)
 
             # 要素の始端・終端標高を更新
@@ -795,10 +836,11 @@ class VerticalAlignmentWindow(QMainWindow):
     """縦断線形設計ウィンドウ"""
 
     def __init__(self, scene: Scene, profiles: list,
-                 plan_elements: list, parent=None):
+                 plan_elements: list, rev_flags: list, parent=None):
         super().__init__(parent)
         self.scene    = scene
-        self.profiles = profiles   # list[ElementProfile]
+        self.profiles = profiles
+        self.rev_flags = rev_flags   # list[ElementProfile]
 
         # タイトルを要素の種別で分かりやすく表示
         if plan_elements:
@@ -821,7 +863,7 @@ class VerticalAlignmentWindow(QMainWindow):
         self.setCentralWidget(splitter)
 
         self._canvas = ProfileCanvas(scene, self)
-        self._canvas.set_plan_elements(plan_elements, profiles)
+        self._canvas.set_plan_elements(plan_elements, profiles, rev_flags)
         splitter.addWidget(self._canvas)
 
         # ─── 右パネル ─────────────────────────────────────────

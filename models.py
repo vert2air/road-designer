@@ -768,8 +768,9 @@ class ElementProfile:
     id:           int   = field(default_factory=new_id)
     element_id:   int   = -1    # 対応する Segment/Arc/Clothoid の id
     element_type: str   = ""    # 'segment' | 'arc' | 'clothoid'
-    plan_length:  float = 0.0   # この要素の平面長 [m]（相対距離の上限）
-    elev_start:   float = 0.0   # 始端標高 [m]（隣接要素と共有）
+    plan_length:  float = 0.0   # この要素の平面長 [m]
+    reversed_flag: bool = False  # True なら終点→始点の向きで使われている
+    elev_start:   float = 0.0   # 始端標高 [m]（正順の始点側）
     elev_end:     float = 0.0   # 終端標高 [m]（隣接要素と共有）
     grade_lines:  list  = field(default_factory=list)   # list[GradeLine] 相対距離
     vertical_curves: list = field(default_factory=list) # list[VerticalCurve]
@@ -780,6 +781,7 @@ class ElementProfile:
             "element_id":      self.element_id,
             "element_type":    self.element_type,
             "plan_length":     self.plan_length,
+            "reversed_flag":   self.reversed_flag,
             "elev_start":      self.elev_start,
             "elev_end":        self.elev_end,
             "grade_lines":     [g.to_dict() for g in self.grade_lines],
@@ -789,14 +791,15 @@ class ElementProfile:
     @staticmethod
     def from_dict(d: dict) -> 'ElementProfile':
         ep = ElementProfile()
-        ep.id           = d.get("id", new_id())
-        ep.element_id   = d.get("element_id", -1)
-        ep.element_type = d.get("element_type", "")
-        ep.plan_length  = d.get("plan_length", 0.0)
-        ep.elev_start   = d.get("elev_start", 0.0)
-        ep.elev_end     = d.get("elev_end", 0.0)
-        ep.grade_lines  = [GradeLine.from_dict(g)
-                           for g in d.get("grade_lines", [])]
+        ep.id            = d.get("id", new_id())
+        ep.element_id    = d.get("element_id", -1)
+        ep.element_type  = d.get("element_type", "")
+        ep.plan_length   = d.get("plan_length", 0.0)
+        ep.reversed_flag = d.get("reversed_flag", False)
+        ep.elev_start    = d.get("elev_start", 0.0)
+        ep.elev_end      = d.get("elev_end", 0.0)
+        ep.grade_lines   = [GradeLine.from_dict(g)
+                            for g in d.get("grade_lines", [])]
         ep.vertical_curves = [VerticalCurve.from_dict(v)
                               for v in d.get("vertical_curves", [])]
         return ep

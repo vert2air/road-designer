@@ -306,11 +306,118 @@ class MainWindow(QMainWindow):
     # ─── 縦断線形 ────────────────────────────────────────────
     def _open_vertical_window(self):
         from models import ElementProfile, plan_length_of
+        import math as _math
+
         # 選択中の平面線形要素を収集
-        elements = []
-        for obj in self._canvas._selected:
-            if isinstance(obj, (Segment, Arc, Clothoid)):
-                elements.append(obj)
+        raw_elements = [obj for obj in self._canvas._selected
+                        if isinstance(obj, (Segment, Arc, Clothoid))]
+        if not raw_elements:
+            return
+
+        # ── チェーンの順序と向きを解決 ──────────────────────────
+        # 各要素の端点（始点・終点のワールド座標）を取得
+        def endpoints(obj):
+            """(start_pt, end_pt) を Vec2 で返す"""
+            from models import Vec2, Segment, Arc, Clothoid
+            if isinstance(obj, Segment):
+                return obj.start, obj.end
+            if isinstance(obj, Arc):
+                return obj.start, obj.end
+            if isinstance(obj, Clothoid):
+                if obj.is_valid and obj._line_pt and obj._circle_pt:
+                    return obj._line_pt, obj._circle_pt
+            return None, None
+
+        def pt_dist(a, b):
+            if a is None or b is None:
+                return float('inf')
+            return _math.hypot(a.x - b.x, a.y - b.y)
+
+        def resolve_chain(elems):
+            """
+            要素リストから (順序付きリスト, reversed_flags) を返す。
+            共有端点（SNAP_TOL 以内）を検出してチェーンの順序と向きを決定する。
+            既存の ElementProfile に reversed_flag が保存されている場合はそれを優先する。
+            """
+            if len(elems) == 1:
+                ep = next((ep for ep in self.scene.element_profiles
+                           if ep.element_id == elems[0].id), None)
+                rev = ep.reversed_flag if ep else False
+                return list(elems), [rev]
+
+            pts      = {id(e): endpoints(e) for e in elems}
+            SNAP_TOL = 1.0
+
+            def connects_to_other(pt, exclude_elem):
+                for e in elems:
+                    if e is exclude_elem: continue
+                    s, ep_ = pts[id(e)]
+                    if pt_dist(pt, s) < SNAP_TOL or pt_dist(pt, ep_) < SNAP_TOL:
+                        return True
+                return False
+
+            # チェーンの真の末端要素を探す
+            # 「片方の端点が孤立している」要素が先頭候補
+            candidates = []
+            for cand in elems:
+                s, e = pts[id(cand)]
+                s_iso = s is not None and not connects_to_other(s, cand)
+                e_iso = e is not None and not connects_to_other(e, cand)
+                if s_iso and not e_iso:
+                    candidates.append((cand, False))   # 正順で先頭
+                elif e_iso and not s_iso:
+                    candidates.append((cand, True))    # 逆順で先頭
+
+            # 既存データがある場合、reversed_flag と一致する候補を優先
+            # 具体的には「最初の要素が rev=False（正順の先頭）」となる候補を優先
+            if candidates:
+                # ep.reversed_flag が False の要素を正順先頭として優先
+                best_first = None
+                for cand, cand_rev in candidates:
+                    ep_existing = next((ep for ep in self.scene.element_profiles
+                                        if ep.element_id == cand.id), None)
+                    saved_rev = ep_existing.reversed_flag if ep_existing else None
+                    if saved_rev is not None and saved_rev == cand_rev:
+                        best_first = (cand, cand_rev)
+                        break
+                if best_first is None:
+                    best_first = candidates[0]
+                first, first_rev = best_first
+            else:
+                first, first_rev = elems[0], False
+
+            # 貪欲にチェーンを構築
+            remaining = list(elems)
+            chain     = [first]
+            rev_flags = [first_rev]
+            remaining.remove(first)
+
+            while remaining:
+                last_elem = chain[-1]
+                last_rev  = rev_flags[-1]
+                ls, le    = pts[id(last_elem)]
+                cur_end   = le if not last_rev else ls
+
+                best = None; best_rev = False; best_d = float('inf')
+                for cand in remaining:
+                    cs, ce = pts[id(cand)]
+                    d_fwd = pt_dist(cur_end, cs)
+                    d_rev = pt_dist(cur_end, ce)
+                    if d_fwd < best_d:
+                        best_d = d_fwd; best = cand; best_rev = False
+                    if d_rev < best_d:
+                        best_d = d_rev; best = cand; best_rev = True
+
+                if best is None or best_d > SNAP_TOL * 10:
+                    best = remaining[0]; best_rev = False
+
+                chain.append(best)
+                rev_flags.append(best_rev)
+                remaining.remove(best)
+
+            return chain, rev_flags
+
+        elements, rev_flags = resolve_chain(raw_elements)
 
         # 各要素に対応する ElementProfile を取得または新規作成
         def get_or_create_ep(obj) -> ElementProfile:
@@ -322,34 +429,31 @@ class MainWindow(QMainWindow):
                 ep.element_type = (
                     'segment'  if isinstance(obj, Segment)  else
                     'arc'      if isinstance(obj, Arc)       else
-                    'clothoid'
-                )
+                    'clothoid')
                 self.scene.element_profiles.append(ep)
-            # 常に最新の平面長を更新する
-            ep.plan_length = plan_length_of(obj)
+            ep.plan_length  = plan_length_of(obj)
+            ep.reversed_flag = rev_flags[elements.index(obj)]
             return ep
 
-        profiles = [get_or_create_ep(obj) for obj in elements] if elements else []
+        profiles = [get_or_create_ep(obj) for obj in elements]
 
-        # 隣接する ElementProfile 間の接点標高を同期する
-        # 前の要素の elev_end == 次の要素の elev_start
+        # 隣接する ElementProfile 間の接点標高を同期
         for i in range(len(profiles) - 1):
             ep_cur  = profiles[i]
             ep_next = profiles[i + 1]
             if ep_cur.grade_lines:
-                # 前要素の終端勾配直線の終端標高を接点に使う
                 last_gl = max(ep_cur.grade_lines, key=lambda g: g.dist_end)
                 shared_elev = last_gl.elev_end
-                ep_cur.elev_end     = shared_elev
-                ep_next.elev_start  = shared_elev
+                ep_cur.elev_end    = shared_elev
+                ep_next.elev_start = shared_elev
             elif ep_next.grade_lines:
                 first_gl = min(ep_next.grade_lines, key=lambda g: g.dist_start)
                 shared_elev = first_gl.elev_start
-                ep_cur.elev_end     = shared_elev
-                ep_next.elev_start  = shared_elev
+                ep_cur.elev_end    = shared_elev
+                ep_next.elev_start = shared_elev
 
         self._vertical_window = VerticalAlignmentWindow(
-            self.scene, profiles, elements, parent=None)
+            self.scene, profiles, elements, rev_flags, parent=None)
         self._vertical_window.show()
 
     # ─── デモデータ ──────────────────────────────────────────

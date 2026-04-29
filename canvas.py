@@ -577,6 +577,7 @@ class Canvas(QWidget):
         if self._is_panning and self._pan_start_screen:
             dx = sw.x - self._pan_start_screen.x
             dy = sw.y - self._pan_start_screen.y
+            self._mouse_moved_px = math.hypot(dx, dy)  # パン中も移動量を記録
             self._offset = Vec2(self._pan_offset_start.x + dx,
                                 self._pan_offset_start.y + dy)
             self.update()
