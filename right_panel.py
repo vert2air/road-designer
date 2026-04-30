@@ -123,8 +123,14 @@ class RightPanel(QWidget):
         cb.currentIndexChanged.connect(self._on_combo_changed)
         self._refresh_nick_combos()
 
-    def _on_combo_changed(self):
+    def _on_combo_changed(self, idx: int):
         """いずれかのコンボが変更されたら、後続コンボの選択肢を再構築"""
+        # セパレータ（idx=-1 または itemData が None でテキストが空）を選んだ場合はスキップ
+        sender = self.sender()
+        if sender is not None and idx >= 0:
+            text = sender.itemText(idx)
+            if not text:   # セパレータはテキストが空
+                return
         self._refresh_nick_combos()
 
     def _remove_nick_combo(self):
@@ -153,17 +159,20 @@ class RightPanel(QWidget):
         """
         obj の端点に隣接する図形リストを返す。
         exclude_pt が指定された場合、その点と一致する端点は除外して隣接を探す。
+        戻り値: [(cand, is_forward), ...]
+          is_forward=True  → cand の始点側で接続（順方向）
+          is_forward=False → cand の終点側で接続（逆方向）
         """
         import math as _m
         my_pts = self._endpoints_of(obj)
         if exclude_pt is not None:
-            # exclude_pt と一致しない側の端点のみを使う
             my_pts = [p for p in my_pts
                       if _m.hypot(p.x - exclude_pt.x, p.y - exclude_pt.y) > self.SNAP_TOL]
         if not my_pts:
             return []
 
         result = []
+        seen = set()
         all_elems = []
         for ln in self.scene.lines:
             all_elems.extend(ln.segments)
@@ -175,18 +184,29 @@ class RightPanel(QWidget):
             if cand is obj:
                 continue
             cand_pts = self._endpoints_of(cand)
+            if len(cand_pts) < 2:
+                continue
+            cand_start = cand_pts[0]
+            cand_end   = cand_pts[-1]
             for mp in my_pts:
-                for cp in cand_pts:
-                    if _m.hypot(mp.x - cp.x, mp.y - cp.y) < self.SNAP_TOL:
-                        if cand not in result:
-                            result.append(cand)
-                        break
+                matched = False
+                if _m.hypot(mp.x - cand_start.x, mp.y - cand_start.y) < self.SNAP_TOL:
+                    if id(cand) not in seen:
+                        result.append((cand, True))   # 始点で接続 → 順方向
+                        seen.add(id(cand))
+                    matched = True
+                elif _m.hypot(mp.x - cand_end.x, mp.y - cand_end.y) < self.SNAP_TOL:
+                    if id(cand) not in seen:
+                        result.append((cand, False))  # 終点で接続 → 逆方向
+                        seen.add(id(cand))
+                    matched = True
+                if matched:
+                    break
         return result
 
     def _free_endpoint(self, obj, shared_pt) -> object:
         """
         obj の端点のうち shared_pt と一致しない方を返す。
-        （次のコンボ用の「前端点」として使う）
         """
         import math as _m
         for p in self._endpoints_of(obj):
@@ -205,73 +225,409 @@ class RightPanel(QWidget):
 
     def _all_items(self) -> list[str]:
         """全図形のコンボラベルリスト（タイプ別・名称順）"""
-        lines_items    = sorted([f"{self.scene.get_nickname(ln.id,'line')} [直線]"
+        lines_items    = sorted([f"{self.scene.get_nickname(ln.id,'line')} [直線#{ln.id}]"
                                   for ln in self.scene.lines])
-        seg_items      = sorted([f"線分#{seg.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分]"
+        seg_items      = sorted([f"線分#{seg.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分#{seg.id}]"
                                   for ln in self.scene.lines for seg in ln.segments])
-        circle_items   = sorted([f"{self.scene.get_nickname(ci.id,'circle')} [円]"
+        circle_items   = sorted([f"{self.scene.get_nickname(ci.id,'circle')} [円#{ci.id}]"
                                   for ci in self.scene.circles])
-        arc_items      = sorted([f"円弧#{arc.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧]"
+        arc_items      = sorted([f"円弧#{arc.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧#{arc.id}]"
                                   for ci in self.scene.circles for arc in ci.arcs])
-        clothoid_items = sorted([f"{self.scene.get_nickname(clo.id,'clothoid')} [クロソイド]"
+        clothoid_items = sorted([f"{self.scene.get_nickname(clo.id,'clothoid')} [クロソイド#{clo.id}]"
                                   for clo in self.scene.clothoids])
         return ["(なし)"] + lines_items + seg_items + circle_items + arc_items + clothoid_items
+
+    def _compute_next_forward(self, prev_obj, prev_is_fwd, next_obj) -> bool:
+        """
+        前の図形の出口接線と、次の図形の「共有点→近傍点」ベクトルの内積で判定。
+        内積 < 0 → 逆方向（スムーズに繋がる）= [順]
+        内積 > 0 → 同方向（逆走）= [逆]
+        """
+        import math as _m
+
+        prev_pts = self._endpoints_of(prev_obj)
+        next_pts = self._endpoints_of(next_obj)
+        if not prev_pts or not next_pts:
+            return True
+
+        # 前の図形の出口接線
+        exit_pt  = prev_pts[-1] if prev_is_fwd else prev_pts[0]
+        exit_tan = self._tangent_at(prev_obj, at_end=prev_is_fwd)
+        if not prev_is_fwd:
+            exit_tan = (-exit_tan[0], -exit_tan[1])
+
+        # 共有点 = 次の図形の始点側か終点側か
+        d_start = _m.hypot(exit_pt.x-next_pts[0].x,  exit_pt.y-next_pts[0].y)
+        d_end   = _m.hypot(exit_pt.x-next_pts[-1].x, exit_pt.y-next_pts[-1].y)
+        connect_at_start = d_start < d_end
+
+        # 次の図形の「共有点→近傍点」ベクトル
+        entry_tan = self._entry_tangent(next_obj, connect_at_start)
+        if entry_tan is None:
+            return True
+
+        dot = exit_tan[0]*entry_tan[0] + exit_tan[1]*entry_tan[1]
+        # exit_tan: 前の図形の進行方向（出口での接線）
+        # entry_tan: 次の図形の「共有点→近傍点」方向
+        # dot > 0 → 同方向（前の図形の向きと次の図形の向きが一致）= [順]
+        # dot < 0 → 逆方向（次の図形が逆向き）= [逆]
+        return dot >= 0
+
+    def _tangent_at(self, obj, at_end: bool) -> tuple:
+        """obj の始点(at_end=False)または終点(at_end=True)での進行方向接線ベクトル"""
+        import math as _m
+        if isinstance(obj, Segment):
+            dx = obj.end.x - obj.start.x
+            dy = obj.end.y - obj.start.y
+            ln = _m.hypot(dx, dy) or 1
+            return (dx/ln, dy/ln)
+        elif isinstance(obj, Arc):
+            ang = obj.angle_end if at_end else obj.angle_start
+            return (-_m.sin(ang), _m.cos(ang))
+        elif isinstance(obj, Clothoid):
+            raw = obj.points
+            if raw and len(raw) >= 2:
+                if at_end:
+                    dx = raw[-1].x - raw[-2].x
+                    dy = raw[-1].y - raw[-2].y
+                else:
+                    dx = raw[1].x - raw[0].x
+                    dy = raw[1].y - raw[0].y
+                ln = _m.hypot(dx, dy) or 1
+                return (dx/ln, dy/ln)
+        return (1, 0)
+
+    def _entry_tangent(self, obj, connect_at_start: bool) -> tuple:
+        """
+        次の図形の「共有点 → 近傍点」方向ベクトルを返す。
+        connect_at_start=True: 共有点が obj の始点
+        connect_at_start=False: 共有点が obj の終点
+        """
+        import math as _m
+        if isinstance(obj, Segment):
+            if connect_at_start:
+                dx = obj.end.x - obj.start.x
+                dy = obj.end.y - obj.start.y
+            else:
+                dx = obj.start.x - obj.end.x
+                dy = obj.start.y - obj.end.y
+            ln = _m.hypot(dx, dy) or 1
+            return (dx/ln, dy/ln)
+
+        elif isinstance(obj, Arc):
+            DELTA = _m.radians(0.1)
+            if connect_at_start:
+                ang0 = obj.angle_start
+                ang1 = obj.angle_start + DELTA   # 少し CCW 方向へ
+            else:
+                ang0 = obj.angle_end
+                ang1 = obj.angle_end - DELTA      # 少し CW 方向（終点から戻る方向）
+            R  = obj.circle.radius
+            cx = obj.circle.center.x
+            cy = obj.circle.center.y
+            x0 = cx + R * _m.cos(ang0); y0 = cy + R * _m.sin(ang0)
+            x1 = cx + R * _m.cos(ang1); y1 = cy + R * _m.sin(ang1)
+            dx = x1 - x0; dy = y1 - y0
+            ln = _m.hypot(dx, dy) or 1
+            return (dx/ln, dy/ln)
+
+        elif isinstance(obj, Clothoid):
+            raw = obj.points
+            if not raw or len(raw) < 2:
+                return None
+            if connect_at_start:
+                dx = raw[1].x - raw[0].x
+                dy = raw[1].y - raw[0].y
+            else:
+                dx = raw[-2].x - raw[-1].x
+                dy = raw[-2].y - raw[-1].y
+            ln = _m.hypot(dx, dy) or 1
+            return (dx/ln, dy/ln)
+
+        return None
+
+    def _next_is_forward(self, prev_obj, prev_is_fwd, next_obj) -> bool:
+        """
+        prev_obj → next_obj でチェーンを進むとき、next_obj の is_forward を返す。
+        共有点が next_obj の始点側 → is_forward=True（正順）
+        共有点が next_obj の終点側 → is_forward=False（逆順）
+        """
+        import math as _m
+        prev_pts = self._endpoints_of(prev_obj)
+        next_pts = self._endpoints_of(next_obj)
+        if not prev_pts or not next_pts:
+            return True
+        exit_pt = prev_pts[-1] if prev_is_fwd else prev_pts[0]
+        d_start = _m.hypot(exit_pt.x-next_pts[0].x,  exit_pt.y-next_pts[0].y)
+        d_end   = _m.hypot(exit_pt.x-next_pts[-1].x, exit_pt.y-next_pts[-1].y)
+        return d_start < d_end   # 始点で接続 → 正順(True)
 
     def _refresh_nick_combos(self):
         """
         コンボボックスの選択肢を更新する。
         1つ目: 全図形
-        2つ目: 1つ目の隣接図形を先頭、区切り線、全図形
-        3つ目以降: 1つ前の図形の「前の図形と共有しない側の端点」に隣接する図形を先頭
+        2つ目以降: 前の図形の出口端点に隣接する図形を先頭
+                   隣接が2個以上なら [順]/[逆] を付加
         """
+        import math as _m
         all_items = self._all_items()
 
-        # 現在の選択図形を取得
         selected_objs = []
         for cb in self._nick_combos:
             obj = self._find_by_nick_label(cb.currentText())
-            selected_objs.append(obj)  # None でも OK
+            selected_objs.append(obj)
+
+        # 各コンボの is_forward を追跡（チェーン方向の管理）
+        is_forward = [True] * len(self._nick_combos)
+        for i in range(1, len(selected_objs)):
+            prev = selected_objs[i - 1]
+            cur  = selected_objs[i]
+            if prev is None or cur is None:
+                break
+            is_forward[i] = self._next_is_forward(prev, is_forward[i-1], cur)
 
         for i, cb in enumerate(self._nick_combos):
-            cur = cb.currentText()
+            cur_text = cb.currentText()
             cb.blockSignals(True)
             cb.clear()
 
             if i == 0:
-                # 1つ目: 全図形
                 cb.addItems(all_items)
-
             else:
-                # 2つ目以降: 隣接図形を先頭に
                 prev_obj = selected_objs[i - 1]
-
                 if prev_obj is None or not self._endpoints_of(prev_obj):
-                    # 前の選択がない / 端点のない図形 → 全図形のみ
                     cb.addItems(all_items)
                 else:
-                    # 「前の図形と共有しない側の端点」を計算
-                    exclude_pt = None
-                    if i >= 2 and selected_objs[i - 2] is not None:
-                        exclude_pt = self._shared_pt(selected_objs[i - 2], prev_obj)
+                    if i == 1:
+                        # 2つ目: 1つ目の両端点に隣接する図形すべて
+                        adj = self._adjacent_from_obj(prev_obj, excludes=selected_objs)
+                        show_dir = len(adj) >= 2
+                    else:
+                        # 3つ目以降: 前の図形の出口端点のみ
+                        prev_pts = self._endpoints_of(prev_obj)
+                        exit_pt  = prev_pts[-1] if is_forward[i-1] else prev_pts[0]
+                        adj = self._adjacent_from_pt(exit_pt, excludes=selected_objs,
+                                                      prev_obj=prev_obj)
+                        show_dir = len(adj) >= 2
 
-                    adj = self._adjacent_elements(prev_obj, exclude_pt=exclude_pt)
-                    adj_labels = [self._label_for_obj(a) for a in adj
-                                  if self._label_for_obj(a)]
-
-                    # 先頭: (なし) + 隣接図形
                     cb.addItem("(なし)")
-                    for lbl in adj_labels:
-                        cb.addItem(lbl)
-                    if adj_labels:
+                    for cand, _ in adj:
+                        base_label = self._label_for_obj(cand)
+                        if not base_label:
+                            continue
+                        if show_dir:
+                            if i == 1:
+                                # 2つ目: cand が prev_obj のどちらの端点側に接続しているかで
+                                # prev_is_fwd を決める
+                                # 終点側に接続 → prev を正順(True)で通過してきた
+                                # 始点側に接続 → prev を逆順(False)で通過してきた
+                                prev_exit_fwd = self._prev_is_fwd_for_adj(prev_obj, cand)
+                                cand_fwd = self._compute_next_forward(
+                                    prev_obj, prev_exit_fwd, cand)
+                            else:
+                                cand_fwd = self._compute_next_forward(
+                                    prev_obj, is_forward[i-1], cand)
+                            prefix = "[順] " if cand_fwd else "[逆] "
+                            cb.addItem(prefix + base_label)
+                        else:
+                            cb.addItem(base_label)
+
+                    if adj:
                         cb.insertSeparator(cb.count())
-                    # 区切り線以降: 全図形（隣接も含む）
                     for item in all_items:
                         cb.addItem(item)
 
             # 現在の選択を復元
-            idx = cb.findText(cur)
-            cb.setCurrentIndex(idx if idx >= 0 else 0)
+            # cur_text から base（プレフィックスなし）を取得
+            base = cur_text
+            for prefix in ("[順] ", "[逆] "):
+                if base.startswith(prefix):
+                    base = base[len(prefix):]
+                    break
+
+            # 検索優先順: そのまま → "[順] base" → "[逆] base" → base
+            found = -1
+            for search in [cur_text,
+                           "[順] " + base,
+                           "[逆] " + base,
+                           base]:
+                found = cb.findText(search)
+                if found >= 0:
+                    break
+            cb.setCurrentIndex(found if found >= 0 else 0)
             cb.blockSignals(False)
+
+    def _prev_is_fwd_for_adj(self, prev_obj, cand) -> bool:
+        """
+        prev_obj の隣接図形 cand に繋がるとき、prev_obj をどちら向きで通過してきたかを返す。
+        - cand が prev_obj の終点側に接続 → prev_obj を正順(True)で通過してきた
+        - cand が prev_obj の始点側に接続 → prev_obj を逆順(False)で通過してきた
+        """
+        import math as _m
+        prev_pts = self._endpoints_of(prev_obj)
+        cand_pts = self._endpoints_of(cand)
+        if not prev_pts or not cand_pts:
+            return True
+
+        end_pt   = prev_pts[-1]   # prev_obj の終点
+        start_pt = prev_pts[0]    # prev_obj の始点
+
+        # cand の端点が prev_obj の終点に近い → 正順
+        for cp in cand_pts:
+            if _m.hypot(cp.x - end_pt.x, cp.y - end_pt.y) < self.SNAP_TOL:
+                return True
+
+        # cand の端点が prev_obj の始点に近い → 逆順
+        for cp in cand_pts:
+            if _m.hypot(cp.x - start_pt.x, cp.y - start_pt.y) < self.SNAP_TOL:
+                return False
+
+        # Clothoid の line_pt/circle_pt が prev_obj に接続している場合も考慮
+        if isinstance(prev_obj, Clothoid) and prev_obj.is_valid:
+            if prev_obj._circle_pt:
+                for cp in cand_pts:
+                    if _m.hypot(cp.x - prev_obj._circle_pt.x,
+                                 cp.y - prev_obj._circle_pt.y) < self.SNAP_TOL:
+                        return True   # circle_pt 側 = 終点 = 正順で通過
+
+        # prev_obj が Arc で cand が Clothoid の場合
+        if isinstance(cand, Clothoid) and cand.is_valid and isinstance(prev_obj, Arc):
+            if cand._circle_pt:
+                if _m.hypot(cand._circle_pt.x - end_pt.x,
+                             cand._circle_pt.y - end_pt.y) < self.SNAP_TOL:
+                    return True
+                if _m.hypot(cand._circle_pt.x - start_pt.x,
+                             cand._circle_pt.y - start_pt.y) < self.SNAP_TOL:
+                    return False
+
+        return True  # デフォルト
+
+    def _adjacent_from_obj(self, obj, excludes=None) -> list:
+        """
+        obj の全端点に隣接する図形をすべて返す（2つ目のコンボ用）。
+        - 同じ直線上で端点を共有する線分
+        - 同じ円上で端点を共有する円弧
+        - obj が接点であるクロソイド
+        - 交点を共有する他の直線の線分
+        戻り値: [(cand, is_forward), ...] (重複なし)
+        """
+        import math as _m
+        exclude_set = set(id(e) for e in excludes if e is not None) if excludes else set()
+        result = []
+        seen = set()
+
+        def add(cand, fwd):
+            if id(cand) not in exclude_set and id(cand) not in seen:
+                result.append((cand, fwd))
+                seen.add(id(cand))
+
+        pts = self._endpoints_of(obj)
+
+        # 各端点から隣接を探す
+        for pt in pts:
+            adj = self._adjacent_from_pt(pt, excludes=excludes, prev_obj=obj)
+            for cand, fwd in adj:
+                add(cand, fwd)
+
+        # obj が Clothoid の場合、接点に接する線分・円弧を追加で探す
+        if isinstance(obj, Clothoid) and obj.is_valid:
+            if obj._line_pt:
+                adj2 = self._adjacent_from_pt(obj._line_pt, excludes=excludes, prev_obj=obj)
+                for cand, fwd in adj2:
+                    add(cand, fwd)
+            if obj._circle_pt:
+                adj3 = self._adjacent_from_pt(obj._circle_pt, excludes=excludes, prev_obj=obj)
+                for cand, fwd in adj3:
+                    add(cand, fwd)
+
+        # obj が Arc の場合、両端の接点に接するクロソイドも探す
+        if isinstance(obj, Arc):
+            for clo in self.scene.clothoids:
+                if id(clo) in exclude_set or id(clo) in seen:
+                    continue
+                if not clo.is_valid:
+                    continue
+                clo_pts = self._endpoints_of(clo)
+                for pt in pts:
+                    for cp in clo_pts:
+                        if _m.hypot(pt.x - cp.x, pt.y - cp.y) < self.SNAP_TOL:
+                            fwd = (cp is clo_pts[0])  # line_pt側=True, circle_pt側=False
+                            add(clo, fwd)
+
+        # obj が Segment の場合、同じ直線の線分 + クロソイドの接点も探す
+        if isinstance(obj, Segment):
+            for clo in self.scene.clothoids:
+                if id(clo) in exclude_set or id(clo) in seen:
+                    continue
+                if not clo.is_valid or clo.line is not obj.line:
+                    continue
+                if clo._line_pt is None:
+                    continue
+                t = obj.line.project_t(clo._line_pt)
+                if obj.t_start - 1e-6 <= t <= obj.t_end + 1e-6:
+                    add(clo, True)  # line_pt 側で接続
+
+        return result
+
+    def _adjacent_from_pt(self, pt, excludes=None, prev_obj=None) -> list:
+        """
+        指定座標 pt に隣接する図形を返す。
+        prev_obj がクロソイドで pt が _line_pt の場合、
+        その点を含む線分（端点でなくても）も候補に含める。
+        excludes: 除外するオブジェクトのリスト（選択済み全図形）
+        戻り値: [(cand, is_forward), ...]
+        """
+        import math as _m
+        exclude_set = set(id(e) for e in excludes if e is not None) if excludes else set()
+        result = []
+        seen = set()
+        all_elems = []
+        for ln in self.scene.lines:
+            all_elems.extend(ln.segments)
+        for ci in self.scene.circles:
+            all_elems.extend(ci.arcs)
+        all_elems.extend(self.scene.clothoids)
+
+        for cand in all_elems:
+            if id(cand) in exclude_set:
+                continue
+            cand_pts = self._endpoints_of(cand)
+            if len(cand_pts) < 2:
+                continue
+            d_start = _m.hypot(pt.x - cand_pts[0].x, pt.y - cand_pts[0].y)
+            d_end   = _m.hypot(pt.x - cand_pts[-1].x, pt.y - cand_pts[-1].y)
+            if d_start < self.SNAP_TOL:
+                if id(cand) not in seen:
+                    result.append((cand, True))
+                    seen.add(id(cand))
+            elif d_end < self.SNAP_TOL:
+                if id(cand) not in seen:
+                    result.append((cand, False))
+                    seen.add(id(cand))
+
+        # クロソイドの _line_pt は線分の内部点の場合がある
+        # clo.line と同じ直線上の線分のみを対象に「線分上にあるか」で判定
+        if (prev_obj is not None and isinstance(prev_obj, Clothoid)
+                and prev_obj._line_pt is not None
+                and _m.hypot(pt.x - prev_obj._line_pt.x,
+                              pt.y - prev_obj._line_pt.y) < self.SNAP_TOL):
+            clo_line = prev_obj.line
+            t = clo_line.project_t(prev_obj._line_pt)
+            for seg in clo_line.segments:       # ← clo.line の線分のみ
+                if id(seg) in exclude_set or id(seg) in seen:
+                    continue
+                if seg.t_start - 1e-6 <= t <= seg.t_end + 1e-6:
+                    if abs(t - seg.t_start) < 1e-4:
+                        result.append((seg, True))
+                        seen.add(id(seg))
+                    elif abs(t - seg.t_end) < 1e-4:
+                        result.append((seg, False))
+                        seen.add(id(seg))
+                    else:
+                        result.append((seg, False))
+                        result.append((seg, True))
+                        seen.add(id(seg))
+        return result
 
     def _apply_nick_select(self):
         selected = []
@@ -283,20 +639,25 @@ class RightPanel(QWidget):
         self.request_select.emit(selected)
 
     def _find_by_nick_label(self, label: str) -> Optional[object]:
+        # [順]/[逆] プレフィックスを除去
+        for prefix in ("[順] ", "[逆] "):
+            if label.startswith(prefix):
+                label = label[len(prefix):]
+                break
         for ln in self.scene.lines:
-            if f"{self.scene.get_nickname(ln.id, 'line')} [直線]" == label:
+            if f"{self.scene.get_nickname(ln.id, 'line')} [直線#{ln.id}]" == label:
                 return ln
             for seg in ln.segments:
-                if f"線分#{seg.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分]" == label:
+                if f"線分#{seg.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分#{seg.id}]" == label:
                     return seg
         for ci in self.scene.circles:
-            if f"{self.scene.get_nickname(ci.id, 'circle')} [円]" == label:
+            if f"{self.scene.get_nickname(ci.id, 'circle')} [円#{ci.id}]" == label:
                 return ci
             for arc in ci.arcs:
-                if f"円弧#{arc.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧]" == label:
+                if f"円弧#{arc.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧#{arc.id}]" == label:
                     return arc
         for clo in self.scene.clothoids:
-            if f"{self.scene.get_nickname(clo.id, 'clothoid')} [クロソイド]" == label:
+            if f"{self.scene.get_nickname(clo.id, 'clothoid')} [クロソイド#{clo.id}]" == label:
                 return clo
         return None
 
@@ -310,40 +671,48 @@ class RightPanel(QWidget):
 
     def _sync_combos_to_selection(self, selected: list):
         """設計画面での選択をコンボボックスに反映する"""
-        # 選択図形のラベルを生成
         labels = []
         for obj in selected:
             label = self._label_for_obj(obj)
             if label:
                 labels.append(label)
 
-        # コンボ数が足りなければ追加
         while len(self._nick_combos) < len(labels):
             self._add_nick_combo()
 
-        # 先頭から順に設定、余りは(なし)に
         for i, cb in enumerate(self._nick_combos):
             if i < len(labels):
-                idx = cb.findText(labels[i])
+                label = labels[i]
+                # プレフィックスなし → あり の順で検索
+                idx = cb.findText(label)
+                if idx < 0:
+                    for prefix in ("[順] ", "[逆] "):
+                        idx = cb.findText(prefix + label)
+                        if idx >= 0:
+                            break
                 if idx >= 0:
+                    cb.blockSignals(True)
                     cb.setCurrentIndex(idx)
+                    cb.blockSignals(False)
             else:
-                cb.setCurrentIndex(0)  # "(なし)"
+                cb.blockSignals(True)
+                cb.setCurrentIndex(0)
+                cb.blockSignals(False)
 
     def _label_for_obj(self, obj) -> str:
         """図形オブジェクトからコンボラベル文字列を生成する"""
         if isinstance(obj, Line):
-            return f"{self.scene.get_nickname(obj.id, 'line')} [直線]"
+            return f"{self.scene.get_nickname(obj.id, 'line')} [直線#{obj.id}]"
         if isinstance(obj, Segment):
             ln = obj.line
-            return f"線分#{obj.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分]"
+            return f"線分#{obj.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分#{obj.id}]"
         if isinstance(obj, Circle):
-            return f"{self.scene.get_nickname(obj.id, 'circle')} [円]"
+            return f"{self.scene.get_nickname(obj.id, 'circle')} [円#{obj.id}]"
         if isinstance(obj, Arc):
             ci = obj.circle
-            return f"円弧#{obj.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧]"
+            return f"円弧#{obj.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧#{obj.id}]"
         if isinstance(obj, Clothoid):
-            return f"{self.scene.get_nickname(obj.id, 'clothoid')} [クロソイド]"
+            return f"{self.scene.get_nickname(obj.id, 'clothoid')} [クロソイド#{obj.id}]"
         return ""
 
     def _clear_props(self):
