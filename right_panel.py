@@ -116,8 +116,15 @@ class RightPanel(QWidget):
     # ─── ニックネームコンボ ──────────────────────────────────
     def _add_nick_combo(self):
         cb = QComboBox()
+        cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self._nick_combos.append(cb)
         self._nick_combo_area.addWidget(cb)
+        # 選択変更時に後続コンボの選択肢を更新
+        cb.currentIndexChanged.connect(self._on_combo_changed)
+        self._refresh_nick_combos()
+
+    def _on_combo_changed(self):
+        """いずれかのコンボが変更されたら、後続コンボの選択肢を再構築"""
         self._refresh_nick_combos()
 
     def _remove_nick_combo(self):
@@ -126,33 +133,145 @@ class RightPanel(QWidget):
             self._nick_combo_area.removeWidget(cb)
             cb.deleteLater()
 
+    # ─── 隣接図形の計算 ──────────────────────────────────────
+    SNAP_TOL = 1.0   # m
+
+    def _endpoints_of(self, obj) -> list:
+        """図形の端点座標リストを返す（Segment/Arc/Clothoid のみ）"""
+        from models import Vec2
+        import math as _m
+        if isinstance(obj, Segment):
+            return [obj.start, obj.end]
+        if isinstance(obj, Arc):
+            return [obj.start, obj.end]
+        if isinstance(obj, Clothoid):
+            if obj.is_valid and obj._line_pt and obj._circle_pt:
+                return [obj._line_pt, obj._circle_pt]
+        return []
+
+    def _adjacent_elements(self, obj, exclude_pt=None) -> list:
+        """
+        obj の端点に隣接する図形リストを返す。
+        exclude_pt が指定された場合、その点と一致する端点は除外して隣接を探す。
+        """
+        import math as _m
+        my_pts = self._endpoints_of(obj)
+        if exclude_pt is not None:
+            # exclude_pt と一致しない側の端点のみを使う
+            my_pts = [p for p in my_pts
+                      if _m.hypot(p.x - exclude_pt.x, p.y - exclude_pt.y) > self.SNAP_TOL]
+        if not my_pts:
+            return []
+
+        result = []
+        all_elems = []
+        for ln in self.scene.lines:
+            all_elems.extend(ln.segments)
+        for ci in self.scene.circles:
+            all_elems.extend(ci.arcs)
+        all_elems.extend(self.scene.clothoids)
+
+        for cand in all_elems:
+            if cand is obj:
+                continue
+            cand_pts = self._endpoints_of(cand)
+            for mp in my_pts:
+                for cp in cand_pts:
+                    if _m.hypot(mp.x - cp.x, mp.y - cp.y) < self.SNAP_TOL:
+                        if cand not in result:
+                            result.append(cand)
+                        break
+        return result
+
+    def _free_endpoint(self, obj, shared_pt) -> object:
+        """
+        obj の端点のうち shared_pt と一致しない方を返す。
+        （次のコンボ用の「前端点」として使う）
+        """
+        import math as _m
+        for p in self._endpoints_of(obj):
+            if _m.hypot(p.x - shared_pt.x, p.y - shared_pt.y) > self.SNAP_TOL:
+                return p
+        return None
+
+    def _shared_pt(self, obj_a, obj_b) -> object:
+        """obj_a と obj_b の共有端点を返す（なければ None）"""
+        import math as _m
+        for pa in self._endpoints_of(obj_a):
+            for pb in self._endpoints_of(obj_b):
+                if _m.hypot(pa.x - pb.x, pa.y - pb.y) < self.SNAP_TOL:
+                    return pa
+        return None
+
+    def _all_items(self) -> list[str]:
+        """全図形のコンボラベルリスト（タイプ別・名称順）"""
+        lines_items    = sorted([f"{self.scene.get_nickname(ln.id,'line')} [直線]"
+                                  for ln in self.scene.lines])
+        seg_items      = sorted([f"線分#{seg.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分]"
+                                  for ln in self.scene.lines for seg in ln.segments])
+        circle_items   = sorted([f"{self.scene.get_nickname(ci.id,'circle')} [円]"
+                                  for ci in self.scene.circles])
+        arc_items      = sorted([f"円弧#{arc.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧]"
+                                  for ci in self.scene.circles for arc in ci.arcs])
+        clothoid_items = sorted([f"{self.scene.get_nickname(clo.id,'clothoid')} [クロソイド]"
+                                  for clo in self.scene.clothoids])
+        return ["(なし)"] + lines_items + seg_items + circle_items + arc_items + clothoid_items
+
     def _refresh_nick_combos(self):
-        """全コンボボックスの選択肢をタイプ別・名称順で更新"""
-        # タイプ別にラベルを収集
-        lines_items     = sorted(
-            [f"{self.scene.get_nickname(ln.id,'line')} [直線]"
-             for ln in self.scene.lines])
-        seg_items       = sorted(
-            [f"線分#{seg.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分]"
-             for ln in self.scene.lines for seg in ln.segments])
-        circle_items    = sorted(
-            [f"{self.scene.get_nickname(ci.id,'circle')} [円]"
-             for ci in self.scene.circles])
-        arc_items       = sorted(
-            [f"円弧#{arc.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧]"
-             for ci in self.scene.circles for arc in ci.arcs])
-        clothoid_items  = sorted(
-            [f"{self.scene.get_nickname(clo.id,'clothoid')} [クロソイド]"
-             for clo in self.scene.clothoids])
+        """
+        コンボボックスの選択肢を更新する。
+        1つ目: 全図形
+        2つ目: 1つ目の隣接図形を先頭、区切り線、全図形
+        3つ目以降: 1つ前の図形の「前の図形と共有しない側の端点」に隣接する図形を先頭
+        """
+        all_items = self._all_items()
 
-        items = ["(なし)"] + lines_items + seg_items + circle_items + arc_items + clothoid_items
-
+        # 現在の選択図形を取得
+        selected_objs = []
         for cb in self._nick_combos:
+            obj = self._find_by_nick_label(cb.currentText())
+            selected_objs.append(obj)  # None でも OK
+
+        for i, cb in enumerate(self._nick_combos):
             cur = cb.currentText()
+            cb.blockSignals(True)
             cb.clear()
-            cb.addItems(items)
+
+            if i == 0:
+                # 1つ目: 全図形
+                cb.addItems(all_items)
+
+            else:
+                # 2つ目以降: 隣接図形を先頭に
+                prev_obj = selected_objs[i - 1]
+
+                if prev_obj is None or not self._endpoints_of(prev_obj):
+                    # 前の選択がない / 端点のない図形 → 全図形のみ
+                    cb.addItems(all_items)
+                else:
+                    # 「前の図形と共有しない側の端点」を計算
+                    exclude_pt = None
+                    if i >= 2 and selected_objs[i - 2] is not None:
+                        exclude_pt = self._shared_pt(selected_objs[i - 2], prev_obj)
+
+                    adj = self._adjacent_elements(prev_obj, exclude_pt=exclude_pt)
+                    adj_labels = [self._label_for_obj(a) for a in adj
+                                  if self._label_for_obj(a)]
+
+                    # 先頭: (なし) + 隣接図形
+                    cb.addItem("(なし)")
+                    for lbl in adj_labels:
+                        cb.addItem(lbl)
+                    if adj_labels:
+                        cb.insertSeparator(cb.count())
+                    # 区切り線以降: 全図形（隣接も含む）
+                    for item in all_items:
+                        cb.addItem(item)
+
+            # 現在の選択を復元
             idx = cb.findText(cur)
             cb.setCurrentIndex(idx if idx >= 0 else 0)
+            cb.blockSignals(False)
 
     def _apply_nick_select(self):
         selected = []
