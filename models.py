@@ -1031,24 +1031,47 @@ class Scene:
         circles_by_id = {}
 
         def _extract_nick(raw: dict, sc: 'Scene'):
-            """raw dict から nickname を取り出して nicknames に登録する"""
             nick = raw.get("nickname")
             fid  = raw.get("id")
             if nick and fid is not None:
                 sc.nicknames[fid] = nick
 
+        # ID衝突を検出して振り直すヘルパー
+        seen_ids: set[int] = set()
+
+        def _resolve_id(raw: dict) -> int:
+            """rawの 'id' を取得し、衝突があれば新IDを割り当てる"""
+            fid = raw.get("id")
+            if fid is None:
+                fid = new_id()
+                raw["id"] = fid
+            elif fid in seen_ids:
+                fid = new_id()
+                raw["id"] = fid
+            seen_ids.add(fid)
+            return fid
+
         for ld in d.get("lines", []):
             _extract_nick(ld, sc)
+            _resolve_id(ld)
+            for sd in ld.get("segments", []):
+                _resolve_id(sd)
             ln = Line.from_dict(ld)
             sc.lines.append(ln)
             lines_by_id[ln.id] = ln
+
         for cd in d.get("circles", []):
             _extract_nick(cd, sc)
+            _resolve_id(cd)
+            for ad in cd.get("arcs", []):
+                _resolve_id(ad)
             ci = Circle.from_dict(cd)
             sc.circles.append(ci)
             circles_by_id[ci.id] = ci
+
         for cd in d.get("clothoids", []):
             _extract_nick(cd, sc)
+            _resolve_id(cd)
             ln = lines_by_id.get(cd["line_id"])
             ci = circles_by_id.get(cd["circle_id"])
             if ln and ci:
@@ -1057,38 +1080,30 @@ class Scene:
                                cd.get("snap_arc", False),
                                cd.get("id"))
                 sc.clothoids.append(clo)
+
         sc.element_profiles    = [ElementProfile.from_dict(ep)
                                    for ep in d.get("element_profiles", [])]
         sc.vertical_alignments = [
             VerticalAlignment.from_dict(va)
             for va in d.get("vertical_alignments", [])
         ]
-        # 旧フォーマット互換: トップレベルの grade_lines / vertical_curves を
-        # デフォルトの VerticalAlignment に変換して取り込む
         old_gls = d.get("grade_lines", [])
         old_vcs = d.get("vertical_curves", [])
         if old_gls or old_vcs:
             va = VerticalAlignment()
-            va.nickname       = "default"
-            va.grade_lines    = [GradeLine.from_dict(g) for g in old_gls]
+            va.nickname        = "default"
+            va.grade_lines     = [GradeLine.from_dict(g) for g in old_gls]
             va.vertical_curves = [VerticalCurve.from_dict(v) for v in old_vcs]
             sc.vertical_alignments.append(va)
-        sc.segment_snaps   = [SegmentSnap.from_dict(s) for s in d.get("segment_snaps", [])]
-        sc.arc_snaps       = [ArcSnap.from_dict(a)     for a in d.get("arc_snaps", [])]
 
-        # 旧フォーマット互換: トップレベルの nicknames フィールド
+        sc.segment_snaps = [SegmentSnap.from_dict(s) for s in d.get("segment_snaps", [])]
+        sc.arc_snaps     = [ArcSnap.from_dict(a)     for a in d.get("arc_snaps", [])]
+
         for k, v in d.get("nicknames", {}).items():
             sc.nicknames[int(k)] = v
 
-        # 全IDを収集してカウンタを最大ID+1から再開（ID重複防止）
-        all_ids = []
-        for ln in sc.lines:
-            all_ids.append(ln.id)
-            all_ids.extend(s.id for s in ln.segments)
-        for ci in sc.circles:
-            all_ids.append(ci.id)
-            all_ids.extend(a.id for a in ci.arcs)
-        all_ids.extend(c.id for c in sc.clothoids)
+        # IDカウンタをリセット
+        all_ids = list(seen_ids)
         all_ids.extend(ep.id for ep in sc.element_profiles)
         for ep in sc.element_profiles:
             all_ids.extend(g.id for g in ep.grade_lines)
