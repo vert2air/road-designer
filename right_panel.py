@@ -48,6 +48,7 @@ class RightPanel(QWidget):
     request_delete_clothoid = pyqtSignal(object)
     request_flip_clothoid   = pyqtSignal(object)
     request_select          = pyqtSignal(list)
+    request_delete          = pyqtSignal(list)   # 削除要求
     scene_changed           = pyqtSignal()
 
     def __init__(self, scene: Scene, parent=None):
@@ -88,9 +89,12 @@ class RightPanel(QWidget):
         btn_rem.clicked.connect(self._remove_nick_combo)
         btn_apply = QPushButton("選択を適用")
         btn_apply.clicked.connect(self._apply_nick_select)
+        btn_del = QPushButton("図形を削除")
+        btn_del.clicked.connect(self._delete_selected_objs)
         btn_row.addWidget(btn_add)
         btn_row.addWidget(btn_rem)
         btn_row.addWidget(btn_apply)
+        btn_row.addWidget(btn_del)
         nick_layout.addLayout(btn_row)
         root_layout.addWidget(nick_group)
 
@@ -124,13 +128,20 @@ class RightPanel(QWidget):
         self._refresh_nick_combos()
 
     def _on_combo_changed(self, idx: int):
-        """いずれかのコンボが変更されたら、後続コンボの選択肢を再構築"""
-        # セパレータ（idx=-1 または itemData が None でテキストが空）を選んだ場合はスキップ
+        """いずれかのコンボが変更されたら後続コンボの選択肢を再構築"""
         sender = self.sender()
         if sender is not None and idx >= 0:
             text = sender.itemText(idx)
-            if not text:   # セパレータはテキストが空
+            if not text:  # セパレータはスキップ
                 return
+        # 最後のコンボに何かが選択されたら1個追加する
+        if sender is not None and self._nick_combos:
+            last_cb = self._nick_combos[-1]
+            if sender is last_cb:
+                obj = self._find_by_nick_label(last_cb.currentText())
+                if obj is not None:
+                    self._add_nick_combo()
+                    return  # _add_nick_combo 内で _refresh_nick_combos が呼ばれる
         self._refresh_nick_combos()
 
     def _remove_nick_combo(self):
@@ -628,6 +639,25 @@ class RightPanel(QWidget):
                         result.append((seg, True))
                         seen.add(id(seg))
         return result
+
+    def _delete_selected_objs(self):
+        """コンボボックスで選択中の図形を削除する"""
+        from PyQt6.QtWidgets import QMessageBox
+        objs = []
+        for cb in self._nick_combos:
+            obj = self._find_by_nick_label(cb.currentText())
+            if obj is not None and obj not in objs:
+                objs.append(obj)
+        if not objs:
+            return
+        names = ", ".join(self._label_for_obj(o) or str(o) for o in objs)
+        reply = QMessageBox.question(
+            self, "図形を削除",
+            f"以下の図形を削除しますか？\n{names}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.request_delete.emit(objs)
 
     def _apply_nick_select(self):
         selected = []

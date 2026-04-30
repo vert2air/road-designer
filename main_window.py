@@ -183,6 +183,7 @@ class MainWindow(QMainWindow):
         rp.request_delete_clothoid.connect(self._do_delete_clothoid)
         rp.request_flip_clothoid.connect(self._do_flip_clothoid)
         rp.request_select.connect(self._canvas.set_selection)
+        rp.request_delete.connect(self._do_delete_objects)
         rp.scene_changed.connect(self._on_scene_changed)
 
     # ─── イベントハンドラ ─────────────────────────────────────
@@ -301,6 +302,49 @@ class MainWindow(QMainWindow):
         self._canvas.scene_changed.emit()
         self._canvas.update()
         self._right_panel.update_selection(self._canvas._selected, self.scene)
+
+    def _do_delete_objects(self, objs: list):
+        """右パネルの「図形を削除」ボタンから呼ばれる。選択された図形を削除する"""
+        from models import Segment, Arc, Clothoid, Line, Circle
+        if not objs:
+            return
+        self._canvas.push_undo()
+        for obj in objs:
+            if isinstance(obj, Clothoid):
+                self.scene.remove_clothoid(obj)
+            elif isinstance(obj, Segment):
+                # 線分を Line から削除。Line が空になれば Line ごと削除
+                ln = obj.line
+                if obj in ln.segments:
+                    ln.segments.remove(obj)
+                if not ln.segments:
+                    self.scene.remove_line(ln)
+                else:
+                    # 関連クロソイドを再計算
+                    for clo in self.scene.clothoids:
+                        if clo.line is ln:
+                            clo.compute()
+            elif isinstance(obj, Arc):
+                # 円弧を Circle から削除。Circle が空になれば Circle ごと削除
+                ci = obj.circle
+                if obj in ci.arcs:
+                    ci.arcs.remove(obj)
+                if not ci.arcs:
+                    self.scene.remove_circle(ci)
+                else:
+                    for clo in self.scene.clothoids:
+                        if clo.circle is ci:
+                            clo.compute()
+            elif isinstance(obj, Line):
+                self.scene.remove_line(obj)
+            elif isinstance(obj, Circle):
+                self.scene.remove_circle(obj)
+        # 削除した図形が選択中だったら選択解除
+        remaining = [o for o in self._canvas._selected if o not in objs]
+        self._canvas._selected = remaining
+        self._canvas.scene_changed.emit()
+        self._canvas.update()
+        self._right_panel.update_selection(remaining, self.scene)
 
     def _do_flip_clothoid(self, clo):
         self._canvas.push_undo()
