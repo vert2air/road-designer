@@ -163,7 +163,8 @@ def build_centerline(elements: list, profiles: list[ElementProfile],
 
 def build_road_mesh(centerline: list[tuple],
                     half_width: float = 4.0,
-                    color_override: LColor = None) -> GeomNode:
+                    color_override: LColor = None,
+                    z_offset: float = 0.02) -> GeomNode:
     """中心線から道路帯状メッシュを生成して GeomNode を返す"""
     fmt  = GeomVertexFormat.get_v3n3c4()
     vdata = GeomVertexData("road", fmt, Geom.UH_static)
@@ -196,7 +197,7 @@ def build_road_mesh(centerline: list[tuple],
         for side in (-1, 1):
             px = x + side * half_width * nx_v
             py = y + side * half_width * ny_v
-            vw.add_data3(px, py, z)
+            vw.add_data3(px, py, z + z_offset)  # 地面より z_offset だけ上
             nw.add_data3(0, 0, 1)
             cw.add_data4(road_color)
 
@@ -204,6 +205,9 @@ def build_road_mesh(centerline: list[tuple],
         bl = i*2; br = i*2+1; tl = (i+1)*2; tr = (i+1)*2+1
         tris.add_vertices(bl, tl, tr)
         tris.add_vertices(bl, tr, br)
+        # 裏面も追加（カリングなしで両面表示）
+        tris.add_vertices(bl, tr, tl)
+        tris.add_vertices(bl, br, tr)
 
     geom = Geom(vdata)
     geom.add_primitive(tris)
@@ -233,6 +237,178 @@ def build_center_line_node(centerline: list[tuple],
     geom.add_primitive(ls)
     node = GeomNode("centerline")
     node.add_geom(geom)
+    return node
+
+
+def build_piers(centerline: list[tuple], half_width: float,
+                interval: float = 30.0) -> GeomNode:
+    """
+    道路中心線に沿って約 interval m おきに橋脚を生成する。
+    橋脚は道路幅の外側（左右）に配置する。
+    橋脚: 地面(z=0) から道路面まで伸びる角柱。
+    """
+    import math as _m
+    fmt   = GeomVertexFormat.get_v3n3c4()
+    vdata = GeomVertexData("piers", fmt, Geom.UH_static)
+    vw    = GeomVertexWriter(vdata, "vertex")
+    nw    = GeomVertexWriter(vdata, "normal")
+    cw    = GeomVertexWriter(vdata, "color")
+    tris  = GeomTriangles(Geom.UH_static)
+
+    col   = LColor(0.75, 0.75, 0.78, 1)  # 明るいグレー（コンクリート色）
+    PW    = 0.4   # 橋脚の幅（m）
+    OUTER = half_width + 0.5   # 道路端からさらに外側に出す距離
+
+    n     = len(centerline)
+    if n < 2:
+        return GeomNode("piers")
+
+    next_dist = 0.0  # 次の橋脚を打つ目標距離
+
+    def add_quad(pts, normal):
+        """4頂点の四角形を2三角形で追加"""
+        base = vdata.get_num_rows()
+        for p in pts:
+            vw.add_data3(*p)
+            nw.add_data3(*normal)
+            cw.add_data4(col)
+        tris.add_vertices(base, base+1, base+2)
+        tris.add_vertices(base, base+2, base+3)
+
+    def add_pier(cx, cy, z_top, nx_v, ny_v):
+        """1本の橋脚（直方体）を追加"""
+        if z_top <= 0.05:
+            return  # 地面と同じ高さなら不要
+        # 道路外側オフセット方向
+        for side in (-1, 1):
+            ox = cx + side * OUTER * nx_v
+            oy = cy + side * OUTER * ny_v
+            # 橋脚の4隅（横断方向に PW、縦断方向に PW）
+            tx_v, ty_v = -ny_v, nx_v  # 縦断方向（接線）
+            hw = PW / 2
+            # 底面4点
+            b = [(ox + dx*nx_v*hw + dy*tx_v*hw, oy + dx*ny_v*hw + dy*ty_v*hw, 0.0)
+                 for dx, dy in [(-1,-1),( 1,-1),( 1, 1),(-1, 1)]]
+            # 上面4点
+            t = [(x, y, z_top) for x, y, _ in b]
+
+            # 上面
+            add_quad(t, (0, 0, 1))
+            # 4側面
+            sides = [(0,1),(1,2),(2,3),(3,0)]
+            normals = [(-ty_v, tx_v, 0), (nx_v, ny_v, 0),
+                       ( ty_v,-tx_v, 0), (-nx_v,-ny_v, 0)]
+            for (a, bb_), nm in zip(sides, normals):
+                add_quad([b[a], b[bb_], t[bb_], t[a]], nm)
+
+    for i in range(n):
+        x, y, z, dist = centerline[i]
+        if dist < next_dist - 0.001:
+            continue
+
+        # 接線方向
+        if i == 0:
+            tx = centerline[1][0]-x; ty = centerline[1][1]-y
+        elif i == n-1:
+            tx = x-centerline[n-2][0]; ty = y-centerline[n-2][1]
+        else:
+            tx = centerline[i+1][0]-centerline[i-1][0]
+            ty = centerline[i+1][1]-centerline[i-1][1]
+        ln = _m.hypot(tx, ty)
+        if ln < 1e-9:
+            tx, ty = 1, 0
+        else:
+            tx /= ln; ty /= ln
+        nx_v, ny_v = ty, -tx  # 法線（右向き）
+
+        add_pier(x, y, z, nx_v, ny_v)
+        next_dist = dist + interval
+
+    geom = Geom(vdata)
+    geom.add_primitive(tris)
+    node = GeomNode("piers")
+    node.add_geom(geom)
+    return node
+
+
+def build_road_markings(centerline: list[tuple],
+                        half_width: float) -> GeomNode:
+    """
+    道路の路面標示を生成する。
+    - 左右の白線（路肩ライン）
+    """
+    from panda3d.core import GeomLinestrips
+    import math as _m
+
+    fmt   = GeomVertexFormat.get_v3c4()
+    vdata = GeomVertexData("markings", fmt, Geom.UH_static)
+    vw    = GeomVertexWriter(vdata, "vertex")
+    cw    = GeomVertexWriter(vdata, "color")
+
+    n = len(centerline)
+    if n < 2:
+        return GeomNode("markings")
+
+    white = LColor(1, 1, 1, 1)
+    EDGE_Z = 0.08  # 路面より少し上に描く
+
+    # 左右それぞれの白線
+    for side in (-1, 1):
+        ls = GeomLinestrips(Geom.UH_static)
+        base = vdata.get_num_rows()
+        for i, (x, y, z, _) in enumerate(centerline):
+            if i == 0:
+                tx = centerline[1][0]-x; ty = centerline[1][1]-y
+            elif i == n-1:
+                tx = x-centerline[n-2][0]; ty = y-centerline[n-2][1]
+            else:
+                tx = centerline[i+1][0]-centerline[i-1][0]
+                ty = centerline[i+1][1]-centerline[i-1][1]
+            ln = _m.hypot(tx, ty)
+            if ln < 1e-9: tx, ty = 1, 0
+            else: tx /= ln; ty /= ln
+            nx_v, ny_v = ty, -tx
+            px = x + side * half_width * nx_v
+            py = y + side * half_width * ny_v
+            vw.add_data3(px, py, z + EDGE_Z)
+            cw.add_data4(white)
+            ls.add_vertex(base + i)
+        ls.close_primitive()
+        geom_ls = Geom(vdata)
+        geom_ls.add_primitive(ls)
+
+    geom_final = Geom(vdata)
+    # 左右の linestrip を両方追加するために node に複数 geom を追加
+    node = GeomNode("markings")
+
+    # 左右を別々に追加
+    for side_idx, side in enumerate((-1, 1)):
+        vdata2 = GeomVertexData(f"marking_{side_idx}", fmt, Geom.UH_static)
+        vw2    = GeomVertexWriter(vdata2, "vertex")
+        cw2    = GeomVertexWriter(vdata2, "color")
+        ls2    = GeomLinestrips(Geom.UH_static)
+        for i, (x, y, z, _) in enumerate(centerline):
+            if i == 0:
+                tx = centerline[1][0]-x; ty = centerline[1][1]-y
+            elif i == n-1:
+                tx = x-centerline[n-2][0]; ty = y-centerline[n-2][1]
+            else:
+                tx = centerline[i+1][0]-centerline[i-1][0]
+                ty = centerline[i+1][1]-centerline[i-1][1]
+            ln = _m.hypot(tx, ty)
+            if ln < 1e-9: tx, ty = 1, 0
+            else: tx /= ln; ty /= ln
+            nx_v, ny_v = ty, -tx
+            px = x + side * half_width * nx_v
+            py = y + side * half_width * ny_v
+            vw2.add_data3(px, py, z + EDGE_Z)
+            cw2.add_data4(white)
+            ls2.add_vertex(i)
+        ls2.close_primitive()
+        g2 = Geom(vdata2)
+        g2.add_primitive(ls2)
+        node.add_geom(g2)
+
     return node
 
 
@@ -290,25 +466,44 @@ class RoadViewer(ShowBase):
         self.disableMouse()
 
     # ─── シーン構築 ──────────────────────────────────────────
+    HALF_WIDTH   = 1.75   # 道路半幅 [m]（全幅3.5mの半分）
+    ROAD_SURFACE = True   # 路面表示の初期状態
+
     def _build_scene(self):
+        self._surface_nodes = []   # 路面メッシュノードのリスト（on/off用）
+
         # 全要素の背景道路メッシュ（要素ごとに独立して生成）
         for seg_cl in self.disp_segs:
             if len(seg_cl) < 2:
                 continue
-            bg_node = build_road_mesh(seg_cl, half_width=4.0,
-                                      color_override=LColor(0.3, 0.3, 0.3, 1))
-            self.render.attachNewNode(bg_node)
+            bg_node = build_road_mesh(seg_cl, half_width=self.HALF_WIDTH,
+                                      color_override=LColor(0.28, 0.28, 0.28, 1))
+            np = self.render.attachNewNode(bg_node)
+            np.set_light_off()
+            np.set_two_sided(True)   # 両面描画
+            self._surface_nodes.append(np)
             bg_cl = build_center_line_node(seg_cl,
-                                           color_override=LColor(0.55, 0.55, 0.55, 1))
+                                           color_override=LColor(0.5, 0.5, 0.5, 1))
             self.render.attachNewNode(bg_cl)
+            self.render.attachNewNode(build_road_markings(seg_cl, self.HALF_WIDTH))
+            self.render.attachNewNode(build_piers(seg_cl, self.HALF_WIDTH))
 
-        # 走行チェーンの道路メッシュ（明るく強調）
-        road_node = build_road_mesh(self.cl, half_width=4.0)
-        self.render.attachNewNode(road_node)
-        cl_node = build_center_line_node(self.cl)
-        self.render.attachNewNode(cl_node)
+        # 走行チェーンの道路メッシュ
+        road_np = self.render.attachNewNode(
+            build_road_mesh(self.cl, half_width=self.HALF_WIDTH,
+                            color_override=LColor(0.38, 0.38, 0.38, 1)))
+        road_np.set_light_off()
+        road_np.set_two_sided(True)   # 両面描画
+        self._surface_nodes.append(road_np)
+        self.render.attachNewNode(
+            build_center_line_node(self.cl, color_override=LColor(1.0, 0.9, 0.1, 1)))
+        self.render.attachNewNode(build_road_markings(self.cl, self.HALF_WIDTH))
+        self.render.attachNewNode(build_piers(self.cl, self.HALF_WIDTH))
 
-        # 地面（全表示要素の重心を中心に）
+        # 初期状態を反映
+        self._apply_surface_visible(self.ROAD_SURFACE)
+
+        # 地面
         all_pts = []
         for seg in self.disp_segs:
             all_pts.extend(seg)
@@ -318,8 +513,7 @@ class RoadViewer(ShowBase):
         xs = [p[0] for p in all_pts]
         ys = [p[1] for p in all_pts]
         cx, cy = sum(xs)/len(xs), sum(ys)/len(ys)
-        gnd = build_ground(cx, cy)
-        self.render.attachNewNode(gnd)
+        self.render.attachNewNode(build_ground(cx, cy))
 
         # 車ダミー
         self.car_np = self.render.attachNewNode("car")
@@ -328,6 +522,17 @@ class RoadViewer(ShowBase):
         body = self.car_np.attachNewNode(cm.generate())
         body.set_p(-90)
         self._update_car_pose(0.0)
+
+    def _apply_surface_visible(self, visible: bool):
+        for np in self._surface_nodes:
+            if visible:
+                np.show()
+            else:
+                np.hide()
+
+    def _toggle_surface(self):
+        self.ROAD_SURFACE = not self.ROAD_SURFACE
+        self._apply_surface_visible(self.ROAD_SURFACE)
 
     def _setup_lighting(self):
         alight = AmbientLight("ambient")
@@ -347,9 +552,10 @@ class RoadViewer(ShowBase):
             align=TextNode.ALeft, mayChange=True)
 
     def _setup_keys(self):
-        self.accept("escape",  sys.exit)
-        self.accept("v",       self._toggle_view)
-        self.accept("space",   self._toggle_pause)
+        self.accept("escape",      sys.exit)
+        self.accept("v",           self._toggle_view)
+        self.accept("r",           self._toggle_surface)
+        self.accept("space",       self._toggle_pause)
         self.accept("arrow_up",    lambda: self._change_speed(+10))
         self.accept("arrow_down",  lambda: self._change_speed(-10))
         self.accept("arrow_left",  self._rewind)
@@ -395,13 +601,14 @@ class RoadViewer(ShowBase):
             self.camera.look_at(look)
 
     def _update_hud(self):
-        mode_str = "Follow" if self.view_mode == "follow" else "Onboard"
-        pause_str = "[PAUSED]\n" if self.paused else ""
+        mode_str    = "Follow" if self.view_mode == "follow" else "Onboard"
+        pause_str   = "[PAUSED]\n" if self.paused else ""
+        surface_str = "ON" if self.ROAD_SURFACE else "OFF"
         self.hud.setText(
             f"{pause_str}"
             f"Dist: {self.dist:.0f} / {self._total:.0f} m\n"
             f"Speed: {self.speed:.0f} m/s ({self.speed*3.6:.0f} km/h)\n"
-            f"View: {mode_str} [V]\n"
+            f"View: {mode_str} [V]  Surface: {surface_str} [R]\n"
             f"Up/Down:Speed  Left/Right:Jump  Space:Pause  Esc:Quit")
 
     # ─── 補間 ────────────────────────────────────────────────
@@ -467,14 +674,20 @@ def launch_viewer(scene: Scene,
 
     # all_display 用の中心線（走行なし・背景表示のみ）
     # 各要素を独立した点列として管理する（繋げない）
-    display_segs = []   # list of list[tuple] — 要素ごとの独立点列
+    display_segs = []
     if all_display:
         for obj in all_display:
-            ep_dummy = ElementProfile()
-            ep_dummy.plan_length = plan_length_of(obj)
-            if ep_dummy.plan_length < 0.001:
+            # 実際の ElementProfile を使う（なければダミー）
+            ep = next((e for e in scene.element_profiles
+                       if e.element_id == obj.id), None)
+            if ep is None:
+                ep = ElementProfile()
+                ep.plan_length = plan_length_of(obj)
+            else:
+                ep.plan_length = plan_length_of(obj)  # 常に最新値で更新
+            if ep.plan_length < 0.001:
                 continue
-            cl = build_centerline([obj], [ep_dummy], [False], n_per_m=0.5)
+            cl = build_centerline([obj], [ep], [False], n_per_m=0.5)
             if cl:
                 display_segs.append(cl)
 
