@@ -36,20 +36,39 @@ from models import (
 #   3D 中心線の生成
 # ══════════════════════════════════════════════════════════════
 
-def _elev_at_dist(dist: float, profiles: list[ElementProfile],
-                  offsets: list[float]) -> float:
-    """チェーン累積距離 dist に対する標高を ElementProfile から補間して返す"""
+def _ep_elev(ep: 'ElementProfile', rel: float) -> float:
+    """EP 内の相対距離 rel での高さを返す（縦断曲線優先）"""
+    rel = max(0.0, min(rel, ep.plan_length))
+    for vc in ep.vertical_curves:
+        if vc.vpc_dist - 0.001 <= rel <= vc.vpt_dist + 0.001:
+            e = vc.elevation_at(rel)
+            if not math.isnan(e):
+                return e
+    for gl in sorted(ep.grade_lines, key=lambda g: g.dist_start):
+        if gl.dist_start - 0.001 <= rel <= gl.dist_end + 0.001:
+            t = ((rel - gl.dist_start) / (gl.dist_end - gl.dist_start)
+                 if abs(gl.dist_end - gl.dist_start) > 1e-9 else 0)
+            return gl.elev_start + (gl.elev_end - gl.elev_start) * t
+    return 0.0
+
+
+def _elev_at_dist(dist: float, profiles: list,
+                  offsets: list) -> float:
+    """
+    チェーン累積距離 dist に対する標高を返す。
+    縦断曲線（VPC〜VPT）の範囲では縦断曲線の値を優先し、
+    それ以外は勾配直線から補間する。
+    """
+    n = len(profiles)
     for i, (ep, off) in enumerate(zip(profiles, offsets)):
-        d_start = off
-        d_end   = off + ep.plan_length
-        if dist < d_end + 0.001:
-            rel = dist - d_start
-            for gl in sorted(ep.grade_lines, key=lambda g: g.dist_start):
-                if gl.dist_start - 0.001 <= rel <= gl.dist_end + 0.001:
-                    t = ((rel - gl.dist_start) / (gl.dist_end - gl.dist_start)
-                         if abs(gl.dist_end - gl.dist_start) > 1e-9 else 0)
-                    return gl.elev_start + (gl.elev_end - gl.elev_start) * t
-            return 0.0
+        d_end = off + ep.plan_length
+        is_last = (i == n - 1)
+        if dist >= d_end - 1e-9 and not is_last:
+            continue
+        if dist > d_end + 1e-9:
+            continue
+        rel = max(0.0, min(dist - off, ep.plan_length))
+        return _ep_elev(ep, rel)
     return 0.0
 
 
@@ -127,8 +146,12 @@ def build_centerline(elements: list, profiles: list[ElementProfile],
 
         for i, (wx, wy) in enumerate(pts_2d):
             dist = offset + L * i / n
-            z = _elev_at_dist(dist, profiles, offsets)
-            # 設計座標 (x右, y上) → Panda3D (x右, y奥, z上)
+            # 各要素の先頭点（i=0）は前の要素の末端と座標が重複する
+            # 前の要素の末端高さをそのまま継承して段差を防ぐ
+            if i == 0 and points:
+                z = points[-1][2]
+            else:
+                z = _ep_elev(ep, dist - offset if not rev else L - (dist - offset))
             points.append((wx, wy, z, dist))
 
     return points

@@ -156,6 +156,8 @@ class ProfileCanvas(QWidget):
                 self._vertical_curves.append(merged_vc)
 
         self._grade_lines.sort(key=lambda g: g.dist_start)
+        # 統合後に隣接要素間の境界標高を揃える
+        self._snap_grade_lines('both')
         self.update()
 
     def save_to_profiles(self):
@@ -215,10 +217,28 @@ class ProfileCanvas(QWidget):
                         length = vc.length)
                 ep.vertical_curves.append(new_vc)
 
-            # 要素の始端・終端標高を更新
+            # 要素の始端・終端標高を更新（縦断曲線があればそちらを優先）
             if ep.grade_lines:
-                ep.elev_start = ep.grade_lines[0].elev_start
-                ep.elev_end   = ep.grade_lines[-1].elev_end
+                # 始端標高: dist=0 に縦断曲線があれば縦断曲線から取得
+                elev_s = ep.grade_lines[0].elev_start
+                for vc in ep.vertical_curves:
+                    if vc.vpc_dist <= 0.001 <= vc.vpt_dist:
+                        e = vc.elevation_at(0.0)
+                        if not math.isnan(e):
+                            elev_s = e
+                        break
+                ep.elev_start = elev_s
+
+                # 終端標高: dist=plan_length に縦断曲線があれば縦断曲線から取得
+                elev_e = ep.grade_lines[-1].elev_end
+                L = ep.plan_length
+                for vc in ep.vertical_curves:
+                    if vc.vpc_dist <= L - 0.001 <= vc.vpt_dist:
+                        e = vc.elevation_at(L)
+                        if not math.isnan(e):
+                            elev_e = e
+                        break
+                ep.elev_end = elev_e
 
     @staticmethod
     def _elev_at(dist: float, gl: GradeLine) -> float:
