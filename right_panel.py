@@ -80,7 +80,8 @@ class RightPanel(QWidget):
         self._nick_combo_area = QVBoxLayout()
         nick_layout.addLayout(self._nick_combo_area)
 
-        btn_row = QHBoxLayout()
+        # 1行目: +, -, 選択を適用, 図形を削除
+        btn_row1 = QHBoxLayout()
         btn_add = QPushButton("+")
         btn_add.setFixedWidth(30)
         btn_add.clicked.connect(self._add_nick_combo)
@@ -91,11 +92,18 @@ class RightPanel(QWidget):
         btn_apply.clicked.connect(self._apply_nick_select)
         btn_del = QPushButton("図形を削除")
         btn_del.clicked.connect(self._delete_selected_objs)
-        btn_row.addWidget(btn_add)
-        btn_row.addWidget(btn_rem)
-        btn_row.addWidget(btn_apply)
-        btn_row.addWidget(btn_del)
-        nick_layout.addLayout(btn_row)
+        btn_row1.addWidget(btn_add)
+        btn_row1.addWidget(btn_rem)
+        btn_row1.addWidget(btn_apply)
+        btn_row1.addWidget(btn_del)
+        nick_layout.addLayout(btn_row1)
+
+        # 2行目: 再描画
+        btn_row2 = QHBoxLayout()
+        btn_redraw = QPushButton("再描画（全クロソイド再計算）")
+        btn_redraw.clicked.connect(self._redraw)
+        btn_row2.addWidget(btn_redraw)
+        nick_layout.addLayout(btn_row2)
         root_layout.addWidget(nick_group)
 
         # 初期コンボ x2
@@ -639,6 +647,12 @@ class RightPanel(QWidget):
                         result.append((seg, True))
                         seen.add(id(seg))
         return result
+
+    def _redraw(self):
+        """シーンを再計算して再描画する"""
+        for clo in self.scene.clothoids:
+            clo.compute()
+        self.scene_changed.emit()
 
     def _delete_selected_objs(self):
         """コンボボックスで選択中の図形を削除する"""
