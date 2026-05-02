@@ -28,7 +28,7 @@ from direct.gui.OnscreenText import OnscreenText
 sys.path.insert(0, ".")
 from models import (
     Scene, Segment, Arc, Clothoid, GradeLine, ElementProfile,
-    plan_length_of,
+    plan_length_of, resolve_chain, tangent_at, entry_tangent, SNAP_TOL
 )
 
 
