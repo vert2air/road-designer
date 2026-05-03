@@ -1,5 +1,12 @@
-"""
-縦断線形設計ウィンドウ
+"""縦断線形設計ウィンドウ。
+
+ProfileCanvas と VerticalAlignmentWindow の 2 クラスで構成される。
+
+設計方針「編集は全体、保存は要素単位」:
+- `set_plan_elements()`: 各 ElementProfile の grade_lines を累積距離に変換して
+  チェーン全体の _grade_lines に統合し、要素境界を意識せず横断的に編集できる。
+- `save_to_profiles()`: 閉じる際にチェーン全体の _grade_lines を各要素の距離範囲
+  に切り出して ElementProfile に書き戻す。
 """
 from __future__ import annotations
 import math
@@ -18,6 +25,19 @@ from models import (Vec2, GradeLine, VerticalCurve, VerticalAlignment,
 
 def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
                   step: float = 1.0, decimals: int = 3) -> QDoubleSpinBox:
+    """設定済みの QDoubleSpinBox を生成して返すファクトリ関数。
+
+    Parameters
+    ----------
+    val : float
+        初期値。
+    lo, hi : float, optional
+        最小・最大値。
+    step : float, optional
+        単一ステップ量。
+    decimals : int, optional
+        小数点以下桁数。
+    """
     sb = QDoubleSpinBox()
     sb.setRange(lo, hi)
     sb.setSingleStep(step)
@@ -27,6 +47,7 @@ def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
 
 
 def _separator() -> QFrame:
+    """右パネル内の水平区切り線（HLine）を返す。"""
     line = QFrame()
     line.setFrameShape(QFrame.Shape.HLine)
     line.setFrameShadow(QFrame.Shadow.Sunken)
@@ -40,7 +61,28 @@ CB_ARC      = QColor(120,  40, 180)
 
 
 class ProfileCanvas(QWidget):
-    """縦断線形キャンバス"""
+    """縦断線形設計ウィンドウの中核キャンバス。
+
+    「編集は全体、保存は要素単位」の設計方針に基づき、チェーン全体の
+    grade_lines を累積距離で統合した状態を _grade_lines で保持して編集する。
+    ウィンドウを閉じるときに save_to_profiles() が各 ElementProfile に切り出す。
+
+    Signals
+    -------
+    selection_changed(object)
+        選択した GradeLine/VerticalCurve/None が変わったときに emit する。
+    mouse_world_pos(float, float)
+        マウスカーソルの縦断座標（累積距離, 標高）を emit する。
+
+    Class Attributes
+    ----------------
+    HANDLE_R : int = 6
+        ハンドルの描画半径 [px]。
+    HIT_TOL : int = 8
+        図形ヒット判定の許容距離 [px]。
+    CB_H : int = 26
+        カラーバーの高さ [px]。
+    """
     selection_changed     = pyqtSignal(object)
     mouse_world_pos       = pyqtSignal(float, float)
 
@@ -85,9 +127,20 @@ class ProfileCanvas(QWidget):
     # ─── 公開メソッド ─────────────────────────────────────────
     def set_plan_elements(self, elements: list, profiles: list,
                           rev_flags: list = None):
-        """
-        平面線形要素チェーンと対応する ElementProfile リストを設定する。
-        rev_flags[i] が True の要素は逆順（終点→始点）として扱う。
+        """平面線形要素チェーンと対応する ElementProfile を設定してキャンバスを初期化する。
+
+        各 ElementProfile の grade_lines を累積距離に変換してチェーン全体の
+        _grade_lines に統合する。rev_flags[i]=True の要素は dist/elev を反転して
+        統合する。統合後に `_snap_grade_lines('both')` で境界標高を揃える。
+
+        Parameters
+        ----------
+        elements : list[Segment | Arc | Clothoid]
+            チェーン順に並んだ平面線形要素。
+        profiles : list[ElementProfile]
+            各要素に対応する縦断データ（elements と同じ順序・長さ）。
+        rev_flags : list[bool], optional
+            各要素を逆順で使うかどうかのフラグ。None のとき全要素 False。
         各 profile の grade_lines を累積距離に変換してチェーン全体の
         _grade_lines / _vertical_curves に統合する。
         """
@@ -161,10 +214,12 @@ class ProfileCanvas(QWidget):
         self.update()
 
     def save_to_profiles(self):
-        """
-        チェーン全体の _grade_lines / _vertical_curves を
-        各 ElementProfile の範囲に切り出して保存する。
-        rev=True の要素は逆順に戻して保存する。
+        """チェーン全体の _grade_lines/_vertical_curves を各 ElementProfile に書き戻す。
+
+        VerticalAlignmentWindow.closeEvent から呼ばれる。
+        各要素の距離範囲 [offset, offset+L] で GradeLine/VerticalCurve を
+        クリップし、rev=True の要素は dist/elev を逆順変換して保存する。
+        保存後に ep.elev_at(0.0) / ep.elev_at(L) で始終端標高を更新する。
         """
         rev_flags = getattr(self, '_rev_flags', [False] * len(self._profiles))
         for ep, offset, rev in zip(self._profiles, self._elem_offsets, rev_flags):
@@ -224,22 +279,74 @@ class ProfileCanvas(QWidget):
 
     @staticmethod
     def _elev_at(dist: float, gl: GradeLine) -> float:
+        """GradeLine 1 本上の線形補間標高を返す（内部ヘルパー）。
+
+        set_plan_elements と save_to_profiles でのクリップ後の標高補間に使う。
+        dist が gl の範囲外でも計算を行う（呼び出し元が範囲チェック済み）。
+
+        Parameters
+        ----------
+        dist : float
+            標高を求める累積距離 [m]。
+        gl : GradeLine
+            対象の勾配直線。
+
+        Returns
+        -------
+        float
+            線形補間した標高 [m]。dist_end == dist_start のとき elev_start を返す。
+        """
         if abs(gl.dist_end - gl.dist_start) < 1e-9:
             return gl.elev_start
         t = (dist - gl.dist_start) / (gl.dist_end - gl.dist_start)
         return gl.elev_start + (gl.elev_end - gl.elev_start) * t
 
     def set_mode(self, mode: str):
+        """描画モードを変更し、入力途中の状態をリセットする。
+
+        Parameters
+        ----------
+        mode : str
+            "select" または "grade"。
+        """
         self._mode = mode
         self._grade_first = None
 
     # ─── 座標変換 ─────────────────────────────────────────────
     def w2s(self, dist: float, elev: float) -> QPointF:
+        """縦断座標（累積距離, 標高）→ スクリーン座標（QPointF）に変換する。
+
+        y 軸が反転する（標高上向き正 → スクリーン下向き正）。
+
+        Parameters
+        ----------
+        dist : float
+            チェーン始端からの累積距離 [m]。
+        elev : float
+            標高 [m]。
+
+        Returns
+        -------
+        QPointF
+            スクリーン座標。
+        """
         x =  dist * self._scale_x + self._offset.x
         y = -elev * self._scale_y + self._offset.y
         return QPointF(x, y)
 
     def s2w(self, sx: float, sy: float) -> tuple[float, float]:
+        """スクリーン座標 → 縦断座標（累積距離, 標高）に変換する（w2s の逆変換）。
+
+        Parameters
+        ----------
+        sx, sy : float
+            スクリーン座標（ピクセル）。
+
+        Returns
+        -------
+        tuple[float, float]
+            (累積距離 [m], 標高 [m])。
+        """
         dist = (sx - self._offset.x) / self._scale_x
         elev = -(sy - self._offset.y) / self._scale_y
         return dist, elev
@@ -259,24 +366,68 @@ class ProfileCanvas(QWidget):
         self.update()
 
     def _grade_lines_sorted(self) -> list:
+        """_grade_lines を dist_start の昇順でソートした新しいリストを返す。
+
+        Returns
+        -------
+        list[GradeLine]
+            dist_start の昇順に並んだ GradeLine のリスト。
+        """
         return sorted(self._grade_lines, key=lambda g: g.dist_start)
 
     def _vc_for_pvi(self, dist: float) -> Optional['VerticalCurve']:
-        """指定 dist を PVI とする縦断曲線を返す"""
+        """指定 dist を PVI とする縦断曲線を返す。
+
+        `_build_grade_props` で PVI に縦断曲線が既にあるかどうかの確認に使う。
+
+        Parameters
+        ----------
+        dist : float
+            PVI の累積距離 [m]。
+
+        Returns
+        -------
+        VerticalCurve or None
+            |vc.pvi_dist - dist| < 0.01 を満たす最初の縦断曲線。なければ None。
+        """
         for vc in self._vertical_curves:
             if abs(vc.pvi_dist - dist) < 0.01:
                 return vc
         return None
 
     def _vc_at(self, dist: float) -> Optional['VerticalCurve']:
-        """指定 dist が VPC〜VPT に含まれる縦断曲線を返す"""
+        """指定 dist が VPC〜VPT 範囲内に含まれる縦断曲線を返す。
+
+        Parameters
+        ----------
+        dist : float
+            確認する累積距離 [m]。
+
+        Returns
+        -------
+        VerticalCurve or None
+            vpc_dist-0.001 ≤ dist ≤ vpt_dist+0.001 を満たす最初の縦断曲線。
+        """
         for vc in self._vertical_curves:
             if vc.vpc_dist - 0.001 <= dist <= vc.vpt_dist + 0.001:
                 return vc
         return None
 
     def _elevation_at(self, dist: float) -> Optional[float]:
-        """dist での標高を返す（縦断曲線 > 勾配直線 の優先度）"""
+        """累積距離 dist での標高を返す（縦断曲線優先）。
+
+        描画（_draw_profile）とスナップ点の標高取得に使う。
+
+        Parameters
+        ----------
+        dist : float
+            累積距離 [m]。
+
+        Returns
+        -------
+        float or None
+            標高 [m]。縦断曲線→勾配直線の順で検索し、どちらも該当しなければ None。
+        """
         # まず縦断曲線
         for vc in self._vertical_curves:
             if vc.vpc_dist - 0.001 <= dist <= vc.vpt_dist + 0.001:
@@ -291,11 +442,18 @@ class ProfileCanvas(QWidget):
 
     # ─── ハンドル列挙 ─────────────────────────────────────────
     def _snap_grade_lines(self, changed_end: str = 'both'):
-        """
-        隣接する勾配直線の端点を強制的に一致させる。
-        changed_end='end'   → 前→後方向に伝播（終点を変更した場合）
-        changed_end='start' → 後→前方向に伝播（始点を変更した場合）
-        changed_end='both'  → 両方向に伝播（追加・ドラッグ後のリセット）
+        """隣接する GradeLine の端点を強制一致させて隙間ゼロを保証する。
+
+        勾配直線の追加・ドラッグ・数値入力のいずれの後も呼ばれる。
+        set_plan_elements の末尾でも 'both' で呼ばれ、チェーン統合後の
+        境界標高不整合を自動修正する。
+
+        Parameters
+        ----------
+        changed_end : str, optional
+            'end'  : 前→後方向に伝播。変更した終端値を次の GradeLine の始端へ。
+            'start': 後→前方向に伝播。
+            'both' : 両方向（デフォルト）。_grade_lines が空のとき何もしない。
         """
         gls = self._grade_lines_sorted()
         if not gls:
@@ -318,10 +476,15 @@ class ProfileCanvas(QWidget):
                 g_prev.elev_end = g_cur.elev_start
 
     def _get_handles(self) -> list[dict]:
-        """
-        勾配直線の各端点にハンドルを生成する。
-        隣接する直線が接続されている（dist が一致または 0.01m 以内）場合は
-        共有ハンドルを1つだけ生成し、両方の直線を partners に含める。
+        """GradeLine の全端点からハンドル辞書のリストを生成する。
+
+        隣接する GradeLine の境界点（dist が 0.01m 以内）は共有ハンドルに統合する。
+
+        Returns
+        -------
+        list[dict]
+            各ハンドルは {'dist': float, 'elev': float, 'partners': list[(GradeLine, str)]}。
+            'partners' は [(GradeLine, 'start'|'end'), ...] のリスト。
         """
         gls  = self._grade_lines_sorted()
         seen: dict[int, dict] = {}   # key=round(dist*100) → ハンドル
@@ -361,6 +524,20 @@ class ProfileCanvas(QWidget):
         return handles
 
     def _hit_handle(self, sx: float, sy: float) -> Optional[dict]:
+        """スクリーン座標 (sx, sy) に HANDLE_R+2 px 以内のハンドルを返す。
+
+        選択モード以外は常に None を返す。
+
+        Parameters
+        ----------
+        sx, sy : float
+            スクリーン座標（ピクセル）。
+
+        Returns
+        -------
+        dict or None
+            ヒットしたハンドル辞書。ヒットなし、または選択モード以外は None。
+        """
         if self._mode != "select":
             return None
         for h in self._get_handles():
@@ -411,7 +588,11 @@ class ProfileCanvas(QWidget):
             d += gx
 
     def _draw_colorbar(self, painter: QPainter):
-        """平面線形カラーバーを上端に描画。各要素の範囲を色分けして表示。"""
+        """平面線形カラーバーをキャンバス上端に描画する。
+
+        各要素の累積距離範囲を Segment=青・Clothoid=緑・Arc=紫で色分けし、
+        ニックネームと平面長をラベル表示する。要素境界に縦の破線を描く。
+        """
         if not self._plan_elements:
             return
         cb_y = 2
@@ -442,6 +623,18 @@ class ProfileCanvas(QWidget):
             painter.drawLine(int(x1), cb_y, int(x1), self.height())
 
     def _element_length(self, elem) -> float:
+        """平面線形要素の平面長を返す（カラーバー幅の計算用）。
+
+        Parameters
+        ----------
+        elem : Segment or Arc or Clothoid
+            平面長を求める要素。
+
+        Returns
+        -------
+        float
+            平面長 [m]。Clothoid は points を累積した折れ線長で近似する。
+        """
         if isinstance(elem, Segment):
             return elem.length()
         elif isinstance(elem, Arc):
@@ -455,14 +648,30 @@ class ProfileCanvas(QWidget):
         return 0.0
 
     def _element_color(self, elem) -> QColor:
+        """要素種別に対応するカラーバー用の QColor を返す。
+
+        Parameters
+        ----------
+        elem : Segment or Arc or Clothoid or any
+            色を決定する要素。非対応型はグレーを返す。
+
+        Returns
+        -------
+        QColor
+            Segment=青（CB_SEGMENT）、Arc=紫（CB_ARC）、Clothoid=緑（CB_CLOTHOID）、
+            その他=グレー。
+        """
         if isinstance(elem, Segment):  return CB_SEGMENT
         if isinstance(elem, Arc):      return CB_ARC
         if isinstance(elem, Clothoid): return CB_CLOTHOID
         return QColor(128,128,128)
 
     def _draw_profile(self, painter: QPainter):
-        """勾配直線と縦断曲線を統合して描画する（チェーン全体）。
-        VPC〜VPT の範囲は放物線、それ以外は勾配直線。"""
+        """勾配直線と縦断曲線をチェーン全体にわたって描画する。
+
+        VPC〜VPT の範囲は放物線（32 分割の折れ線近似）で、それ以外は
+        勾配直線をそのまま描画する。
+        """
         gls = self._grade_lines_sorted()
         if not gls:
             return
@@ -533,7 +742,7 @@ class ProfileCanvas(QWidget):
                 painter.drawEllipse(self.w2s(dd, ee), 4, 4)
 
     def _draw_rubber(self, painter: QPainter):
-        """勾配直線モードで始点確定後、マウス位置までのラバー線を描画"""
+        """勾配直線モードで始点確定後、マウス位置までのラバー線（点線）を描画する。"""
         if self._mode != "grade" or self._grade_first is None:
             return
         if self._mouse_screen is None:
@@ -552,7 +761,7 @@ class ProfileCanvas(QWidget):
         painter.drawLine(QPointF(p1.x()+r, p1.y()-r), QPointF(p1.x()-r, p1.y()+r))
 
     def _draw_axes(self, painter: QPainter):
-        """距離軸・標高軸のラベルを描画"""
+        """距離軸（水平）と標高軸（垂直）のグリッドラベルを描画する。"""
         pen = QPen(QColor(120, 120, 120), 1)
         painter.setPen(pen)
         font = QFont()
@@ -592,7 +801,7 @@ class ProfileCanvas(QWidget):
                 e += gy
 
     def _draw_handles(self, painter: QPainter):
-        """勾配直線の端点ハンドルを描画"""
+        """勾配直線の全端点ハンドルを描画する（_get_handles が返すリストを使う）。"""
         if self._mode != "select":
             return
         for h in self._get_handles():
@@ -644,7 +853,23 @@ class ProfileCanvas(QWidget):
                 snap_pts.append((gl.dist_end,   gl.elev_end))
 
             def snap_dist(d, e):
-                """最も近いスナップ点に吸着。標高はスナップ点から取得（なければそのまま）"""
+                """最も近いスナップ点（既存端点・区間端）に吸着する。
+
+                x 方向が 12px 以内のスナップ候補のうち最近傍に吸着する。
+                標高はスナップ点のものを使い、スナップ点が None なら入力値のまま。
+
+                Parameters
+                ----------
+                d : float
+                    入力の累積距離 [m]。
+                e : float
+                    入力の標高 [m]。
+
+                Returns
+                -------
+                tuple[float, float]
+                    吸着後の (dist, elev)。
+                """
                 best_d, best_e, best_px = d, e, float('inf')
                 for sd, se in snap_pts:
                     px = abs(d - sd) * self._scale_x
@@ -754,12 +979,22 @@ class ProfileCanvas(QWidget):
             self.update()  # ラバー線の再描画
 
     def _apply_handle_drag(self, h: dict, new_dist: float, new_elev: float):
-        """
-        ハンドル（勾配直線の端点）をドラッグ。
-        - partners に含まれる全ての勾配直線の端点を更新する
-        - 共有ハンドルの場合は両方の勾配直線が追従する
-        - その点を PVI とする縦断曲線があれば追従させる
-        - ドラッグ後にスナップして隙間を解消する
+        """ハンドルのドラッグ操作を GradeLine と VerticalCurve に反映する。
+
+        partners に含まれるすべての GradeLine の端点を new_dist/new_elev に更新する
+        ため、共有ハンドル（境界点）では隣接する 2 本の GradeLine が同時に追従する。
+        ドラッグした点を PVI とする縦断曲線があれば pvi_dist/pvi_elev を追従させ
+        `_recalc_vc_gradients` で g1/g2 を再計算する。最後に `_snap_grade_lines`
+        を呼んで隙間をゼロに揃える。
+
+        Parameters
+        ----------
+        h : dict
+            `_get_handles` が返すハンドル辞書。
+        new_dist : float
+            ドラッグ先の累積距離 [m]。
+        new_elev : float
+            ドラッグ先の標高 [m]。
         """
         old_dist = h['dist']
 
@@ -787,7 +1022,17 @@ class ProfileCanvas(QWidget):
         self._snap_grade_lines()
 
     def _recalc_vc_gradients(self, vc: 'VerticalCurve'):
-        """縦断曲線の前後の勾配直線から g1, g2 を再計算する"""
+        """縦断曲線 vc の前後に位置する GradeLine から g1, g2 を再計算する。
+
+        GradeLine の端点が変更された後（ドラッグ・数値入力）に呼ばれる。
+        pvi_dist を基準に前（≤ pvi_dist）の最後の GradeLine から g1 を、
+        後（≥ pvi_dist）の最初の GradeLine から g2 を取得する。
+
+        Parameters
+        ----------
+        vc : VerticalCurve
+            再計算対象の縦断曲線。
+        """
         gls = sorted(self._grade_lines, key=lambda g: g.dist_start)
         prev_gl = next((gl for gl in reversed(gls)
                         if gl.dist_end <= vc.pvi_dist + 0.01), None)
@@ -822,7 +1067,17 @@ class ProfileCanvas(QWidget):
         super().keyPressEvent(event)
 
     def _delete_grade_line(self, gl: GradeLine):
-        """勾配直線を削除（PVI が一致する縦断曲線も削除）"""
+        """勾配直線を削除し、関連する縦断曲線もあわせて削除する。
+
+        gl の dist_start または dist_end と pvi_dist が 0.01m 以内の
+        縦断曲線を先に除去してから gl を _grade_lines から除去する。
+        selection_changed を emit して右パネルを更新する。
+
+        Parameters
+        ----------
+        gl : GradeLine
+            削除する勾配直線。_grade_lines に含まれない場合は何もしない。
+        """
         if gl not in self._grade_lines:
             return
         # この勾配直線が prev or next の縦断曲線を削除
@@ -838,7 +1093,21 @@ class ProfileCanvas(QWidget):
         self.update()
 
     def _hit_test(self, sx: float, sy: float) -> Optional[object]:
-        """スクリーン座標 (sx, sy) に最も近い勾配直線または縦断曲線を返す"""
+        """スクリーン座標 (sx, sy) に最も近い GradeLine/VerticalCurve を返す。
+
+        ヒット許容距離は TOL_PX=8.0 px。勾配直線は線分との距離で、
+        縦断曲線は 32 分割の折れ線近似で最短距離を計算する。
+
+        Parameters
+        ----------
+        sx, sy : float
+            スクリーン座標（ピクセル）。
+
+        Returns
+        -------
+        GradeLine or VerticalCurve or None
+            最も近い図形。TOL_PX 以内にない場合は None。
+        """
         TOL_PX = 8.0  # ヒット許容距離 [px]
         best_obj  = None
         best_dist = TOL_PX
@@ -872,8 +1141,18 @@ class ProfileCanvas(QWidget):
         return best_obj
 
     @staticmethod
-    def _dist_point_seg(px, py, ax, ay, bx, by) -> float:
-        """点 (px,py) と線分 (a,b) の距離"""
+    def _dist_point_seg(px: float, py: float,
+                        ax: float, ay: float,
+                        bx: float, by: float) -> float:
+        """点 (px, py) からスクリーン座標上の線分 (ax,ay)-(bx,by) への最短距離を返す。
+
+        `_hit_test` 内で勾配直線との距離計算に使う。
+
+        Returns
+        -------
+        float
+            最短距離 [px]。線分が縮退（長さゼロ）のとき始点からの距離を返す。
+        """
         dx, dy = bx - ax, by - ay
         l2 = dx*dx + dy*dy
         if l2 < 1e-12:
@@ -882,6 +1161,10 @@ class ProfileCanvas(QWidget):
         return math.hypot(px - (ax + t*dx), py - (ay + t*dy))
 
     def fit_all(self):
+        """全 GradeLine/VerticalCurve が収まるよう 10% マージンでビューを調整する。
+
+        図形がない場合はデフォルト値（scale_x=2.0, scale_y=5.0）にリセットする。
+        """
         gls = self._grade_lines_sorted()
         if not gls:
             return
@@ -913,10 +1196,30 @@ def _make_empty_profile():
 
 
 class VerticalAlignmentWindow(QMainWindow):
-    """縦断線形設計ウィンドウ"""
+    """縦断線形設計ウィンドウ。
+
+    ProfileCanvas（左）と右パネル（プロパティ・操作）を QSplitter で左右分割する。
+    ProfileCanvas の selection_changed シグナルを受けて _refresh_props を呼ぶ。
+    閉じる際（closeEvent）に ProfileCanvas.save_to_profiles() を呼んで各
+    ElementProfile にデータを書き戻す。
+    """
 
     def __init__(self, scene: Scene, profiles: list,
                  plan_elements: list, rev_flags: list, parent=None):
+        """
+        Parameters
+        ----------
+        scene : Scene
+            現在のシーン（ニックネーム参照用）。
+        profiles : list[ElementProfile]
+            チェーン順に並んだ縦断データ。
+        plan_elements : list[Segment | Arc | Clothoid]
+            チェーン順の平面線形要素。
+        rev_flags : list[bool]
+            各要素の逆順フラグ。
+        parent : QWidget, optional
+            親ウィジェット。None のとき独立ウィンドウとして表示する。
+        """
         super().__init__(parent)
         self.scene    = scene
         self.profiles = profiles
@@ -925,6 +1228,13 @@ class VerticalAlignmentWindow(QMainWindow):
         # タイトルを要素の種別で分かりやすく表示
         if plan_elements:
             def elem_label(obj):
+                """平面線形要素のカラーバーラベル文字列を返す。
+
+                Returns
+                -------
+                str
+                    "{種別}[{ニックネーム}] {平面長:.0f}m" 形式の文字列。
+                """
                 if isinstance(obj, Segment):
                     return f"線分#{obj.id}"
                 if isinstance(obj, Arc):
@@ -1004,11 +1314,13 @@ class VerticalAlignmentWindow(QMainWindow):
 
     # ─── モード切替 ──────────────────────────────────────────
     def _set_select_mode(self):
+        """選択モードに切り替え、ツールボタンの checked 状態を更新する。"""
         self._canvas.set_mode("select")
         self._btn_sel.setChecked(True)
         self._btn_grade.setChecked(False)
 
     def _set_grade_mode(self):
+        """勾配直線モードに切り替え、ツールボタンの checked 状態を更新する。"""
         self._canvas.set_mode("grade")
         self._btn_sel.setChecked(False)
         self._btn_grade.setChecked(True)
@@ -1027,7 +1339,20 @@ class VerticalAlignmentWindow(QMainWindow):
             super().keyPressEvent(event)
 
     def eventFilter(self, obj, event):
-        """キャンバス上のキーイベントをウィンドウで受け取る"""
+        """ProfileCanvas のキーイベントをこのウィンドウで代わりに処理する。
+
+        Parameters
+        ----------
+        obj : QObject
+            イベントの発生元。
+        event : QEvent
+            受け取ったイベント。
+
+        Returns
+        -------
+        bool
+            KeyPress イベントを処理した場合 True。それ以外は super() に委譲。
+        """
         from PyQt6.QtCore import QEvent
         if event.type() == QEvent.Type.KeyPress:
             self.keyPressEvent(event)
@@ -1035,12 +1360,21 @@ class VerticalAlignmentWindow(QMainWindow):
         return False
 
     def closeEvent(self, event):
-        """ウィンドウを閉じる時に各 ElementProfile にデータを保存する"""
+        """閉じる前に ProfileCanvas.save_to_profiles() を呼んで縦断データを保存する。"""
         self._canvas.save_to_profiles()
         super().closeEvent(event)
 
     # ─── マウス座標表示 ──────────────────────────────────────
     def _update_mouse_pos(self, dist: float, elev: float):
+        """ProfileCanvas のマウス座標シグナルを受け取り、右パネルのラベルを更新する。
+
+        Parameters
+        ----------
+        dist : float
+            マウス位置の累積距離 [m]。
+        elev : float
+            マウス位置の標高 [m]。
+        """
         self._lbl_mouse_dist.setText(f"距離: {dist:.3f} m")
         self._lbl_mouse_elev.setText(f"標高: {elev:.3f} m")
 
@@ -1089,6 +1423,7 @@ class VerticalAlignmentWindow(QMainWindow):
         lbl_horiz  = QLabel(f"水平長: {gl.dist_end - gl.dist_start:.3f} m")
 
         def refresh_derived(changed_end='end'):
+            """GradeLine の数値が変わった後、派生値の表示と隣接スナップを更新する。"""
             lbl_grad.setText(f"勾配: {gl.gradient:.4f} %")
             lbl_horiz.setText(f"水平長: {gl.dist_end - gl.dist_start:.3f} m")
             for vc in self._canvas._vertical_curves:
@@ -1104,7 +1439,19 @@ class VerticalAlignmentWindow(QMainWindow):
         self._block_grade_sb = False
 
         def add_endpoint(label, get_dist, set_dist, get_elev, set_elev, end_type):
-            """end_type: 'start' or 'end' — どちらの端点か"""
+            """勾配直線の端点（始点または終点）の距離・標高入力フォームを生成する。
+
+            Parameters
+            ----------
+            label : str
+                フォームグループのラベル（例: "始点"）。
+            get_dist, get_elev : callable
+                現在の距離・標高を返すゲッター関数。
+            set_dist, set_elev : callable
+                距離・標高を設定するセッター関数。
+            end_type : str
+                'start' または 'end'。_snap_grade_lines に渡すスナップ方向。
+            """            """end_type: 'start' or 'end' — どちらの端点か"""
             lay.addWidget(QLabel(label))
             row_d = QHBoxLayout()
             row_e = QHBoxLayout()
@@ -1112,6 +1459,7 @@ class VerticalAlignmentWindow(QMainWindow):
             sb_e = _make_spinbox(get_elev(), lo=-1e6, hi=1e6, step=0.1, decimals=3)
 
             def sync_sb():
+                """スピンボックスの表示を現在値に同期する（コールバックの無限ループを防ぐ）。"""
                 if self._block_grade_sb:
                     return
                 self._block_grade_sb = True
@@ -1120,6 +1468,7 @@ class VerticalAlignmentWindow(QMainWindow):
                 self._block_grade_sb = False
 
             def on_dist(v, _end=end_type):
+                """距離スピンボックスの値変更コールバック。"""
                 if self._block_grade_sb:
                     return
                 self._block_grade_sb = True
@@ -1131,6 +1480,7 @@ class VerticalAlignmentWindow(QMainWindow):
                 refresh_derived(_end)
 
             def on_elev(v, _end=end_type):
+                """標高スピンボックスの値変更コールバック。"""
                 if self._block_grade_sb:
                     return
                 self._block_grade_sb = True
@@ -1166,6 +1516,7 @@ class VerticalAlignmentWindow(QMainWindow):
         btn_del_gl = QPushButton("この勾配直線を削除")
         btn_del_gl.setStyleSheet("color: #e08080;")
         def do_delete_gl():
+            """「この勾配直線を削除」ボタンのコールバック。"""
             self._canvas._delete_grade_line(gl)
             self._refresh_props()
         btn_del_gl.clicked.connect(do_delete_gl)
@@ -1191,6 +1542,7 @@ class VerticalAlignmentWindow(QMainWindow):
             btn_ins.setToolTip("既に縦断曲線があります")
 
         def do_insert():
+            """「縦断曲線を挿入」ボタンのコールバック。選択中の GradeLine の終端に縦断曲線を追加する。"""
             self._insert_vertical_curve(gl, sb_len.value())
 
         btn_ins.clicked.connect(do_insert)
@@ -1218,6 +1570,13 @@ class VerticalAlignmentWindow(QMainWindow):
         sb_L = _make_spinbox(vc.length, lo=1.0, hi=10000.0, step=10.0, decimals=1)
 
         def on_L_changed(val: float):
+            """曲線長スピンボックスの値変更コールバック。VPC/VPT および前後 GradeLine の端点を追従させる。
+
+            Parameters
+            ----------
+            val : float
+                新しい曲線長 L [m]。
+            """
             if val < 1.0:
                 return
             # 勾配直線を VPC/VPT に合わせて再調整
@@ -1266,7 +1625,10 @@ class VerticalAlignmentWindow(QMainWindow):
         self._prop_layout.addWidget(grp)
 
     def _build_grade_list(self):
-        """勾配直線一覧を下部に表示"""
+        """全 GradeLine を距離・勾配の一覧テーブルとして右パネル下部に表示する。
+
+        _refresh_props の末尾で常に呼ばれ、選択状態によらず表示する。
+        """
         grp = QGroupBox("勾配直線一覧")
         lay = QVBoxLayout(grp)
         for gl in self._canvas._grade_lines:
@@ -1280,6 +1642,20 @@ class VerticalAlignmentWindow(QMainWindow):
 
     # ─── 縦断曲線操作 ────────────────────────────────────────
     def _insert_vertical_curve(self, gl: GradeLine, length: float):
+        """勾配直線 gl の終端（PVI）に曲線長 length の縦断曲線を挿入する。
+
+        Parameters
+        ----------
+        gl : GradeLine
+            PVI を提供する勾配直線（終端が PVI になる）。
+        length : float
+            縦断曲線の曲線長 L [m]。
+
+        Notes
+        -----
+        gl が最後の GradeLine（次の GradeLine がない）場合は何もしない。
+        挿入後に選択をリセットして _refresh_props を呼ぶ。
+        """
         """
         勾配直線 gl の終点（= 次の勾配直線の始点 = PVI）に縦断曲線を挿入。
         勾配直線の端点は変更しない。PVI は gl.dist_end / gl.elev_end。
@@ -1303,6 +1679,17 @@ class VerticalAlignmentWindow(QMainWindow):
         self._refresh_props()
 
     def _delete_vertical_curve(self, vc: VerticalCurve):
+        """縦断曲線を _vertical_curves から削除する。
+
+        Parameters
+        ----------
+        vc : VerticalCurve
+            削除する縦断曲線。リストに存在しない場合は何もしない。
+
+        Notes
+        -----
+        削除後に選択をリセットして _refresh_props を呼ぶ。
+        """
         if vc not in self._canvas._vertical_curves:
             return
         self._canvas._vertical_curves.remove(vc)

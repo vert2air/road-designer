@@ -41,16 +41,53 @@ from typing import Optional
 _id_counter = itertools.count(1)
 
 def new_id() -> int:
+    """全図形種別を通じてユニークな整数 ID を発行する。
+
+    アプリ起動時に 1 から開始し、呼び出しごとに単調増加する。
+    ファイル読み込み後は `_reset_id_counter_after` によって既存 ID の最大値
+    の次から再開されるため、新規生成と読み込み済みの ID が衝突しない。
+
+    Returns
+    -------
+    int
+        1 以上の整数。同一セッション内で重複しない。
+    """
     return next(_id_counter)
 
 def _reset_id_counter_after(max_id: int):
-    """ファイル読み込み後、既存IDより大きい値からカウンタを再開する"""
+    """ファイル読み込み後に ID カウンタを既存 ID の次の値から再開する。
+
+    `Scene.from_dict` の末尾で呼ばれ、読み込んだファイル内の全 ID の最大値
+    を受け取る。これにより以後の `new_id()` 呼び出しが読み込み済み ID と
+    衝突しなくなる。
+
+    Parameters
+    ----------
+    max_id : int
+        読み込んだファイル内の全 ID の最大値。0 を渡した場合は 1 から再開する。
+    """
     global _id_counter
     _id_counter = itertools.count(max_id + 1)
 
 # ─── 基本型 ──────────────────────────────────────────────────
 @dataclass
 class Vec2:
+    """アプリ全体で使用する 2 次元ベクトル型。
+
+    NumPy を使わず、道路幾何計算に必要な演算（内積・外積・正規化・90°回転）
+    をこのクラスに集約する。`@dataclass` により `Vec2(x, y)` の簡潔な
+    コンストラクタと `==` による等値比較を得る。
+
+    `tuple()` と `__iter__` は QPainter への座標渡しや for ループでの
+    アンパックのために提供する。
+
+    Attributes
+    ----------
+    x : float
+        x 成分（右向き正）。
+    y : float
+        y 成分（上向き正）。
+    """
     x: float
     y: float
 
@@ -59,55 +96,211 @@ class Vec2:
     def __mul__(self, s):  return Vec2(self.x * s, self.y * s)
     def __rmul__(self, s): return self.__mul__(s)
     def __neg__(self):     return Vec2(-self.x, -self.y)
-    def dot(self, o):      return self.x * o.x + self.y * o.y
-    def cross(self, o):    return self.x * o.y - self.y * o.x
-    def length(self):      return math.hypot(self.x, self.y)
-    def normalized(self):
+    def dot(self, o: 'Vec2') -> float:
+        """内積 self·o を返す。
+
+        Parameters
+        ----------
+        o : Vec2
+            内積を取る相手ベクトル。
+
+        Returns
+        -------
+        float
+            self.x * o.x + self.y * o.y。直交ベクトル同士なら 0。
+
+        Examples
+        --------
+        >>> Vec2(1, 0).dot(Vec2(0, 1))
+        0.0
+        >>> Vec2(1, 0).dot(Vec2(1, 0))
+        1.0
+        """
+        return self.x * o.x + self.y * o.y
+
+    def cross(self, o: 'Vec2') -> float:
+        """2D 外積 self × o を返す。
+
+        結果が正なら o は self の左側（CCW 方向）にある。
+        `Line.signed_dist` や `Clothoid.is_left_curve` の判定に使う。
+
+        Parameters
+        ----------
+        o : Vec2
+            外積を取る相手ベクトル。
+
+        Returns
+        -------
+        float
+            self.x * o.y - self.y * o.x。正 = o が左側、負 = o が右側。
+
+        Examples
+        --------
+        >>> Vec2(1, 0).cross(Vec2(0, 1))
+        1.0
+        >>> Vec2(1, 0).cross(Vec2(0, -1))
+        -1.0
+        """
+        return self.x * o.y - self.y * o.x
+
+    def length(self) -> float:
+        """ベクトルの大きさ（ユークリッドノルム）を返す。
+
+        Returns
+        -------
+        float
+            math.hypot(self.x, self.y)。零ベクトルのとき 0.0。
+        """
+        return math.hypot(self.x, self.y)
+    def normalized(self) -> 'Vec2':
+        """単位ベクトルを返す。
+
+        長さが 1e-12 未満のとき（実質的な零ベクトル）は Vec2(1, 0) を
+        返す（除算ゼロ防止のフォールバック）。
+
+        Returns
+        -------
+        Vec2
+            大きさ 1 の同方向ベクトル。零ベクトルの場合は Vec2(1, 0)。
+        """
         l = self.length()
         return Vec2(self.x / l, self.y / l) if l > 1e-12 else Vec2(1, 0)
-    def perp(self):        return Vec2(-self.y, self.x)
-    def tuple(self):       return (self.x, self.y)
+    def perp(self) -> 'Vec2':
+        """CCW に 90° 回転したベクトルを返す（左法線）。
+
+        `direction.perp()` で `left_normal` を得るときに使う。
+        `(dx, dy)` → `(-dy, dx)` の変換。
+
+        Returns
+        -------
+        Vec2
+            self を反時計回りに 90° 回転したベクトル。
+
+        Examples
+        --------
+        >>> Vec2(1, 0).perp()
+        Vec2(x=0.0, y=1.0)
+        """
+        return Vec2(-self.y, self.x)
+    def tuple(self) -> tuple:
+        """(x, y) タプルを返す。QPainter へ座標を渡す際に使う。"""
+        return (self.x, self.y)
 
     def __iter__(self):
         return iter((self.x, self.y))
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
+        """{"x": float, "y": float} 形式の辞書に変換する。"""
         return {"x": self.x, "y": self.y}
 
     @staticmethod
-    def from_dict(d):
+    def from_dict(d: dict) -> 'Vec2':
+        """{"x": float, "y": float} 形式の辞書から復元する。"""
         return Vec2(d["x"], d["y"])
 
 
 # ─── 直線 ────────────────────────────────────────────────────
 class Line:
-    """参照始点・参照終点で定義される有向直線"""
+    """参照始点・参照終点で定義される有向直線。
+
+    参照点（`ref_start`/`ref_end`）は直線の方向を定義するための基準点で、
+    実際の道路区間は `Segment` が表す。参照点が動くと、その直線上のすべての
+    `Segment.start/end` が `point_at(t)` の動的計算で自動追従する。
+
+    `connection` フィールドで他の `Line` との折れ線/スムーズ接続情報を保持する。
+    接続の維持・更新は `Canvas` が担当する。
+
+    Attributes
+    ----------
+    id : int
+        グローバルユニーク ID。
+    ref_start : Vec2
+        参照始点座標。
+    ref_end : Vec2
+        参照終点座標。
+    segments : list[Segment]
+        この直線が保持する線分のリスト。
+    connection : LineConnection or None
+        他の直線との接続情報。未接続なら None。
+    """
 
     def __init__(self, ref_start: Vec2, ref_end: Vec2, line_id: int = None):
+        """
+        Parameters
+        ----------
+        ref_start : Vec2
+            参照始点座標。
+        ref_end : Vec2
+            参照終点座標。
+        line_id : int, optional
+            指定しない場合は `new_id()` で採番する。
+        """
         self.id = line_id if line_id is not None else new_id()
-        self.ref_start = ref_start  # 参照始点
-        self.ref_end   = ref_end    # 参照終点
+        self.ref_start = ref_start
+        self.ref_end   = ref_end
         self.segments: list[Segment] = []
-        # 折れ線/スムーズ接続情報
         self.connection: Optional[LineConnection] = None
 
     @property
     def direction(self) -> Vec2:
+        """ref_start から ref_end への単位方向ベクトル。
+
+        ref_start == ref_end のとき Vec2(1, 0) を返す（normalized のフォールバック）。
+        """
         return (self.ref_end - self.ref_start).normalized()
 
     @property
     def angle(self) -> float:
+        """直線の方向角（ラジアン）。範囲は (-π, π]。
+
+        右パネルの方向角表示と `smooth_connect` でのカーブ方向判定に使う。
+        """
         d = self.ref_end - self.ref_start
         return math.atan2(d.y, d.x)
 
     def project_point(self, p: Vec2) -> Vec2:
-        """点 p を直線に正射影した点を返す"""
+        """点 p を直線（無限延長）に正射影した最近接点を返す。
+
+        `Clothoid.compute` での接点計算（円心から直線への垂線の足）に使う。
+
+        Parameters
+        ----------
+        p : Vec2
+            射影する点のワールド座標。
+
+        Returns
+        -------
+        Vec2
+            直線上の最近接点。`ref_start + direction * ((p - ref_start)·direction)`。
+
+        Examples
+        --------
+        x 軸上の直線に (3, 4) を射影すると (3, 0) になる。
+        """
         d = self.direction
         t = (p - self.ref_start).dot(d)
         return self.ref_start + d * t
 
     def project_t(self, p: Vec2) -> float:
-        """点 p の直線上のパラメータ t を返す（ref_start=0, ref_end=1）"""
+        """点 p に対応する直線上のパラメータ t を返す（ref_start=0, ref_end=1）。
+
+        線分端点の t 値更新（`_apply_segment_snap`）や
+        Canvas でのドラッグ処理（端点を直線上に拘束）で使う。
+
+        Parameters
+        ----------
+        p : Vec2
+            パラメータを求める点。
+
+        Returns
+        -------
+        float
+            直線の長さがゼロのとき 0.0。値域に制限はなく直線外の点も返す。
+
+        Examples
+        --------
+        ref_start=(0,0), ref_end=(10,0), p=(3,5) → 0.3
+        """
         d = self.ref_end - self.ref_start
         l2 = d.dot(d)
         if l2 < 1e-24:
@@ -115,31 +308,94 @@ class Line:
         return (p - self.ref_start).dot(d) / l2
 
     def point_at(self, t: float) -> Vec2:
-        """パラメータ t の点を返す"""
+        """パラメータ t の点を返す。
+
+        `Segment.start/end` が動的にこのメソッドを呼ぶ。参照点が変わると
+        同じ t でも返す座標が変わるため、線分は自動的に追従する。
+
+        Parameters
+        ----------
+        t : float
+            0.0 = ref_start、1.0 = ref_end。範囲制限なし。
+
+        Returns
+        -------
+        Vec2
+            ref_start + (ref_end - ref_start) * t。
+        """
         return self.ref_start + (self.ref_end - self.ref_start) * t
 
     def distance_to(self, p: Vec2) -> float:
+        """点 p から直線（無限延長）への垂直距離（常に正）を返す。
+
+        Canvas での図形ヒット判定（`_hit_infinite_line`）に使う。
+
+        Parameters
+        ----------
+        p : Vec2
+            距離を求める点。
+
+        Returns
+        -------
+        float
+            |direction × (p - ref_start)|。
+        """
         d = self.direction
         return abs((p - self.ref_start).cross(d))
 
     def signed_dist(self, p: Vec2) -> float:
-        """直線の左側が正の符号付き距離 (Clothoid.py の signed_dist 相当)"""
+        """直線の左側が正の符号付き距離を返す。
+
+        `Clothoid.is_left_curve` の判定（円が直線の左右どちらにあるか）と
+        `Clothoid.compute` での接点計算に使う。
+
+        Parameters
+        ----------
+        p : Vec2
+            距離を求める点。
+
+        Returns
+        -------
+        float
+            direction × (p - ref_start)。左側が正、右側が負。
+
+        Examples
+        --------
+        直線が x 軸正方向のとき p=(0,5) → 5.0、p=(0,-3) → -3.0
+        """
         d = self.direction
         pm = p - self.ref_start
-        return d.cross(pm)   # direction × (p - ref_start): 左側が正
+        return d.cross(pm)
 
     def project(self, p: Vec2) -> Vec2:
-        """project_point の別名 (Clothoid.py との互換用)"""
+        """project_point の別名。`Clothoid.compute` 内から呼ばれる互換用エイリアス。"""
         return self.project_point(p)
 
     @property
     def left_normal(self) -> Vec2:
-        """直線の左法線 (CCW90)"""
+        """direction を CCW に 90° 回転した左法線ベクトル。
+
+        `Clothoid.compute` での接点座標計算で使う。direction=(dx,dy) のとき
+        (-dy, dx) を返す。
+        """
         d = self.direction
         return Vec2(-d.y, d.x)
 
     def intersect(self, other: 'Line') -> Optional[Vec2]:
-        """2直線の交点（存在すれば）"""
+        """2直線の交点を返す。
+
+        折れ線接続・スムーズ接続・`_update_smooth_circle` で交点 X の計算に使う。
+
+        Parameters
+        ----------
+        other : Line
+            交点を求める相手の直線。
+
+        Returns
+        -------
+        Vec2 or None
+            交点座標。平行（|denom| < 1e-12）または同一直線の場合は None。
+        """
         d1 = self.ref_end - self.ref_start
         d2 = other.ref_end - other.ref_start
         denom = d1.cross(d2)
@@ -149,7 +405,8 @@ class Line:
         t = diff.cross(d2) / denom
         return self.ref_start + d1 * t
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
+        """{"id", "ref_start", "ref_end", "segments"} 形式の辞書に変換する。"""
         return {
             "id": self.id,
             "ref_start": self.ref_start.to_dict(),
@@ -158,7 +415,8 @@ class Line:
         }
 
     @staticmethod
-    def from_dict(d):
+    def from_dict(d: dict) -> 'Line':
+        """辞書から Line を復元する。segments も再構築する。"""
         ln = Line(Vec2.from_dict(d["ref_start"]), Vec2.from_dict(d["ref_end"]), d["id"])
         ln.segments = [Segment.from_dict(s, ln) for s in d.get("segments", [])]
         return ln
@@ -166,66 +424,170 @@ class Line:
 
 # ─── 線分 ────────────────────────────────────────────────────
 class Segment:
-    """直線の部分区間"""
+    """直線（Line）上の部分区間として実際の道路線分を表す。
+
+    位置を座標でなく割合 t（ref_start=0, ref_end=1）で管理するため、
+    親 Line の参照点が変わっても自動的に追従する。クロソイドの snap 機能に
+    よって端点が固定された状態の線分は、Canvas での通常のハンドル操作では
+    変形できない。
+
+    Attributes
+    ----------
+    id : int
+        グローバルユニーク ID。
+    line : Line
+        この線分が属する親直線への参照。
+    t_start : float
+        始点の位置パラメータ（ref_start=0, ref_end=1）。
+    t_end : float
+        終点の位置パラメータ。通常 t_start < t_end。
+    """
 
     def __init__(self, line: Line, t_start: float = 0.0, t_end: float = 1.0, seg_id: int = None):
+        """
+        Parameters
+        ----------
+        line : Line
+            この線分が属する親直線。
+        t_start : float, optional
+            始点パラメータ（デフォルト 0.0 = ref_start）。
+        t_end : float, optional
+            終点パラメータ（デフォルト 1.0 = ref_end）。
+            t_start >= t_end は不正状態だが例外を投げない。
+        seg_id : int, optional
+            指定しない場合は `new_id()` で採番する。
+        """
         self.id     = seg_id if seg_id is not None else new_id()
         self.line   = line
         self.t_start = t_start
         self.t_end   = t_end
-        # snap 接続
-        self.snap_prev: Optional[Segment] = None  # 自分の始点 = 相手の終点
-        self.snap_next: Optional[Segment] = None  # 自分の終点 = 相手の始点
+        self.snap_prev: Optional[Segment] = None
+        self.snap_next: Optional[Segment] = None
 
     @property
     def start(self) -> Vec2:
+        """線分の始点座標（line.point_at(t_start) で動的に計算）。"""
         return self.line.point_at(self.t_start)
 
     @property
     def end(self) -> Vec2:
+        """線分の終点座標（line.point_at(t_end) で動的に計算）。"""
         return self.line.point_at(self.t_end)
 
     def length(self) -> float:
+        """線分の長さ [m] を返す。t_start == t_end のとき 0.0。"""
         return (self.end - self.start).length()
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
+        """{"id", "t_start", "t_end"} 形式の辞書に変換する。
+
+        親 Line への参照はシリアライズしない（from_dict で再設定する）。
+        """
         return {"id": self.id, "t_start": self.t_start, "t_end": self.t_end}
 
     @staticmethod
-    def from_dict(d, line: Line):
+    def from_dict(d: dict, line: Line) -> 'Segment':
+        """辞書と親 Line から Segment を復元する。
+
+        Parameters
+        ----------
+        d : dict
+            {"id", "t_start", "t_end"} を含む辞書。
+        line : Line
+            この線分が属する親直線（Line.from_dict が渡す）。
+        """
         return Segment(line, d["t_start"], d["t_end"], d["id"])
 
 
 # ─── 直線接続 ────────────────────────────────────────────────
 @dataclass
 class LineConnection:
-    """2直線間の折れ線/スムーズ接続"""
-    kind: str           # "polyline" | "smooth"
+    """2直線間の折れ線/スムーズ接続情報を保持するデータクラス。
+
+    `line_a.connection` と `line_b.connection` が同一オブジェクトを参照する
+    ことで 2 直線が接続状態を共有する（不変条件）。
+
+    ライフサイクル:
+    - 折れ線接続: `Canvas._connect_polyline` が生成し kind="polyline" で設定する
+    - スムーズ昇格: `Canvas.smooth_connect` が kind を "smooth" に変更し
+      circle・bisector_dir を追記する
+    - 解除: `Canvas.disconnect_lines` が両直線の connection を None に設定する
+
+    Attributes
+    ----------
+    kind : str
+        "polyline" または "smooth"。
+    line_a, line_b : Line
+        接続される 2 直線。
+    shared_point : Vec2
+        2 直線の交点（共有参照点）の座標。
+    a_end_is_shared : bool
+        True のとき line_a.ref_end が共有点。
+    b_start_is_shared : bool
+        True のとき line_b.ref_start が共有点。
+    circle : Circle or None
+        スムーズ接続専用。2 本のクロソイドが共有する中間円。
+    bisector_dir : Vec2 or None
+        スムーズ接続専用。折れ角の二等分線方向。円中心の移動拘束に使う。
+    line_j_reversed, line_k_reversed : bool
+        スムーズ接続専用。各クロソイドを生成した実効直線の反転フラグ。
+    """
+    kind: str
     line_a: 'Line'
     line_b: 'Line'
-    shared_point: Vec2  # 共有参照点
-    # どちらの参照点が共有点か: True = ref_end, False = ref_start
-    a_end_is_shared: bool = True   # line_a.ref_end が共有点
-    b_start_is_shared: bool = True # line_b.ref_start が共有点
-    # smooth 専用
+    shared_point: Vec2
+    a_end_is_shared: bool = True
+    b_start_is_shared: bool = True
     circle: Optional['Circle'] = None
-    bisector_dir: Optional[Vec2] = None  # 二等分線方向
+    bisector_dir: Optional[Vec2] = None
     line_j_reversed: bool = False
     line_k_reversed: bool = False
 
 
 # ─── 円 ──────────────────────────────────────────────────────
 class Circle:
+    """クロソイド曲線の接続先となる円。
+
+    スムーズ接続では 2 本のクロソイドが 1 つの Circle を共有し、
+    クロソイドの `_circle_pt` が Arc 端点に snap される。
+
+    Attributes
+    ----------
+    id : int
+        グローバルユニーク ID。
+    center : Vec2
+        中心座標。
+    radius : float
+        半径 [m]。
+    arcs : list[Arc]
+        この円が保持する円弧のリスト。
+    bisector_origin : Vec2 or None
+        スムーズ接続時に設定。円中心を二等分線上に拘束する際の基準点（交点 X）。
+    bisector_dir : Vec2 or None
+        スムーズ接続時に設定。二等分線方向の単位ベクトル。
+        円中心ドラッグ時に `center = bisector_origin + bisector_dir * t` で移動を制限する。
+    """
+
     def __init__(self, center: Vec2, radius: float, circle_id: int = None):
+        """
+        Parameters
+        ----------
+        center : Vec2
+            中心座標。
+        radius : float
+            半径 [m]。
+        circle_id : int, optional
+            指定しない場合は `new_id()` で採番する。
+        """
         self.id     = circle_id if circle_id is not None else new_id()
         self.center = center
         self.radius = radius
         self.arcs:  list[Arc] = []
-        # smooth 接続での制約
         self.bisector_origin: Optional[Vec2] = None
         self.bisector_dir:    Optional[Vec2] = None
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
+        """{"id", "center", "radius", "arcs"} 形式の辞書に変換する。"""
         return {
             "id": self.id,
             "center": self.center.to_dict(),
@@ -234,7 +596,8 @@ class Circle:
         }
 
     @staticmethod
-    def from_dict(d):
+    def from_dict(d: dict) -> 'Circle':
+        """辞書から Circle を復元する。arcs も再構築する。"""
         c = Circle(Vec2.from_dict(d["center"]), d["radius"], d["id"])
         c.arcs = [Arc.from_dict(a, c) for a in d.get("arcs", [])]
         return c
@@ -242,39 +605,82 @@ class Circle:
 
 # ─── 円弧 ────────────────────────────────────────────────────
 class Arc:
-    """円の部分区間（反時計回り）"""
+    """円（Circle）上の部分区間。
+
+    angle_start から CCW 方向に angle_end まで至る弧を表す。
+    スムーズ接続では Clothoid の `_circle_pt` が snap され、
+    この Arc の端点角度が接点角度に自動更新される。
+
+    Attributes
+    ----------
+    id : int
+        グローバルユニーク ID。
+    circle : Circle
+        この円弧が属する親円への参照。
+    angle_start : float
+        弧の開始角度（ラジアン、x 軸正方向=0、CCW が正）。
+    angle_end : float
+        弧の終了角度（ラジアン）。
+    """
 
     def __init__(self, circle: Circle, angle_start: float, angle_end: float, arc_id: int = None):
+        """
+        Parameters
+        ----------
+        circle : Circle
+            この円弧が属する親円。
+        angle_start : float
+            開始角度（ラジアン）。
+        angle_end : float
+            終了角度（ラジアン）。
+        arc_id : int, optional
+            指定しない場合は `new_id()` で採番する。
+
+        Notes
+        -----
+        コンストラクタは `circle.arcs.append(self)` を行わない。
+        追加は呼び出し元の責任とする。
+        """
         self.id          = arc_id if arc_id is not None else new_id()
         self.circle      = circle
-        self.angle_start = angle_start  # ラジアン
+        self.angle_start = angle_start
         self.angle_end   = angle_end
 
     @property
     def start(self) -> Vec2:
+        """angle_start に対応する円周上の始点座標。"""
         c = self.circle
         return Vec2(c.center.x + c.radius * math.cos(self.angle_start),
                     c.center.y + c.radius * math.sin(self.angle_start))
 
     @property
     def end(self) -> Vec2:
+        """angle_end に対応する円周上の終点座標。"""
         c = self.circle
         return Vec2(c.center.x + c.radius * math.cos(self.angle_end),
                     c.center.y + c.radius * math.sin(self.angle_end))
 
     def arc_angle(self) -> float:
-        """弧長角（反時計回りの角度差）"""
-        a = (self.angle_end - self.angle_start) % (2 * math.pi)
-        return a
+        """弧長角（CCW 方向の角度差）を返す（常に正）。
+
+        Returns
+        -------
+        float
+            (angle_end - angle_start) % (2π)。angle_start == angle_end のとき 0.0。
+        """
+        return (self.angle_end - self.angle_start) % (2 * math.pi)
 
     def arc_length(self) -> float:
+        """弧長 [m] を返す。radius * arc_angle()。"""
         return self.circle.radius * self.arc_angle()
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
+        """{"id", "angle_start", "angle_end"} 形式の辞書に変換する。"""
         return {"id": self.id, "angle_start": self.angle_start, "angle_end": self.angle_end}
 
     @staticmethod
-    def from_dict(d, circle: Circle):
+    def from_dict(d: dict, circle: Circle) -> 'Arc':
+        """辞書と親 Circle から Arc を復元する。"""
         return Arc(circle, d["angle_start"], d["angle_end"], d["id"])
 
 
@@ -284,10 +690,31 @@ _FRESNEL_N = 500
 
 def _fresnel_xy_tau(tau_end: float, R: float, n: int = _FRESNEL_N
                     ) -> tuple[float, float]:
-    """
-    クロソイド終点の局所座標変位 (xe, ye) を返す。
-    L = 2R*τ,  A² = RL,  x = ∫cos(s²/2A²)ds,  y = ∫sin(s²/2A²)ds
-    (Clothoid.py の _fresnel_xy と同等)
+    """クロソイド終点の局所座標変位 (xe, ye) を中点則で数値積分して返す。
+
+    局所座標系は線側接点を原点とし、実効直線の方向を x 軸とする。
+    `_find_tau` で全偏角 τ が求まった後、接点座標の計算に使う。
+
+    Parameters
+    ----------
+    tau_end : float
+        全偏角 τ [ラジアン]。1e-9 未満のとき (0.0, 0.0) を返す。
+    R : float
+        円の半径 [m]。
+    n : int, optional
+        積分ステップ数（デフォルト 500）。精度と速度のトレードオフ。
+
+    Returns
+    -------
+    xe : float
+        直線方向（x 軸）への変位 [m]。
+    ye : float
+        左法線方向（y 軸）への変位 [m]。
+
+    Notes
+    -----
+    L = 2R·τ,  A² = R·L,  ds = L/n。各ステップの中点 s=(i+0.5)·ds で
+    cos(s²/2A²) および sin(s²/2A²) を積分する（中点則）。
     """
     if tau_end < 1e-9:
         return 0.0, 0.0
@@ -305,9 +732,30 @@ def _fresnel_xy_tau(tau_end: float, R: float, n: int = _FRESNEL_N
 
 def _find_tau(R: float, d_abs: float,
               max_tau: float = 2.0 * math.pi * 0.999) -> Optional[float]:
-    """
-    Fresnel 条件  y(τ) = d_abs - R·cos(τ)  を満たす τ∈(0, max_tau) を返す。
-    d_abs > R が存在条件。(Clothoid.py の _find_tau と同等)
+    """Fresnel 条件を満たす全偏角 τ を二分法で逆算する。
+
+    直線と円の幾何関係から「どれだけ曲がれば円に接するか」を決定する
+    クロソイド計算の核心部分。`Clothoid.compute` から呼ばれる。
+
+    Parameters
+    ----------
+    R : float
+        円の半径 [m]。
+    d_abs : float
+        円の中心から実効直線への垂直距離 [m]（常に正）。
+    max_tau : float, optional
+        探索上限（デフォルト ≒ 2π）。
+
+    Returns
+    -------
+    float or None
+        Fresnel 条件 ye(τ) = d_abs - R·cos(τ) を満たす τ（[1e-4, max_tau] の範囲）。
+        d_abs <= R（直線が円の内部または接線）または解なしのとき None。
+
+    Notes
+    -----
+    80 回の二分法で区間が ≈ 5e-27 に収束する。
+    両端点の residual が同符号のとき解なしと判断して None を返す。
     """
     if d_abs <= R:
         return None
@@ -332,34 +780,94 @@ def _find_tau(R: float, d_abs: float,
 
 
 class Clothoid:
-    """直線と円から定義されるクロソイド曲線"""
+    """直線（Line）と円（Circle）から定義されるクロソイド曲線（Euler spiral）。
+
+    直線から円弧へ曲率を連続的に変化させる遷移曲線。道路のスムーズ接続で
+    直線と円弧の間に挿入される。
+
+    `compute()` が接点座標と描画点列を計算してキャッシュする。
+    参照する Line・Circle が変形するたびに `compute()` が再呼び出しされる。
+
+    snap 機能により、線側接点は Segment 端点に、円側接点は Arc 端点に
+    自動吸着する。`snap=False` のときは接点で線分・円弧を分割して管理する。
+
+    Attributes
+    ----------
+    id : int
+        グローバルユニーク ID。
+    line : Line
+        参照する直線。
+    circle : Circle
+        参照する円。
+    reversed_flag : bool
+        True のとき line.ref_start と ref_end を入れ替えた実効直線を使う。
+    snap_segment : bool
+        True のとき線側接点に最も近い Segment 端点を吸着する。
+    snap_arc : bool
+        True のとき円側接点に最も近い Arc 端点を吸着する。
+    """
 
     def __init__(self, line: Line, circle: Circle,
                  reversed_flag: bool = False,
                  snap_segment: bool = True,
                  snap_arc: bool = True,
                  clothoid_id: int = None):
+        """
+        Parameters
+        ----------
+        line : Line
+            接続する直線。
+        circle : Circle
+            接続する円。
+        reversed_flag : bool, optional
+            True のとき line.ref_start/ref_end を入れ替えた実効直線を使う。
+            同一 Line・Circle に 2 本のクロソイドを生成するときに使う。
+        snap_segment : bool, optional
+            True のとき線側接点に最も近い Segment 端点を接点座標に吸着する。
+            False のとき線分を接点で分割して管理する。
+        snap_arc : bool, optional
+            True のとき円側接点に最も近い Arc 端点を接点角度に吸着する。
+            False のとき円弧を接点で分割して管理する。
+        clothoid_id : int, optional
+            指定しない場合は `new_id()` で採番する。
+
+        Notes
+        -----
+        コンストラクタ末尾で `compute()` を自動呼び出すため、返った時点で
+        `_line_pt`・`_circle_pt`・`_points` が確定している（または _valid=False）。
+
+        `_split_seg_ids`・`_split_arc_ids` は snap=False のときに分割した
+        線分・円弧の ID ペアを追跡するためのリスト。接点が移動しても再分割せず
+        端点の追従更新だけで済むようにするための仕組み。
+        """
         self.id            = clothoid_id if clothoid_id is not None else new_id()
         self.line          = line
         self.circle        = circle
         self.reversed_flag = reversed_flag
         self.snap_segment  = snap_segment
         self.snap_arc      = snap_arc
-        # キャッシュ
         self._valid:      bool           = False
         self._tau:        float          = 0.0
         self._line_pt:    Optional[Vec2] = None
         self._circle_pt:  Optional[Vec2] = None
         self._points:     list[Vec2]     = []
-        # snap=off 時の分割管理（分割で生成した Segment/Arc の id リスト）
         self._split_seg_ids: list[int] = []
         self._split_arc_ids: list[int] = []
-
         self.compute()
 
     # ── 実効直線 ──────────────────────────────────────────────
     def _effective_line(self) -> Line:
-        """reversed_flag を考慮した実効直線（ref_start/end を入れ替えた仮想 Line）"""
+        """reversed_flag を考慮した実効直線を返す。
+
+        reversed_flag=True のとき ref_start と ref_end を入れ替えた仮想 Line
+        オブジェクトを生成して返す。id・segments・connection は元の Line と共有する。
+        reversed_flag=False のとき元の Line をそのまま返す。
+
+        Returns
+        -------
+        Line
+            実効直線。reversed_flag=True のとき方向が反転した仮想 Line。
+        """
         ln = self.line
         if not self.reversed_flag:
             return ln
@@ -374,16 +882,33 @@ class Clothoid:
     # ── カーブ方向 ────────────────────────────────────────────
     @property
     def effective_direction(self) -> Vec2:
+        """実効直線の方向単位ベクトル。
+
+        reversed_flag=True のとき元の Line.direction とは逆向きになる。
+        ref_start == ref_end のとき Vec2(1, 0) にフォールバックする。
+        `compute()` での接点計算と `is_left_curve` の判定に使う。
+        """
         ln = self._effective_line()
         return (ln.ref_end - ln.ref_start).normalized()
 
     @property
     def effective_ref_start(self) -> Vec2:
+        """実効直線の始点座標。
+
+        reversed_flag=False → line.ref_start、
+        reversed_flag=True  → line.ref_end。
+        `compute()` で Fresnel 積分を実施座標系に変換する際の原点として使う。
+        """
         return self._effective_line().ref_start
 
     @property
     def is_left_curve(self) -> bool:
-        """実効直線方向から円の中心への cross > 0 → 左カーブ"""
+        """このクロソイドが左カーブかどうかを返す。
+
+        実効直線の方向ベクトルと（実効始点→円心）ベクトルの 2D 外積が正の
+        とき True（円が直線の左側 = 左カーブ）。`_apply_arc_snap` での
+        snap 先（angle_start か angle_end か）の決定に使う。
+        """
         eln = self._effective_line()
         d   = (eln.ref_end - eln.ref_start).normalized()
         pm  = self.circle.center - eln.ref_start
@@ -391,7 +916,25 @@ class Clothoid:
 
     # ── 計算本体 ──────────────────────────────────────────────
     def compute(self):
-        """Clothoid.py の clothoid_data / clothoid_points ロジックで計算する"""
+        """接点座標と描画点列を再計算してキャッシュする。
+
+        Line・Circle が変形するたびに `Canvas._propagate_line/_circle` から
+        呼ばれる。計算失敗時は `_valid=False` を設定し、`_points=[]`・
+        `_line_pt=None`・`_circle_pt=None` にリセットする。
+
+        計算手順（成功時）:
+        1. `_find_tau` で全偏角 τ を求める
+        2. `_fresnel_xy_tau` で局所座標変位 (xe, ye) を計算
+        3. 接点座標（円側 cc、線側 lc）をワールド座標に変換
+        4. 等接線角度変化方式で描画点列を生成
+           （n_steps = max(80, int(τ/(2π)·512)+40) 点）
+        5. `_update_snaps()` で snap/split を適用
+
+        Notes
+        -----
+        失敗条件: circle.radius < 1e-9、または d_abs <= R（直線が円の内部）、
+        または `_find_tau` が None を返した（解なし）。
+        """
         self._valid     = False
         self._points    = []
         self._line_pt   = None
@@ -476,16 +1019,20 @@ class Clothoid:
 
     # ── snap 更新 ─────────────────────────────────────────────
     def _update_snaps(self):
+        """snap/split 状態を現在の接点位置に同期する。
+
+        `compute()` の末尾で呼ばれる。`snap_segment` と `snap_arc` は独立して
+        設定でき、切り替え時（on→off）は切り替え先メソッドが前の状態
+        (_split_*_ids) をクリアしてから新しい状態に移行する。
+        """
         if not self._valid:
             return
-        # 線分: snap on → 端点移動、snap off → 線分分割
         if self.snap_segment:
             if self._line_pt is not None:
                 self._apply_segment_snap()
         else:
             if self._line_pt is not None:
                 self._apply_segment_split()
-        # 円弧: snap on → 端点移動、snap off → 円弧分割
         if self.snap_arc:
             if self._circle_pt is not None:
                 self._apply_arc_snap()
@@ -495,7 +1042,18 @@ class Clothoid:
 
     # ── snap=on: 線分端点をスナップ ──────────────────────────
     def _apply_segment_snap(self):
-        """線側接点に最も近い線分端点をスナップ（snap_segment=True 専用）"""
+        """線側接点に最も近い Segment 端点を接点 t 値に移動する（snap_segment=True 専用）。
+
+        最近傍線分の選択には端点距離でなく `_dist_to_seg`（線分全体への距離）を
+        使うため、接点が線分の中央付近にある場合でも正しい線分を選べる。
+
+        既存の `_split_seg_ids` があれば先にクリアする（snap=off からの切り替え）。
+
+        Notes
+        -----
+        移動後に t_start >= t_end になる場合は反対端点を ±0.1 に強制移動して
+        線分の縮退を防ぐ。
+        """
         if not self.line.segments:
             return
         self._clear_segment_split()   # snap=off で作った分割があれば解除
@@ -515,9 +1073,16 @@ class Clothoid:
 
     # ── snap=off: 線分を接点で分割 ───────────────────────────
     def _apply_segment_split(self):
-        """
-        snap_segment=False 時、線側接点 X で最も近い線分 AB を
-        AX と XB に分割する。既に分割済みなら端点を追従更新する。
+        """線側接点 X で最も近い線分 AB を AX・XB に分割する（snap_segment=False 専用）。
+
+        既に `_split_seg_ids` が設定済みの場合は AX.t_end と XB.t_start を
+        現在の t_x に追従更新するだけで再分割しない（パフォーマンスと安定性）。
+
+        Notes
+        -----
+        - 接点が線分の端点に非常に近い（t_x が境界から 1e-6 以内）場合は分割しない
+        - 分割生成した線分の ID を `_split_seg_ids = [AX.id, XB.id]` に記録する
+        - `_split_seg_ids` に含まれる線分は候補から除外（自己参照を防ぐ）
         """
         if not self.line.segments:
             return
@@ -555,7 +1120,13 @@ class Clothoid:
         self._split_seg_ids = [best_seg.id, seg_xb.id]
 
     def _clear_segment_split(self):
-        """snap=off で作った分割線分を解除（AX+XB を元の AB に戻す）"""
+        """snap=off で分割した線分を元の 1 本に戻す。
+
+        `_split_seg_ids[1]`（XB）を削除し、`_split_seg_ids[0]`（AX）の
+        t_end を XB の元の t_end に戻す。その後 `_split_seg_ids` をクリアする。
+
+        snap_segment: False → True の切り替え時と、`Scene.remove_clothoid` 時に呼ばれる。
+        """
         if not self._split_seg_ids:
             return
         segs_by_id = {s.id: s for s in self.line.segments}
@@ -568,6 +1139,24 @@ class Clothoid:
 
     @staticmethod
     def _dist_to_seg(pt: 'Vec2', seg: 'Segment') -> float:
+        """点 pt から線分 seg への最短距離を返す。
+
+        `_apply_segment_snap` と `_apply_segment_split` で最近傍線分を
+        選択するときに使う。端点距離でなく線分全体への距離を使うため、
+        接点が線分の中央付近にある場合でも正しく選択できる。
+
+        Parameters
+        ----------
+        pt : Vec2
+            距離を求める点。
+        seg : Segment
+            対象の線分。
+
+        Returns
+        -------
+        float
+            線分が縮退（長さゼロ）のとき始点からの距離を返す。
+        """
         s, e = seg.start, seg.end
         d = e - s
         l2 = d.dot(d)
@@ -578,12 +1167,13 @@ class Clothoid:
 
     # ── snap=on: 円弧端点をスナップ ──────────────────────────
     def _apply_arc_snap(self):
-        """
-        円側接点に円弧端点をスナップ（snap_arc=True 専用）。
+        """円側接点に最も近い Arc 端点を接点角度に移動する（snap_arc=True 専用）。
 
-        仕様書（数学座標系: y上向き, 反時計=正）:
-          左カーブ → 円弧の始点 (angle_start) = circle_pt
-          右カーブ → 円弧の終点 (angle_end)   = circle_pt
+        左カーブ → arc.angle_start を circle_pt の角度に設定する。
+        右カーブ → arc.angle_end を circle_pt の角度に設定する。
+
+        円弧が存在しない場合は中心角 45° の円弧を自動生成して circle.arcs に追加する。
+        既存の `_split_arc_ids` があれば先にクリアする（snap=off からの切り替え）。
         """
         self._clear_arc_split()       # snap=off で作った分割があれば解除
         circle        = self.circle
@@ -609,11 +1199,13 @@ class Clothoid:
 
     # ── snap=off: 円弧を接点で分割 ───────────────────────────
     def _apply_arc_split(self):
-        """
-        snap_arc=False 時、円側接点 X で最も近い円弧を
-        (start→X) と (X→end) に分割する。既に分割済みなら端点を追従更新する。
-        左カーブ: circle_pt = 始点側 → angle_start = X
-        右カーブ: circle_pt = 終点側 → angle_end   = X
+        """円側接点 X で最も近い円弧を 2 分割する（snap_arc=False 専用）。
+
+        既に `_split_arc_ids` が設定済みの場合は arc_ax.angle_end と
+        arc_xb.angle_start を現在の angle_x に追従更新するだけで再分割しない。
+
+        分割対象の円弧は接点が内部に含まれるもの（端点から 1e-4 rad 以上内側）。
+        `_split_arc_ids = [arc_ax.id, arc_xb.id]` に記録する。
         """
         if not self.circle.arcs:
             return
@@ -654,7 +1246,14 @@ class Clothoid:
         self._split_arc_ids = [best_arc.id, arc_xb.id]
 
     def _clear_arc_split(self):
-        """snap=off で作った分割円弧を解除（元の円弧に戻す）"""
+        """snap=off で分割した円弧を元の 1 本に戻す。
+
+        `_split_arc_ids[0]`（start→X）の angle_end を `_split_arc_ids[1]`（X→end）
+        の angle_end で上書きし、`_split_arc_ids[1]` を circle.arcs から削除する。
+        その後 `_split_arc_ids` をクリアする。
+
+        snap_arc: False → True の切り替え時と、`Scene.remove_clothoid` 時に呼ばれる。
+        """
         if not self._split_arc_ids:
             return
         arcs_by_id = {a.id: a for a in self.circle.arcs}
@@ -668,7 +1267,10 @@ class Clothoid:
     # ── プロパティ ─────────────────────────────────────────────
     @property
     def _A(self) -> float:
-        """クロソイドパラメータ A = sqrt(R * L) = R * sqrt(2 * tau)"""
+        """クロソイドパラメータ A [m]。A = R·√(2τ) = √(R·L)。
+
+        右パネルの情報表示に使う。`is_valid=False` のとき 0.0 を返す。
+        """
         if not self._valid:
             return 0.0
         R = self.circle.radius
@@ -676,28 +1278,37 @@ class Clothoid:
 
     @property
     def line_contact(self) -> Optional[Vec2]:
+        """線側接点座標（実効直線上の点）。`compute()` でキャッシュ。無効時は None。"""
         return self._line_pt
 
     @property
     def circle_contact(self) -> Optional[Vec2]:
+        """円側接点座標（円周上の点）。`compute()` でキャッシュ。無効時は None。"""
         return self._circle_pt
 
     @property
     def points(self) -> list[Vec2]:
+        """描画点列（Vec2 リスト）。_line_pt から _circle_pt の順。無効時は空リスト。"""
         return self._points
 
     @property
     def is_valid(self) -> bool:
+        """compute() が成功したとき True。失敗条件: radius<1e-9 / d_abs<=R / τ解なし。"""
         return self._valid
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
+        """{"id","line_id","circle_id","reversed_flag","snap_segment","snap_arc"} 形式の辞書に変換する。
+
+        計算キャッシュ（_line_pt 等）はシリアライズしない。
+        ロード後は `Scene.from_dict` 内で `compute()` が呼ばれてキャッシュが再構築される。
+        """
         return {
-            "id":           self.id,
-            "line_id":      self.line.id,
-            "circle_id":    self.circle.id,
+            "id":            self.id,
+            "line_id":       self.line.id,
+            "circle_id":     self.circle.id,
             "reversed_flag": self.reversed_flag,
-            "snap_segment": self.snap_segment,
-            "snap_arc":     self.snap_arc,
+            "snap_segment":  self.snap_segment,
+            "snap_arc":      self.snap_arc,
         }
 
 
@@ -739,7 +1350,22 @@ class ArcSnap:
 
 
 def plan_length_of(obj) -> float:
-    """平面線形要素（Segment / Arc / Clothoid）の平面長を返す"""
+    """平面線形要素の平面長（道路上の長さ）を型に依らず返す。
+
+    `ElementProfile.plan_length` の設定、3D 中心線生成（`build_centerline`）、
+    縦断線形ウィンドウの累積距離計算（`set_plan_elements`）など、型を問わず
+    要素を扱う処理で広く使われる統一インターフェース。
+
+    Parameters
+    ----------
+    obj : Segment or Arc or Clothoid or any
+        平面長を求める要素。対応していない型は 0.0 を返す。
+
+    Returns
+    -------
+    float
+        平面長 [m]。Clothoid で `is_valid=False` または τ=0 のとき 0.0。
+    """
     if isinstance(obj, Segment):
         return obj.length()
     if isinstance(obj, Arc):
@@ -754,16 +1380,38 @@ def plan_length_of(obj) -> float:
 
 @dataclass
 class ElementProfile:
-    """
-    平面線形の1要素（Segment / Arc / Clothoid）に対応する縦断計画。
-    element_id で平面線形要素と紐付ける。
+    """平面線形要素（Segment/Arc/Clothoid）と縦断線形データを 1 対 1 で対応させるブリッジ。
 
-    grade_lines の距離はこの要素内の相対距離（始端 = 0、終端 = plan_length）で管理する。
-    要素チェーンを表示する際は、各要素の plan_length を累積して絶対距離に変換する。
+    平面線形はワールド座標で定義され、縦断線形は「平面距離に対する標高」で定義される。
+    ElementProfile がその 2 つの座標系を橋渡しする。
 
-    隣接要素との接点（端点）の標高は
-      この要素の elev_end  == 次の要素の elev_start
-    として一致させることで共有する。
+    grade_lines の距離はこの要素内の**相対距離**（始端=0、終端=plan_length）で管理する。
+    チェーン全体の絶対距離への変換は `ProfileCanvas.set_plan_elements` が担当する。
+
+    隣接要素との境界標高は `elev_end == 次要素の elev_start` で一致させる。
+    `_snap_grade_lines('both')` がこの一致を保証する。
+
+    Attributes
+    ----------
+    id : int
+        グローバルユニーク ID。
+    element_id : int
+        対応する Segment/Arc/Clothoid の ID。
+    element_type : str
+        'segment' / 'arc' / 'clothoid'。
+    plan_length : float
+        この要素の平面長 [m]。
+    reversed_flag : bool
+        True のとき、チェーン上でこの要素を終点→始点の向きで使っている。
+        grade_lines の dist/elev は正順で保存し、使用時に逆順変換する。
+    elev_start : float
+        始端標高 [m]（チェーン上での進行方向の始点側）。
+    elev_end : float
+        終端標高 [m]（隣接要素と共有する境界値）。
+    grade_lines : list[GradeLine]
+        勾配直線のリスト。相対距離で管理。
+    vertical_curves : list[VerticalCurve]
+        縦断曲線のリスト。
     """
     id:           int   = field(default_factory=new_id)
     element_id:   int   = -1    # 対応する Segment/Arc/Clothoid の id
@@ -776,6 +1424,7 @@ class ElementProfile:
     vertical_curves: list = field(default_factory=list) # list[VerticalCurve]
 
     def to_dict(self) -> dict:
+        """すべてのフィールドを含む辞書に変換する（JSON シリアライズ用）。"""
         return {
             "id":              self.id,
             "element_id":      self.element_id,
@@ -805,12 +1454,27 @@ class ElementProfile:
         return ep
 
     def elev_at(self, rel: float) -> float:
-        """
-        この EP 内の相対距離 rel [m] での標高を返す（縦断曲線優先）。
-        - rel は [0, plan_length] にクリップする
-        - VPC〜VPT 範囲内の VerticalCurve があればその放物線値を優先
-        - それ以外は GradeLine の線形補間
-        - 見つからない場合は 0.0
+        """この EP 内の相対距離 rel での標高を返す（縦断曲線優先）。
+
+        `build_centerline` での 3D 点列生成と `save_to_profiles` での端点標高更新に使う。
+
+        Parameters
+        ----------
+        rel : float
+            EP 内の相対距離 [m]。[0, plan_length] にクリップされる。
+
+        Returns
+        -------
+        float
+            標高 [m]。優先順位:
+            1. VPC-0.001 ≤ rel ≤ VPT+0.001 の VerticalCurve（放物線式）
+            2. dist_start-0.001 ≤ rel ≤ dist_end+0.001 の GradeLine（線形補間）
+            3. 該当なし → 0.0
+
+        Examples
+        --------
+        GL: dist_start=0, elev_start=10, dist_end=100, elev_end=20 のとき
+        elev_at(50) → 15.0、elev_at(0) → 10.0、elev_at(100) → 20.0
         """
         rel = max(0.0, min(rel, self.plan_length))
         for vc in self.vertical_curves:
@@ -857,6 +1521,23 @@ class VerticalAlignment:
         return va
 @dataclass
 class GradeLine:
+    """一定勾配の直線区間（縦断線形の基本要素）。
+
+    dist_start〜dist_end の距離範囲と elev_start〜elev_end の標高で定義する。
+    隣接する GradeLine の端点は `_snap_grade_lines()` によって強制一致させる。
+    `next_curve`/`prev_curve` はメモリ上の参照のみでファイルには保存しない。
+
+    Attributes
+    ----------
+    id : int
+        グローバルユニーク ID。
+    dist_start, dist_end : float
+        区間の始端・終端距離 [m]（EP 内の相対距離）。
+    elev_start, elev_end : float
+        始端・終端の標高 [m]。
+    next_curve, prev_curve : VerticalCurve or None
+        隣接する縦断曲線への参照（メモリ上のみ、ファイル非保存）。
+    """
     id: int = field(default_factory=new_id)
     dist_start: float = 0.0
     elev_start: float = 0.0
@@ -867,6 +1548,14 @@ class GradeLine:
 
     @property
     def gradient(self) -> float:
+        """勾配 [%]。右パネルの表示と _recalc_vc_gradients で g1/g2 の再計算に使う。
+
+        Returns
+        -------
+        float
+            (elev_end - elev_start) / (dist_end - dist_start) * 100。
+            dist_end - dist_start < 1e-9 のとき 0.0。
+        """
         dx = self.dist_end - self.dist_start
         if abs(dx) < 1e-9:
             return 0.0
@@ -888,29 +1577,89 @@ class GradeLine:
 
 @dataclass
 class VerticalCurve:
+    """縦断曲線（放物線）を表すデータクラス。
+
+    PVI（2勾配線の交点）を中心に VPC〜VPT の区間を放物線で結ぶ。
+    `elevation_at(dist)` が範囲外で NaN を返すため、`ElementProfile.elev_at` が
+    NaN を検出して GradeLine にフォールバックする。
+
+    Attributes
+    ----------
+    id : int
+        グローバルユニーク ID。
+    pvi_dist : float
+        PVI の累積距離 [m]（勾配直線の終点距離と一致）。
+    pvi_elev : float
+        PVI の標高 [m]。
+    g1 : float
+        前勾配 [%]（VPC より手前の勾配直線の勾配）。
+    g2 : float
+        後勾配 [%]（VPT より先の勾配直線の勾配）。
+    length : float
+        曲線長 L [m]。VPC〜VPT の距離。
+    prev_line_id, next_line_id : int
+        前後の GradeLine の ID（ファイル保存用）。-1 は未設定。
+    """
     id: int = field(default_factory=new_id)
     pvi_dist: float = 0.0
     pvi_elev: float = 0.0
-    g1: float = 0.0   # 前勾配 [%]
-    g2: float = 0.0   # 後勾配 [%]
+    g1: float = 0.0
+    g2: float = 0.0
     length: float = 50.0
-    prev_line_id: int = -1  # 前の勾配直線の id
-    next_line_id: int = -1  # 次の勾配直線の id
+    prev_line_id: int = -1
+    next_line_id: int = -1
 
     @property
-    def vpc_dist(self): return self.pvi_dist - self.length / 2
+    def vpc_dist(self) -> float:
+        """VPC（縦断曲線始点）の累積距離 [m]。pvi_dist - length/2。"""
+        return self.pvi_dist - self.length / 2
+
     @property
-    def vpt_dist(self): return self.pvi_dist + self.length / 2
+    def vpt_dist(self) -> float:
+        """VPT（縦断曲線終点）の累積距離 [m]。pvi_dist + length/2。"""
+        return self.pvi_dist + self.length / 2
+
     @property
-    def vpc_elev(self): return self.pvi_elev - self.g1 / 100 * self.length / 2
+    def vpc_elev(self) -> float:
+        """VPC の標高 [m]。pvi_elev - g1/100 * length/2。"""
+        return self.pvi_elev - self.g1 / 100 * self.length / 2
+
     @property
-    def vpt_elev(self): return self.pvi_elev + self.g2 / 100 * self.length / 2
+    def vpt_elev(self) -> float:
+        """VPT の標高 [m]。pvi_elev + g2/100 * length/2。"""
+        return self.pvi_elev + self.g2 / 100 * self.length / 2
+
     @property
-    def K(self):
+    def K(self) -> float:
+        """K 値（縦断曲線の緩やかさの指標）[m/%]。
+
+        「勾配が 1% 変化するのに必要な距離」を表す設計指標。
+        大きいほど緩やかな縦断曲線。|g2-g1| < 1e-9 のとき inf を返す。
+        """
         dg = abs(self.g2 - self.g1)
         return self.length / dg if dg > 1e-9 else float('inf')
 
     def elevation_at(self, dist: float) -> float:
+        """累積距離 dist での標高を放物線式で返す。
+
+        `ElementProfile.elev_at` から VPC〜VPT 範囲内の点に対して呼ばれる。
+
+        Parameters
+        ----------
+        dist : float
+            EP 内の相対距離 [m]（vpc_dist を原点とした局所距離 x = dist - vpc_dist で計算）。
+
+        Returns
+        -------
+        float
+            標高 [m]。x < 0 または x > length のとき float('nan')。
+            放物線式: vpc_elev + (g1/100)·x + ((g2-g1)/(2·length)/100)·x²
+
+        Examples
+        --------
+        g1=2%, g2=0%, L=100m, vpc_elev=10.0 のとき
+        x=0 → 10.0m、x=50 → 10.5m、x=100 → 10.0m
+        """
         x = dist - self.vpc_dist
         if x < 0 or x > self.length:
             return float('nan')
@@ -931,6 +1680,36 @@ class VerticalCurve:
 
 # ─── シーン（全データ保持） ───────────────────────────────────
 class Scene:
+    """アプリケーション全体の唯一の状態保持者（Single Source of Truth）。
+
+    すべての図形・縦断データ・ニックネームをこのオブジェクトが管理する。
+    Undo 機能は `Canvas.push_undo` が `to_dict()` で Scene 全体を JSON に
+    シリアライズしてスタックに積む方式で実現する。そのため Scene は常に
+    完全にシリアライズ可能でなければならない。
+
+    `segment_snaps`/`arc_snaps` は将来の拡張用フィールドで、現バージョンでは
+    Clothoid の `_split_seg_ids`/`_split_arc_ids` が内部で分割管理を行うため
+    実質未使用。
+
+    Attributes
+    ----------
+    lines : list[Line]
+        全直線。
+    circles : list[Circle]
+        全円。
+    clothoids : list[Clothoid]
+        全クロソイド。
+    element_profiles : list[ElementProfile]
+        縦断線形データ（要素単位）。
+    vertical_alignments : list[VerticalAlignment]
+        旧フォーマット互換用。新規データは使用しない。
+    segment_snaps : list[SegmentSnap]
+        線分端点の接続情報（現バージョンでは実質未使用）。
+    arc_snaps : list[ArcSnap]
+        円弧端点の接続情報（現バージョンでは実質未使用）。
+    nicknames : dict[int, str]
+        ID → ニックネームの辞書。
+    """
     def __init__(self):
         self.lines:     list[Line]          = []
         self.circles:   list[Circle]        = []
@@ -942,57 +1721,138 @@ class Scene:
         self.nicknames: dict[int, str] = {}   # id → nickname
 
     def get_nickname(self, obj_id: int, prefix: str = "") -> str:
+        """図形のニックネームを返す。未設定のとき "nickname_{prefix}_{obj_id}" を返す。
+
+        Parameters
+        ----------
+        obj_id : int
+            図形の ID。
+        prefix : str, optional
+            未設定時のデフォルト名に使うプレフィックス（例: "line", "circle"）。
+
+        Returns
+        -------
+        str
+            設定済みニックネーム、または "nickname_{prefix}_{obj_id}"。
+        """
         if obj_id in self.nicknames:
             return self.nicknames[obj_id]
         return f"nickname_{prefix}_{obj_id}"
 
     def set_nickname(self, obj_id: int, name: str):
+        """図形のニックネームを設定する。name が空文字のとき辞書から削除する。
+
+        Parameters
+        ----------
+        obj_id : int
+            図形の ID。
+        name : str
+            設定するニックネーム。空文字のとき既存エントリを削除する。
+        """
         if name:
             self.nicknames[obj_id] = name
         elif obj_id in self.nicknames:
             del self.nicknames[obj_id]
 
     def add_line(self, line: Line) -> Line:
+        """Line を lines リストに追加し、デフォルトニックネームを設定する。
+
+        既存ニックネームは上書きしない。
+
+        Returns
+        -------
+        Line
+            引数の line をそのまま返す（メソッドチェーン用）。
+        """
         self.lines.append(line)
-        # デフォルトニックネーム
         if line.id not in self.nicknames:
             self.nicknames[line.id] = f"nickname_line_{line.id}"
         return line
 
     def add_circle(self, circle: Circle) -> Circle:
+        """Circle を circles リストに追加し、デフォルトニックネームを設定する。
+
+        Returns
+        -------
+        Circle
+            引数の circle をそのまま返す（メソッドチェーン用）。
+        """
         self.circles.append(circle)
         if circle.id not in self.nicknames:
             self.nicknames[circle.id] = f"nickname_circle_{circle.id}"
         return circle
 
     def add_clothoid(self, clothoid: Clothoid) -> Clothoid:
+        """Clothoid を clothoids リストに追加し、デフォルトニックネームを設定する。
+
+        Returns
+        -------
+        Clothoid
+            引数の clothoid をそのまま返す（メソッドチェーン用）。
+        """
         self.clothoids.append(clothoid)
         if clothoid.id not in self.nicknames:
             self.nicknames[clothoid.id] = f"nickname_clothoid_{clothoid.id}"
         return clothoid
 
     def remove_line(self, line: Line):
-        # 関連クロソイドも削除
+        """Line と、それを参照するすべての Clothoid を削除する。
+
+        Clothoid の削除は `remove_clothoid` 経由で行い、分割済み線分・円弧の
+        復元（`_clear_segment_split`/`_clear_arc_split`）を確実に実行する。
+        """
         related = [c for c in self.clothoids if c.line is line]
         for c in related:
             self.remove_clothoid(c)
         self.lines.remove(line)
 
     def remove_circle(self, circle: Circle):
+        """Circle と、それを参照するすべての Clothoid を削除する。"""
         related = [c for c in self.clothoids if c.circle is circle]
         for c in related:
             self.remove_clothoid(c)
         self.circles.remove(circle)
 
     def remove_clothoid(self, clothoid: Clothoid):
+        """Clothoid を clothoids リストから除去する。
+
+        除去前に `_clear_segment_split()` と `_clear_arc_split()` を呼んで
+        snap=off で分割した線分・円弧を元に戻す。
+        """
         if clothoid in self.clothoids:
+            clothoid._clear_segment_split()
+            clothoid._clear_arc_split()
             self.clothoids.remove(clothoid)
 
     def clothoids_for(self, line: Line, circle: Circle) -> list[Clothoid]:
+        """指定 Line と Circle の両方を参照する Clothoid のリストを返す。
+
+        右パネルの _build_line_circle でクロソイドの本数（0/1/2）を判定するために使う。
+
+        Returns
+        -------
+        list[Clothoid]
+            該当する Clothoid のリスト。0〜2 要素。
+        """
         return [c for c in self.clothoids if c.line is line and c.circle is circle]
 
     def connected_objects(self, obj) -> list:
-        """obj に接続している図形一覧"""
+        """obj に接続している図形の一覧を返す。
+
+        右パネルの「関連図形」表示に使う。
+
+        Parameters
+        ----------
+        obj : Line or Circle or Clothoid
+            対象の図形。
+
+        Returns
+        -------
+        list
+            - Line: この直線を参照するクロソイド + 接続中の相手直線
+            - Circle: この円を参照するクロソイド
+            - Clothoid: 参照する直線と円
+        """
         result = []
         if isinstance(obj, Line):
             for c in self.clothoids:
@@ -1011,9 +1871,14 @@ class Scene:
             result.append(obj.circle)
         return result
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
+        """シーン全体を JSON シリアライズ可能な辞書に変換する。
+
+        各図形の辞書の 'id' の直後に 'nickname' を挿入して返す。
+        Undo スタックへの積み込みとファイル保存の両方で使う。
+        """
         def _with_nick(d: dict) -> dict:
-            """dict の 'id' の次に 'nickname' を挿入して返す"""
+            """'id' の次に 'nickname' を挿入した辞書を返す（内部ヘルパー）。"""
             fid = d.get("id")
             nick = self.nicknames.get(fid)
             if nick is None:
@@ -1046,7 +1911,26 @@ class Scene:
         }
 
     @staticmethod
-    def from_dict(d) -> 'Scene':
+    def from_dict(d: dict) -> 'Scene':
+        """辞書から Scene を復元する。
+
+        復元順序: lines → circles → clothoids → element_profiles →
+        vertical_alignments → 旧フォーマット互換 → ID カウンタリセット。
+
+        ID 衝突（`_resolve_id`）: seen_ids セットで衝突を検出し、衝突した ID は
+        `new_id()` で振り直す。読み込み後は全 ID の最大値 + 1 からカウンタを再開する。
+
+        Parameters
+        ----------
+        d : dict
+            `to_dict()` が返す形式の辞書。旧フォーマット（トップレベル
+            nicknames フィールド）との後方互換も維持する。
+
+        Returns
+        -------
+        Scene
+            復元された Scene オブジェクト。
+        """
         sc = Scene()
         lines_by_id   = {}
         circles_by_id = {}
@@ -1157,6 +2041,20 @@ def _elem_endpoints(obj):
 
 
 def _pt_dist(a, b) -> float:
+    """2点間の距離を返す。いずれかが None のとき inf を返す。
+
+    `resolve_chain()` 内で端点距離の比較に使う。
+
+    Parameters
+    ----------
+    a, b : Vec2 or None
+        距離を求める 2 点。
+
+    Returns
+    -------
+    float
+        ユークリッド距離。いずれかが None のとき float('inf')。
+    """
     if a is None or b is None:
         return float('inf')
     import math
@@ -1164,9 +2062,27 @@ def _pt_dist(a, b) -> float:
 
 
 def tangent_at(obj, at_end: bool) -> tuple:
-    """
-    obj の始点(at_end=False)または終点(at_end=True)での進行方向接線ベクトル（単位ベクトル）を返す。
-    Segment / Arc / Clothoid に対応。
+    """図形の端点での接線単位ベクトルを (dx, dy) で返す。
+
+    `entry_tangent` と組み合わせて右パネルの [順]/[逆] 判定に使う。
+
+    Parameters
+    ----------
+    obj : Segment or Arc or Clothoid
+        接線を求める図形。
+    at_end : bool
+        False のとき始点側、True のとき終点側の接線を返す。
+
+    Returns
+    -------
+    tuple[float, float]
+        単位接線ベクトル (dx, dy)。Clothoid の points が 2 点未満のとき (1, 0)。
+
+    Notes
+    -----
+    - Segment: 全域で一定（start→end 方向）
+    - Arc: angle_start/end での (-sin, cos)
+    - Clothoid: points の先頭/末尾 2 点の差分
     """
     import math
     if isinstance(obj, Segment):
@@ -1192,11 +2108,28 @@ def tangent_at(obj, at_end: bool) -> tuple:
 
 
 def entry_tangent(obj, connect_at_start: bool):
-    """
-    図形の「共有端点 → 近傍点」方向ベクトルを返す（単位ベクトル）。
-    connect_at_start=True:  共有端点が obj の始点
-    connect_at_start=False: 共有端点が obj の終点
-    取得できない場合は None を返す。
+    """「共有端点→近傍点」方向の単位ベクトルを返す。
+
+    右パネルの [順]/[逆] ラベル表示で `tangent_at`（出口接線）と内積を取る
+    入口方向ベクトルを提供する。
+
+    Parameters
+    ----------
+    obj : Segment or Arc or Clothoid
+        対象の図形。
+    connect_at_start : bool
+        True のとき共有端点が obj の始点側、False のとき終点側。
+
+    Returns
+    -------
+    tuple[float, float] or None
+        単位方向ベクトル (dx, dy)。取得できない場合（Clothoid が無効等）は None。
+
+    Notes
+    -----
+    - Segment: 共有端点からもう一方の端点への方向
+    - Arc: 共有端点から ±0.1° の近傍点への方向
+    - Clothoid: points の共有端点の隣の点への方向
     """
     import math
     if isinstance(obj, Segment):

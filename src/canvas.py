@@ -41,6 +41,13 @@ HIT_DIST = 8  # px
 
 
 def qp(v: Vec2) -> QPointF:
+    """Vec2 を QPointF に変換する。QPainter の各描画メソッドに渡す際に使う。
+
+    Returns
+    -------
+    QPointF
+        (v.x, v.y) を持つ QPointF。
+    """
     return QPointF(v.x, v.y)
 
 
@@ -106,20 +113,62 @@ class Canvas(QWidget):
 
     # ─── 座標変換 ────────────────────────────────────────────
     def w2s(self, p: Vec2) -> QPointF:
+        """ワールド座標 → スクリーン座標（QPointF）に変換する。
+
+        y 軸が反転する（上向き正 → 下向き正）。
+
+        Parameters
+        ----------
+        p : Vec2
+            ワールド座標。
+
+        Returns
+        -------
+        QPointF
+            スクリーン座標。screen_x = p.x * scale + offset.x、
+            screen_y = -p.y * scale + offset.y。
+        """
         return QPointF(p.x * self._scale + self._offset.x,
                        -p.y * self._scale + self._offset.y)
 
     def s2w(self, x: float, y: float) -> Vec2:
+        """スクリーン座標 → ワールド座標（Vec2）に変換する（w2s の逆変換）。
+
+        Parameters
+        ----------
+        x, y : float
+            スクリーン座標（ピクセル）。
+
+        Returns
+        -------
+        Vec2
+            ワールド座標。
+        """
         return Vec2((x - self._offset.x) / self._scale,
                    -(y - self._offset.y) / self._scale)
 
     def s2w_qp(self, p: QPointF) -> Vec2:
+        """QPointF を受け取る s2w のラッパー。"""
         return self.s2w(p.x(), p.y())
 
     def scale_w2s(self, d: float) -> float:
+        """ワールド距離 [m] → スクリーン距離 [px] に変換する。
+
+        Returns
+        -------
+        float
+            d * scale [px]。
+        """
         return d * self._scale
 
     def scale_s2w(self, d: float) -> float:
+        """スクリーン距離 [px] → ワールド距離 [m] に変換する。
+
+        Returns
+        -------
+        float
+            d / scale [m]。
+        """
         return d / self._scale
 
     # ─── モード変更 ──────────────────────────────────────────
@@ -246,6 +295,21 @@ class Canvas(QWidget):
         return None
 
     def _hit_object(self, sw: Vec2) -> Optional[object]:
+        """ワールド座標 sw に最も近い図形オブジェクトを返す。
+
+        優先順位（高→低）: Clothoid → Arc → Circle → Segment → Line。
+        各リストを reversed() で走査するため、後から追加した図形が優先される。
+
+        Parameters
+        ----------
+        sw : Vec2
+            判定するワールド座標。
+
+        Returns
+        -------
+        Clothoid or Arc or Circle or Segment or Line or None
+            HIT_DIST 以内に最も近い図形。なければ None。
+        """
         """ワールド座標 sw でヒットした図形を返す"""
         w = self.s2w(sw.x, sw.y)
         px = self.scale_s2w(HIT_DIST)
@@ -311,6 +375,11 @@ class Canvas(QWidget):
 
     # ─── 全体表示 ────────────────────────────────────────────
     def fit_all(self):
+        """全図形の AABB を計算し、10% マージンで画面全体に収まるよう表示を調整する。
+
+        図形がない場合はスケール 1.0、中心原点にリセットする。
+        全図形が 1 点に集中する場合は最小幅 1m を確保する。
+        """
         pts = []
         for ln in self.scene.lines:
             pts.extend([ln.ref_start, ln.ref_end])
@@ -371,6 +440,14 @@ class Canvas(QWidget):
         self._draw_handles(painter)
 
     def _color_for(self, obj, base: QColor) -> QColor:
+        """選択中・ホバー中に応じたハイライト色を返す。
+
+        Returns
+        -------
+        QColor
+            選択中 → 黄橙色（#FFA500）、ホバー中 → 黄色（#FFFF00）、
+            それ以外 → base。
+        """
         if obj in self._selected:
             return C_SELECT
         if obj is self._hovered:
@@ -962,8 +1039,22 @@ class Canvas(QWidget):
 
     # ─── スムーズ接続 ─────────────────────────────────────────
     def smooth_connect(self, line_a: Line, line_b: Line) -> bool:
-        """
-        2直線のスムーズ接続 (仕様書 手順 1〜6)。
+        """2直線をクロソイド経由でスムーズ接続する（仕様書 手順 1〜6）。
+
+        Parameters
+        ----------
+        line_a, line_b : Line
+            接続する 2 直線。どちらも少なくとも 1 本の Segment を持つ必要がある。
+
+        Returns
+        -------
+        bool
+            成功のとき True。失敗条件: Segment がない / 平行 / 二等分線が零ベクトル。
+
+        Notes
+        -----
+        デフォルト半径 R=50m、d=75m（d/R=1.5）でクロソイド存在条件 d>R を満たす。
+        生成した Circle と 2 本の Clothoid を Scene に追加し、`kind="smooth"` に昇格する。
         """
         if not line_a.segments or not line_b.segments:
             return False
@@ -1054,7 +1145,10 @@ class Canvas(QWidget):
         return True
 
     def disconnect_lines(self, line_a: Line, line_b: Line):
-        """接続解除"""
+        """2直線の接続を解除する（折れ線/スムーズ共通）。
+
+        両直線の `connection` を None に設定する。push_undo() を呼ぶ。
+        """
         self.push_undo()
         line_a.connection = None
         line_b.connection = None

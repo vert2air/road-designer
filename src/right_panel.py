@@ -1,6 +1,8 @@
-"""
-右パネル (プロパティ・操作パネル)
-"""
+"""右パネル（プロパティ・操作パネル）モジュール。
+
+Canvas での選択に連動してプロパティ表示・数値入力・接続操作を提供する。
+接続操作は request_* シグナル経由で MainWindow に委譲する疎結合構造。
+""" 
 from __future__ import annotations
 import math
 from typing import Optional, Callable
@@ -16,6 +18,24 @@ from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
 
 def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
                   step: float = 0.1, decimals: int = 3) -> QDoubleSpinBox:
+    """設定済みの QDoubleSpinBox を生成して返すファクトリ関数。
+
+    Parameters
+    ----------
+    val : float
+        初期値。
+    lo, hi : float, optional
+        最小・最大値。
+    step : float, optional
+        単一ステップ量（デフォルト 0.1）。
+    decimals : int, optional
+        小数点以下桁数（デフォルト 3）。
+
+    Returns
+    -------
+    QDoubleSpinBox
+        設定済みのスピンボックス。
+    """
     sb = QDoubleSpinBox()
     sb.setRange(lo, hi)
     sb.setSingleStep(step)
@@ -25,7 +45,7 @@ def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
 
 
 def _separator() -> QFrame:
-    """水平セパレータ線"""
+    """右パネル内の水平区切り線（HLine）を返す。"""
     line = QFrame()
     line.setFrameShape(QFrame.Shape.HLine)
     line.setFrameShadow(QFrame.Shadow.Sunken)
@@ -33,7 +53,15 @@ def _separator() -> QFrame:
 
 
 def _style_disabled(btn: QPushButton, disabled: bool):
-    """disable 状態を視覚的に明確にする"""
+    """ボタンの disabled 状態をスタイルで視覚的に明示する。
+
+    Parameters
+    ----------
+    btn : QPushButton
+        スタイルを適用するボタン。
+    disabled : bool
+        True のときグレーアウトスタイルを適用する。
+    """
     if disabled:
         btn.setStyleSheet("color: #666666; background-color: #2a2a2a;")
     else:
@@ -121,7 +149,13 @@ class RightPanel(QWidget):
         root_layout.addWidget(scroll, 1)
 
     def update_mouse_pos(self, x: float, y: float):
-        """キャンバス上のマウス座標をリアルタイム表示"""
+        """Canvas.mouse_world_pos シグナルを受け取り、マウス座標ラベルを更新する。
+
+        Parameters
+        ----------
+        x, y : float
+            ワールド座標（小数点以下 3 桁で表示する）。
+        """
         self._lbl_mouse_x.setText(f"X: {x:.3f}")
         self._lbl_mouse_y.setText(f"Y: {y:.3f}")
 
@@ -136,7 +170,16 @@ class RightPanel(QWidget):
         self._refresh_nick_combos()
 
     def _on_combo_changed(self, idx: int):
-        """いずれかのコンボが変更されたら後続コンボの選択肢を再構築"""
+        """コンボボックス選択変更時のコールバック。
+
+        最後のコンボに図形が選択された場合は _add_nick_combo で 1 個追加する。
+        その後 _refresh_nick_combos で全コンボの選択肢を更新する。
+
+        Parameters
+        ----------
+        idx : int
+            変更されたコンボボックスのインデックス（現在は使用しない）。
+        """
         sender = self.sender()
         if sender is not None and idx >= 0:
             text = sender.itemText(idx)
@@ -162,7 +205,20 @@ class RightPanel(QWidget):
     SNAP_TOL = SNAP_TOL  # models.SNAP_TOL を参照（= 1.0 m）
 
     def _endpoints_of(self, obj) -> list:
-        """図形の端点座標リストを返す（Segment/Arc/Clothoid のみ）"""
+        """図形の端点座標リストを返す。
+
+        コンボの隣接判定で共有端点との距離計算に使う。
+
+        Parameters
+        ----------
+        obj : Segment or Arc or Clothoid or any
+            端点を取得する図形。
+
+        Returns
+        -------
+        list[Vec2]
+            [始点, 終点]。Clothoid が無効または非対応型のとき空リスト。
+        """
         from models import Vec2
         if isinstance(obj, Segment):
             return [obj.start, obj.end]
@@ -174,12 +230,21 @@ class RightPanel(QWidget):
         return []
 
     def _adjacent_elements(self, obj, exclude_pt=None) -> list:
-        """
-        obj の端点に隣接する図形リストを返す。
-        exclude_pt が指定された場合、その点と一致する端点は除外して隣接を探す。
-        戻り値: [(cand, is_forward), ...]
-          is_forward=True  → cand の始点側で接続（順方向）
-          is_forward=False → cand の終点側で接続（逆方向）
+        """obj の端点に隣接する図形のリストを返す。
+
+        Parameters
+        ----------
+        obj : Segment or Arc or Clothoid
+            基準となる図形。
+        exclude_pt : Vec2, optional
+            この座標と SNAP_TOL 以内の obj 端点を検索から除外する。
+            2 つ目コンボで「出口端点側だけ」の隣接を取る際に使う。
+
+        Returns
+        -------
+        list[tuple]
+            [(cand, is_forward), ...] のリスト。
+            is_forward=True: cand の始点で接続（正順）、False: 終点で接続（逆順）。
         """
         my_pts = self._endpoints_of(obj)
         if exclude_pt is not None:
@@ -222,8 +287,21 @@ class RightPanel(QWidget):
         return result
 
     def _free_endpoint(self, obj, shared_pt) -> object:
-        """
-        obj の端点のうち shared_pt と一致しない方を返す。
+        """obj の端点のうち shared_pt と一致しない方（自由端点）を返す。
+
+        スムーズ接続の二等分線計算で U/V（X と反対側の端点）を特定するために使う。
+
+        Parameters
+        ----------
+        obj : Segment or Arc or Clothoid
+            対象の図形。
+        shared_pt : Vec2
+            共有端点（交点 X）の座標。
+
+        Returns
+        -------
+        Vec2 or None
+            X と SNAP_TOL を超えて離れた端点。両端点が共有点の場合は None。
         """
         for p in self._endpoints_of(obj):
             if math.hypot(p.x - shared_pt.x, p.y - shared_pt.y) > self.SNAP_TOL:
@@ -231,7 +309,20 @@ class RightPanel(QWidget):
         return None
 
     def _shared_pt(self, obj_a, obj_b) -> object:
-        """obj_a と obj_b の共有端点を返す（なければ None）"""
+        """obj_a と obj_b の共有端点を返す。
+
+        全端点ペアを総当たりし、SNAP_TOL 以内の組み合わせを探す。
+
+        Parameters
+        ----------
+        obj_a, obj_b : Segment or Arc or Clothoid
+            共有端点を探す 2 つの図形。
+
+        Returns
+        -------
+        Vec2 or None
+            共有端点の座標。なければ None。
+        """
         for pa in self._endpoints_of(obj_a):
             for pb in self._endpoints_of(obj_b):
                 if math.hypot(pa.x - pb.x, pa.y - pb.y) < self.SNAP_TOL:
@@ -239,7 +330,16 @@ class RightPanel(QWidget):
         return None
 
     def _all_items(self) -> list[str]:
-        """全図形のコンボラベルリスト（タイプ別・名称順）"""
+        """Scene 内の全図形のコンボラベルリストを返す。
+
+        タイプ別にグループ化してニックネーム順にソートする。
+        先頭に "(なし)" を含む。
+
+        Returns
+        -------
+        list[str]
+            順序: 直線 → 線分 → 円 → 円弧 → クロソイド。
+        """
         lines_items    = sorted([f"{self.scene.get_nickname(ln.id,'line')} [直線#{ln.id}]"
                                   for ln in self.scene.lines])
         seg_items      = sorted([f"線分#{seg.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分#{seg.id}]"
@@ -288,11 +388,37 @@ class RightPanel(QWidget):
         return dot >= 0
 
     def _tangent_at(self, obj, at_end: bool) -> tuple:
-        """models.tangent_at への委譲"""
+        """図形端点の接線単位ベクトルを返す（models.tangent_at への委譲）。
+
+        Parameters
+        ----------
+        obj : Segment or Arc or Clothoid
+            接線を求める図形。
+        at_end : bool
+            False で始点側、True で終点側。
+
+        Returns
+        -------
+        tuple[float, float]
+            単位接線ベクトル (dx, dy)。
+        """
         return tangent_at(obj, at_end)
 
     def _entry_tangent(self, obj, connect_at_start: bool) -> tuple:
-        """models.entry_tangent への委譲"""
+        """共有端点→近傍点方向の単位ベクトルを返す（models.entry_tangent への委譲）。
+
+        Parameters
+        ----------
+        obj : Segment or Arc or Clothoid
+            対象の図形。
+        connect_at_start : bool
+            True のとき共有端点が始点側。
+
+        Returns
+        -------
+        tuple[float, float] or None
+            単位ベクトル。取得不可のとき None。
+        """
         return entry_tangent(obj, connect_at_start)
 
     def _next_is_forward(self, prev_obj, prev_is_fwd, next_obj) -> bool:
@@ -311,7 +437,12 @@ class RightPanel(QWidget):
         return d_start < d_end   # 始点で接続 → 正順(True)
 
     def _refresh_nick_combos(self):
-        """コンボボックスの選択肢を更新する。"""
+        """全コンボボックスの選択肢を再構築する。
+
+        先頭コンボは全図形を表示し、2 つ目以降は隣接候補を先頭に
+        [順]/[逆] ラベル付きで表示する。選択中テキストをプレフィックス変化を
+        考慮して可能な限り復元する。
+        """
         all_items = self._all_items()
         selected_objs = [self._find_by_nick_label(cb.currentText())
                          for cb in self._nick_combos]
@@ -365,7 +496,27 @@ class RightPanel(QWidget):
             cb.blockSignals(False)
 
     def _fill_adjacent_items(self, cb, adj, prev_obj, prev_is_fwd, is_2nd: bool):
-        """隣接候補リストをコンボボックスに追加する（[順]/[逆] プレフィックス付き）。"""
+        """隣接候補リストをコンボボックスに追加する。
+
+        Parameters
+        ----------
+        cb : QComboBox
+            追加先のコンボボックス。
+        adj : list[tuple]
+            [(cand, is_forward), ...] の隣接候補リスト。
+        prev_obj : Segment or Arc or Clothoid
+            前のコンボで選択された図形。
+        prev_is_fwd : bool
+            前の図形をどちらの向きで通過するか。
+        is_2nd : bool
+            True のとき 2 つ目コンボ用ロジック（_prev_is_fwd_for_adj を使う）。
+            False のとき 3 つ目以降用（prev_is_fwd をそのまま使う）。
+
+        Notes
+        -----
+        len(adj) >= 2 のとき [順]/[逆] プレフィックスを付与する。
+        """
+
         show_dir = len(adj) >= 2
         for cand, _ in adj:
             base_label = self._label_for_obj(cand)
@@ -380,6 +531,17 @@ class RightPanel(QWidget):
                 cb.addItem(base_label)
 
     def _prev_is_fwd_for_adj(self, prev_obj, cand) -> bool:
+        """2 つ目コンボ専用。cand が prev_obj のどちらの端点で接続しているかを返す。
+
+        cand の端点が prev_obj の終点（pts[-1]）に近ければ True（正順で通過）、
+        始点（pts[0]）に近ければ False（逆順で通過）。
+        どちらにも一致しない場合は True を返す。
+
+        Returns
+        -------
+        bool
+            prev_obj を正順（True）で通過してきたか、逆順（False）か。
+        """
         """
         prev_obj の隣接図形 cand に繋がるとき、prev_obj をどちら向きで通過してきたかを返す。
         - cand が prev_obj の終点側に接続 → prev_obj を正順(True)で通過してきた
@@ -549,13 +711,21 @@ class RightPanel(QWidget):
         return result
 
     def _redraw(self):
-        """シーンを再計算して再描画する"""
+        """全クロソイドを compute() で再計算し scene_changed を emit する。
+
+        数値入力や snap 設定変更後にクロソイドの状態が不整合になった場合の
+        手動修復用として「再描画」ボタンから呼ばれる。
+        """
         for clo in self.scene.clothoids:
             clo.compute()
         self.scene_changed.emit()
 
     def _delete_selected_objs(self):
-        """コンボボックスで選択中の図形を削除する"""
+        """コンボボックスで選択中の図形を QMessageBox 確認後に削除する。
+
+        確認ダイアログでキャンセルされた場合は何もしない。
+        削除は request_delete シグナル経由で MainWindow に委譲する。
+        """
         from PyQt6.QtWidgets import QMessageBox
         objs = []
         for cb in self._nick_combos:
@@ -614,7 +784,16 @@ class RightPanel(QWidget):
         self._rebuild_props()
 
     def _sync_combos_to_selection(self, selected: list):
-        """設計画面での選択をコンボボックスに反映する"""
+        """Canvas の選択変更をコンボボックスに反映する。
+
+        コンボ数が選択図形数より少ない場合は _add_nick_combo で補充する。
+        ラベル検索は [順]/[逆] プレフィックスを考慮する。
+
+        Parameters
+        ----------
+        selected : list
+            Canvas で選択中の図形リスト。
+        """
         labels = []
         for obj in selected:
             label = self._label_for_obj(obj)
@@ -644,7 +823,18 @@ class RightPanel(QWidget):
                 cb.blockSignals(False)
 
     def _label_for_obj(self, obj) -> str:
-        """図形オブジェクトからコンボラベル文字列を生成する"""
+        """図形オブジェクトからコンボラベル文字列を生成する。
+
+        Parameters
+        ----------
+        obj : Line or Segment or Circle or Arc or Clothoid or any
+            ラベルを生成する図形。
+
+        Returns
+        -------
+        str
+            "{ニックネーム} [種別#{id}]" 形式。非対応型は空文字。
+        """
         if isinstance(obj, Line):
             return f"{self.scene.get_nickname(obj.id, 'line')} [直線#{obj.id}]"
         if isinstance(obj, Segment):
@@ -754,7 +944,11 @@ class RightPanel(QWidget):
         self._add_vertical_profile_info(obj)
 
     def _add_vertical_profile_info(self, obj):
-        """平面線形要素に対応する縦断設計情報（ElementProfile）を表示する"""
+        """対応する ElementProfile が存在すれば縦断情報を右パネルに追加する。
+
+        表示内容: 平面長・始終端標高・GradeLine 一覧・VerticalCurve 一覧。
+        ElementProfile が存在しない場合は何も表示しない。
+        """
         from models import ElementProfile
         oid = getattr(obj, 'id', None)
         if oid is None:
@@ -839,6 +1033,17 @@ class RightPanel(QWidget):
         lay = QVBoxLayout(grp)
 
         def add_vec2(label, get_fn, set_fn):
+            """Vec2 入力フォーム（X/Y スピンボックス）を _prop_layout に追加する。
+
+            Parameters
+            ----------
+            label : str
+                グループラベル（例: "参照始点"）。
+            get_fn : callable
+                現在値を Vec2 で返すゲッター関数。
+            set_fn : callable
+                Vec2 を受け取るセッター関数。
+            """
             lay.addWidget(QLabel(label))
             row = QHBoxLayout()
             sbx = _make_spinbox(get_fn().x)
@@ -1016,6 +1221,19 @@ class RightPanel(QWidget):
 
         # 始点 (t_start から計算)
         def add_endpoint(label, get_t, set_t, other_t_getter):
+            """線分端点の X/Y/t 入力フォームを生成する。
+
+            Parameters
+            ----------
+            label : str
+                グループラベル（"始点" または "終点"）。
+            get_t : callable
+                現在の t 値を返すゲッター。
+            set_t : callable
+                t 値を設定するセッター。
+            other_t_getter : callable
+                反対端の t 値を返すゲッター（縮退防止の比較に使う）。
+            """
             lay.addWidget(QLabel(label))
             pt = ln.point_at(get_t())
             row_x = QHBoxLayout()
@@ -1102,6 +1320,17 @@ class RightPanel(QWidget):
         lay.addWidget(_separator())
 
         def add_arc_endpoint(label, get_angle, set_angle):
+            """円弧端点の角度・X/Y 入力フォームを生成する。
+
+            Parameters
+            ----------
+            label : str
+                グループラベル（"始点" または "終点"）。
+            get_angle : callable
+                現在の角度（ラジアン）を返すゲッター。
+            set_angle : callable
+                角度（ラジアン）を設定するセッター。
+            """
             lay.addWidget(QLabel(label))
             ang_deg = math.degrees(get_angle())
             pt      = Vec2(ci.center.x + ci.radius * math.cos(get_angle()),
@@ -1236,7 +1465,24 @@ class RightPanel(QWidget):
         self._prop_layout.addWidget(grp)
 
     def _seg_end_blocked(self, seg: Segment, end: str) -> bool:
-        """線分の端点がクロソイドに束縛されているか確認"""
+        """線分の指定端点がクロソイドに束縛されているか確認する。
+
+        結合操作（_build_two_segments）で束縛端点を除外するために使う。
+
+        Parameters
+        ----------
+        seg : Segment
+            確認対象の線分。
+        end : str
+            'start' または 'end'。
+
+        Returns
+        -------
+        bool
+            束縛されているとき True。
+            条件 1: snap_segment=True のクロソイドの接点が端点と一致する。
+            条件 2: seg.id が clo._split_seg_ids に含まれる。
+        """
         for clo in self.scene.clothoids:
             if not clo.is_valid:
                 continue
@@ -1326,7 +1572,24 @@ class RightPanel(QWidget):
         self._prop_layout.addWidget(grp)
 
     def _arc_end_blocked(self, arc: Arc, end: str) -> bool:
-        """円弧の端点がクロソイドに束縛されているか確認"""
+        """円弧の指定端点がクロソイドに束縛されているか確認する。
+
+        結合操作（_build_two_arcs）で束縛端点を除外するために使う。
+
+        Parameters
+        ----------
+        arc : Arc
+            確認対象の円弧。
+        end : str
+            'start' または 'end'。
+
+        Returns
+        -------
+        bool
+            束縛されているとき True。
+            条件 1: snap_arc=True のクロソイドの接点角度が端点角度と一致する。
+            条件 2: arc.id が clo._split_arc_ids に含まれる。
+        """
         for clo in self.scene.clothoids:
             if not clo.is_valid:
                 continue

@@ -1,5 +1,8 @@
-"""
-道路設計アプリ メインウィンドウ
+"""道路設計アプリ メインウィンドウモジュール。
+
+Canvas・RightPanel・VerticalAlignmentWindow・road_viewer を統合し、
+コンポーネント間のシグナルを配線するハブ。Canvas と RightPanel は互いを
+直接参照せず、request_* シグナルを MainWindow が受けて対応する処理を実行する。
 """
 from __future__ import annotations
 import json
@@ -19,6 +22,14 @@ from vertical_window import VerticalAlignmentWindow
 
 
 class MainWindow(QMainWindow):
+    """道路設計アプリのメインウィンドウ。
+
+    全コンポーネント（Canvas・RightPanel・VerticalAlignmentWindow・road_viewer）を
+    統合するハブ。_connect_signals で各コンポーネントのシグナルを接続する。
+
+    _get_or_create_ep と _collect_all_display は縦断線形ウィンドウと
+    3D ビューアの両方で使われる共通ヘルパーとして MainWindow に集約している。
+    """
     def __init__(self):
         super().__init__()
         self.setWindowTitle("道路設計アプリ")
@@ -36,7 +47,15 @@ class MainWindow(QMainWindow):
 
     @property
     def scene(self) -> Scene:
-        """常に canvas.scene と同じ参照を返す"""
+        """現在の Scene への参照（canvas.scene と同一オブジェクト）。
+
+        MainWindow 全体から self.scene で一貫してアクセスするためのプロパティ。
+
+        Returns
+        -------
+        Scene
+            _canvas.scene と同一の Scene オブジェクト。
+        """
         return self._canvas.scene
 
     @scene.setter
@@ -44,6 +63,7 @@ class MainWindow(QMainWindow):
         self._canvas.scene = s
 
     def _build_ui(self):
+        """Canvas・RightPanel を QSplitter で左右分割した UI を構築する。"""
         central = QWidget()
         self.setCentralWidget(central)
         h_lay = QHBoxLayout(central)
@@ -62,6 +82,7 @@ class MainWindow(QMainWindow):
         self._splitter.setSizes([1100, 300])
 
     def _build_menu(self):
+        """メニューバー（ファイル・表示・ウィンドウ）を構築する。"""
         mb = self.menuBar()
 
         # ── ファイル ──────────────────────────────────────────
@@ -124,6 +145,7 @@ class MainWindow(QMainWindow):
         view3d_menu.addAction(act_3d)
 
     def _build_toolbar(self):
+        """ツールバー（選択/直線/円 モードボタン）を構築する。"""
         tb = QToolBar("ツールバー")
         tb.setMovable(False)
         tb.setIconSize(QSize(24, 24))
@@ -171,6 +193,10 @@ class MainWindow(QMainWindow):
         tb.addWidget(self._status_label)
 
     def _connect_signals(self):
+        """Canvas / RightPanel のシグナルを MainWindow のスロットに接続する。
+
+        __init__ から分離しているのは読みやすさのため。接続は初期化時に 1 度だけ行う。
+        """
         self._canvas.selection_changed.connect(self._on_selection_changed)
         self._canvas.scene_changed.connect(self._on_scene_changed)
         self._canvas.mouse_world_pos.connect(self._right_panel.update_mouse_pos)
@@ -188,6 +214,13 @@ class MainWindow(QMainWindow):
 
     # ─── イベントハンドラ ─────────────────────────────────────
     def _on_selection_changed(self, selected: list):
+        """Canvas.selection_changed シグナルを受けて RightPanel のプロパティを更新する。
+
+        Parameters
+        ----------
+        selected : list
+            Canvas で選択中の図形リスト。MainWindow 自体は選択状態を保持しない。
+        """
         self._right_panel.update_selection(selected, self.scene)
         n = len(selected)
         if n == 0:
@@ -200,6 +233,10 @@ class MainWindow(QMainWindow):
             self._status_label.setText(f"{n} 個選択")
 
     def _on_scene_changed(self):
+        """Canvas.scene_changed シグナルを受けてウィンドウタイトルに * を付ける。
+
+        プロパティパネルの更新は行わない（selection_changed 経由で _on_selection_changed が担当）。
+        """
         self._canvas.update()
         # ニックネームコンボボックスの選択肢を常に最新に保つ
         self._right_panel.scene = self.scene
@@ -217,12 +254,14 @@ class MainWindow(QMainWindow):
 
     # ─── ファイル操作 ─────────────────────────────────────────
     def _save(self):
+        """上書き保存。_filepath 未設定のとき _save_as に委譲する。"""
         if self._filepath:
             self._write_file(self._filepath)
         else:
             self._save_as()
 
     def _save_as(self):
+        """名前を付けて保存ダイアログを表示してファイルに書き出す。"""
         path, _ = QFileDialog.getSaveFileName(
             self, "名前を付けて保存", "", "Road Design JSON (*.rdjson);;JSON (*.json)")
         if path:
@@ -230,6 +269,14 @@ class MainWindow(QMainWindow):
             self._write_file(path)
 
     def _write_file(self, path: str):
+        """Scene を JSON 形式でファイルに書き出す。
+
+        Parameters
+        ----------
+        path : str
+            書き出し先のファイルパス（.rdjson）。
+            書き出し失敗時は QMessageBox.critical でエラーを表示する。
+        """
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self.scene.to_dict(), f, indent=2, ensure_ascii=False)
@@ -239,6 +286,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "保存エラー", str(e))
 
     def _open(self):
+        """ファイルを開くダイアログを表示して Scene を読み込む。
+
+        読み込み成功後に Canvas をリセット（選択・ハンドルのクリア）して fit_all() を呼ぶ。
+        """
         path, _ = QFileDialog.getOpenFileName(
             self, "開く", "", "Road Design JSON (*.rdjson);;JSON (*.json)")
         if path:
@@ -270,10 +321,12 @@ class MainWindow(QMainWindow):
 
     # ─── クロソイド操作 ──────────────────────────────────────
     def _do_smooth_connect(self, a, b):
+        """RightPanel.request_smooth_connect シグナルを受けて Canvas.smooth_connect を呼ぶ。"""
         self._canvas.smooth_connect(a, b)
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     def _do_polyline_connect(self, a, b):
+        """RightPanel.request_polyline_connect シグナルを受けて折れ線接続を実行する。"""
         self._canvas.push_undo()
         self._canvas._connect_polyline(a, b)
         self._canvas.scene_changed.emit()
@@ -281,10 +334,20 @@ class MainWindow(QMainWindow):
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     def _do_disconnect(self, a, b):
+        """RightPanel.request_disconnect シグナルを受けて Canvas.disconnect_lines を呼ぶ。"""
         self._canvas.disconnect_lines(a, b)
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     def _do_add_clothoid(self, ln, ci):
+        """RightPanel.request_add_clothoid シグナルを受けて Clothoid を生成・追加する。
+
+        Parameters
+        ----------
+        ln : Line
+            クロソイドを接続する直線。
+        ci : Circle
+            クロソイドを接続する円。
+        """
         self._canvas.push_undo()
         existing = self.scene.clothoids_for(ln, ci)
         rev = (len(existing) == 1 and not existing[0].reversed_flag)
@@ -297,6 +360,7 @@ class MainWindow(QMainWindow):
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     def _do_delete_clothoid(self, clo):
+        """RightPanel.request_delete_clothoid シグナルを受けて Clothoid を削除する。"""
         self._canvas.push_undo()
         self.scene.remove_clothoid(clo)
         self._canvas.scene_changed.emit()
@@ -304,7 +368,16 @@ class MainWindow(QMainWindow):
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     def _do_delete_objects(self, objs: list):
-        """右パネルの「図形を削除」ボタンから呼ばれる。選択された図形を削除する"""
+        """右パネルの request_delete シグナルを受けて図形を削除する。
+
+        push_undo() 後に各図形を型に応じて削除する
+        （Line / Circle / Clothoid / Segment / Arc）。
+
+        Parameters
+        ----------
+        objs : list
+            削除する図形のリスト。
+        """
         from models import Segment, Arc, Clothoid, Line, Circle
         if not objs:
             return
@@ -347,6 +420,7 @@ class MainWindow(QMainWindow):
         self._right_panel.update_selection(remaining, self.scene)
 
     def _do_flip_clothoid(self, clo):
+        """RightPanel.request_flip_clothoid シグナルを受けて reversed_flag を切り替える。"""
         self._canvas.push_undo()
         clo.reversed_flag = not clo.reversed_flag
         clo.compute()
@@ -356,7 +430,22 @@ class MainWindow(QMainWindow):
 
     # ─── 縦断線形 ────────────────────────────────────────────
     def _get_or_create_ep(self, obj, rev: bool):
-        """obj に対応する ElementProfile を取得または新規作成して返す。"""
+        """obj に対応する ElementProfile を取得または新規作成して返す。
+
+        element_type・plan_length・reversed_flag は常に最新値で上書きする。
+
+        Parameters
+        ----------
+        obj : Segment or Arc or Clothoid
+            ElementProfile を取得する平面線形要素。
+        rev : bool
+            チェーン上での逆順フラグ（ElementProfile.reversed_flag に設定する）。
+
+        Returns
+        -------
+        ElementProfile
+            取得または新規作成した ElementProfile。
+        """
         from models import ElementProfile, plan_length_of
         ep = next((e for e in self.scene.element_profiles
                    if e.element_id == obj.id), None)
@@ -372,7 +461,15 @@ class MainWindow(QMainWindow):
         return ep
 
     def _collect_all_display(self):
-        """シーン内の全線分・全円弧・全クロソイドを返す（背景表示用）。"""
+        """シーン内の全線分・全円弧・全クロソイドをフラットなリストで返す。
+
+        3D ビューアの背景表示と _open_3d_viewer の走行対象（未選択時）に使う。
+
+        Returns
+        -------
+        list[Segment | Arc | Clothoid]
+            全線分 + 全円弧 + 全クロソイドのリスト。
+        """
         result = []
         for ln in self.scene.lines:
             result.extend(ln.segments)
@@ -382,6 +479,12 @@ class MainWindow(QMainWindow):
         return result
 
     def _open_vertical_window(self):
+        """縦断線形ウィンドウを開く。選択中の平面線形要素をチェーンとして渡す。
+
+        選択要素がない場合は何もしない。
+        resolve_chain でチェーン順序を決定し、各要素の ElementProfile を
+        取得または生成して VerticalAlignmentWindow に渡す。
+        """
         # 選択中の平面線形要素を収集
         raw = [o for o in self._canvas._selected
                if isinstance(o, (Segment, Arc, Clothoid))]
@@ -409,7 +512,12 @@ class MainWindow(QMainWindow):
         self._vertical_window.show()
 
     def _open_3d_viewer(self):
-        """3D 走行ビューアを起動する。"""
+        """3D 走行ビューアを起動する。
+
+        選択中の要素をチェーンとして走行する。未選択時は全要素を走行対象にする。
+        prepare_viewer_data で中心線・背景データを計算し、launch_viewer で
+        別プロセス（Panda3D）を起動する。
+        """
         from road_viewer import launch_viewer
 
         # 走行対象要素を収集（未選択なら全要素）
@@ -431,7 +539,7 @@ class MainWindow(QMainWindow):
 
     # ─── デモデータ ──────────────────────────────────────────
     def _add_demo(self):
-        """起動時のデモ図形"""
+        """アプリ起動時にデモ図形（直線・線分）を Scene に追加する。"""
         # 直線 A
         la = Line(Vec2(-200, 0), Vec2(-50, 0))
         seg_a = Segment(la, 0.2, 0.9)

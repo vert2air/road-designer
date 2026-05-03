@@ -38,6 +38,13 @@ from models import (
 
 def _elev_at_dist(dist: float, profiles: list,
                   offsets: list) -> float:
+    """チェーン累積距離 dist に対する標高を返す（縦断曲線優先）。
+
+    Returns
+    -------
+    float
+        標高 [m]。dist がチェーン全体を超える場合は 0.0。
+    """
     """チェーン累積距離 dist に対する標高を返す（縦断曲線優先）。"""
     n = len(profiles)
     for i, (ep, off) in enumerate(zip(profiles, offsets)):
@@ -55,9 +62,29 @@ def _elev_at_dist(dist: float, profiles: list,
 def build_centerline(elements: list, profiles: list[ElementProfile],
                      rev_flags: list[bool],
                      n_per_m: float = 0.5) -> list[tuple]:
-    """
-    平面線形要素チェーンから 3D 中心線点列を生成する。
-    戻り値: [(x, y, z, dist), ...]  ← Panda3D 座標 (x右, y奥, z上)
+    """平面線形要素チェーンから 3D 中心線点列を生成する。
+
+    Parameters
+    ----------
+    elements : list[Segment | Arc | Clothoid]
+        チェーン順に並んだ平面線形要素のリスト。
+    profiles : list[ElementProfile]
+        各要素に対応する縦断データのリスト（elements と同じ順序・長さ）。
+    rev_flags : list[bool]
+        各要素を逆順で使うかどうかのフラグのリスト。
+    n_per_m : float, optional
+        1m あたりの出力点数（デフォルト 0.5 = 2m 間隔）。
+
+    Returns
+    -------
+    list[tuple[float, float, float, float]]
+        [(x, y, z, dist), ...] 形式の点列。
+        x, y: ワールド座標、z: 標高 [m]、dist: チェーン始端からの累積距離 [m]。
+
+    Notes
+    -----
+    各要素の先頭点（境界点）は前の要素の末端高さを継承する（段差防止）。
+    plan_length < 0.001 の要素はスキップする。
     """
     # 累積オフセット計算
     offsets = []
@@ -145,7 +172,25 @@ def build_road_mesh(centerline: list[tuple],
                     half_width: float = 4.0,
                     color_override: LColor = None,
                     z_offset: float = 0.02) -> GeomNode:
-    """中心線から道路帯状メッシュを生成して GeomNode を返す"""
+    """中心線に沿った帯状三角形メッシュ（路面）を生成する。
+
+    Parameters
+    ----------
+    centerline : list[tuple]
+        `build_centerline` が返す [(x, y, z, dist), ...] 形式の点列。
+    half_width : float, optional
+        道路の半幅 [m]（デフォルト 4.0）。全幅 = half_width * 2。
+    color_override : LColor, optional
+        頂点カラー。None のとき暗いグレー LColor(0.25, 0.25, 0.25, 1)。
+    z_offset : float, optional
+        地面との Z-fighting を防ぐための高さオフセット [m]（デフォルト 0.02）。
+        路面メッシュを地面より確実に上に描画するために必要。
+
+    Returns
+    -------
+    GeomNode
+        Panda3D の GeomNode。表面と裏面の両方向の三角形を含む（両面描画）。
+    """
     fmt  = GeomVertexFormat.get_v3n3c4()
     vdata = GeomVertexData("road", fmt, Geom.UH_static)
     vw    = GeomVertexWriter(vdata, "vertex")
@@ -222,10 +267,26 @@ def build_center_line_node(centerline: list[tuple],
 
 def build_piers(centerline: list[tuple], half_width: float,
                 interval: float = 30.0) -> GeomNode:
-    """
-    道路中心線に沿って約 interval m おきに橋脚を生成する。
-    橋脚は道路幅の外側（左右）に配置する。
-    橋脚: 地面(z=0) から道路面まで伸びる角柱。
+    """道路中心線に沿って約 interval m おきに橋脚を生成する。
+
+    橋脚は道路端（half_width）からさらに OUTER=0.5m 外側の左右に配置する
+    ため、路面メッシュの下に橋脚が来ない。
+
+    Parameters
+    ----------
+    centerline : list[tuple]
+        `build_centerline` が返す [(x, y, z, dist), ...] 形式の点列。
+    half_width : float
+        道路の半幅 [m]。橋脚の外側オフセット計算に使う。
+    interval : float, optional
+        橋脚の目安間隔 [m]（デフォルト 30.0）。
+        dist が次の目標値を超えた最初の点に配置する。
+
+    Returns
+    -------
+    GeomNode
+        橋脚の直方体メッシュを含む GeomNode。
+        z_top <= 0.05 の位置では橋脚を生成しない。
     """
     fmt   = GeomVertexFormat.get_v3n3c4()
     vdata = GeomVertexData("piers", fmt, Geom.UH_static)
@@ -312,9 +373,23 @@ def build_piers(centerline: list[tuple], half_width: float,
 
 def build_road_markings(centerline: list[tuple],
                         half_width: float) -> GeomNode:
-    """
-    道路の路面標示を生成する。
-    - 左右の白線（路肩ライン）
+    """左右の路肩白線（LineStrips）を生成する。
+
+    メッシュでなく LineStrips を使うのは、白線は視覚的に細く面でなく線として
+    描く方が実装がシンプルなため。白線の z = centerline[i][2] + 0.08m で
+    路面より上に描き、路面メッシュとの Z-fighting を防ぐ。
+
+    Parameters
+    ----------
+    centerline : list[tuple]
+        `build_centerline` が返す [(x, y, z, dist), ...] 形式の点列。
+    half_width : float
+        道路の半幅 [m]。白線は中心から ±half_width の位置に描く。
+
+    Returns
+    -------
+    GeomNode
+        左右 2 本の LineStrips を含む GeomNode。
     """
     from panda3d.core import GeomLinestrips
 
@@ -391,7 +466,23 @@ def build_road_markings(centerline: list[tuple],
 
 
 def build_ground(cx: float, cy: float, size: float = 2000) -> GeomNode:
-    """地面の平板メッシュ"""
+    """地面の平板メッシュを生成する。
+
+    全表示要素の AABB 重心を中心に size×size m の緑色平板（z=-0.1m）を配置する。
+    z=-0.1m にすることで路面メッシュ（z+0.02m）との Z-fighting を防ぐ。
+
+    Parameters
+    ----------
+    cx, cy : float
+        平板の中心座標（ワールド座標）。
+    size : float, optional
+        平板の一辺の長さ [m]（デフォルト 2000）。
+
+    Returns
+    -------
+    GeomNode
+        緑色（0.3, 0.5, 0.25, 1）の平板メッシュを含む GeomNode。
+    """
     fmt   = GeomVertexFormat.get_v3n3c4()
     vdata = GeomVertexData("ground", fmt, Geom.UH_static)
     vw    = GeomVertexWriter(vdata, "vertex")
@@ -591,6 +682,19 @@ class RoadViewer(ShowBase):
 
     # ─── 補間 ────────────────────────────────────────────────
     def _interp(self, dist: float):
+        """チェーン累積距離 dist に対応する位置と接線方向を線形補間して返す。
+
+        Parameters
+        ----------
+        dist : float
+            チェーン始端からの累積距離 [m]。
+
+        Returns
+        -------
+        tuple
+            (x, y, z, tx, ty, tz) — 位置 (x, y, z) と接線方向 (tx, ty, tz)。
+            dist < 0 のとき先頭点、dist >= _total のとき末尾点の情報を返す。
+        """
         """
         累積距離 dist に対する (位置, 前方ベクトル, 右ベクトル) を返す
         位置は (x, y, z) タプル
@@ -643,14 +747,28 @@ def prepare_viewer_data(scene: Scene,
                         profiles: list,
                         rev_flags: list[bool],
                         all_display: list = None) -> dict:
-    """
-    走行チェーンと背景表示データを計算して辞書で返す（I/O なし・純粋関数）。
+    """走行チェーンと背景表示データを計算して辞書で返す（I/O なし・純粋関数）。
 
-    戻り値:
-      {
-        "centerline_3d":    [(x, y, z, dist), ...],
-        "display_segments": [[(x, y, z, dist), ...], ...],  # 要素ごとの独立点列
-      }
+    `launch_viewer` から呼ばれる。I/O を伴わないため単体テスト可能。
+
+    Parameters
+    ----------
+    scene : Scene
+        現在のシーン（背景要素の ElementProfile 取得に使う）。
+    elements : list[Segment | Arc | Clothoid]
+        走行チェーンの要素リスト（resolve_chain 済み）。
+    profiles : list[ElementProfile]
+        各走行要素に対応する縦断データ。
+    rev_flags : list[bool]
+        各走行要素の逆順フラグ。
+    all_display : list, optional
+        背景として表示する全要素のリスト。None のとき背景なし。
+
+    Returns
+    -------
+    dict
+        {"centerline_3d": [...], "display_segments": [[...], ...]} 形式の辞書。
+        JSON シリアライズ可能。
     """
     display_segs = []
     if all_display:
