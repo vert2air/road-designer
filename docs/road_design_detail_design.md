@@ -36,7 +36,9 @@
 
 ### 1.2 `Vec2` クラス
 
-2次元ベクトル。`dataclass` で実装。
+アプリ全体で使用する2次元ベクトル型。`@dataclass` で実装することで `Vec2(x, y)` の簡潔なコンストラクタと `==` による等値比較を得る。NumPy は不使用のため、幾何計算に必要な演算（内積・外積・正規化・回転）をこのクラスに集約している。
+
+`tuple()` メソッドと `__iter__` は `QPainter` への座標渡し（`painter.drawLine(*pt.tuple())`）や `for x, y in vec2` のアンパック用途で使う。
 
 #### `__add__(o)`, `__sub__(o)`, `__mul__(s)`, `__rmul__(s)`, `__neg__()`
 
@@ -81,7 +83,9 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 
 ### 1.3 `Line` クラス
 
-参照始点・参照終点で定義される有向直線。
+道路の方向を定義する有向直線。**参照点**（`ref_start`/`ref_end`）は「この直線がどの方向を向いているか」を定義するための基準であり、実際の道路区間は `Segment` で表す。参照点が動けば、その直線上のすべての線分が追従する（`Segment.start/end` が `point_at(t_start/t_end)` で動的に計算されるため）。
+
+`connection` フィールドは別の直線との折れ線/スムーズ接続情報を保持する。`Line` 自体は接続の存在を知っているが、接続の維持・更新は `Canvas` が担当する。
 
 #### `__init__(ref_start, ref_end, line_id=None)`
 
@@ -157,7 +161,9 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 
 ### 1.4 `Segment` クラス
 
-直線の部分区間。始点・終点は親 `Line` の `point_at(t)` で動的に計算する。
+実際の道路線分を表す。親 `Line` の上の部分区間として、座標ではなく割合 t（`t_start`/`t_end`）で位置を管理する。この設計により、参照点を動かして直線の傾きや長さが変わっても線分の「相対的な位置」が自動的に追従し、明示的な座標更新が不要になる。
+
+クロソイドの snap 機能によって端点が固定される場合は `t_end`（または `t_start`）がクロソイドの接点に合わせて更新される。この状態の端点は `Canvas._rebuild_handles()` でハンドルではなく接点マーカーとして表示される。
 
 #### `__init__(line, t_start=0.0, t_end=1.0, seg_id=None)`
 
@@ -195,8 +201,8 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 | `kind` | `str` | `"polyline"` または `"smooth"` |
 | `line_a`, `line_b` | `Line` | 接続される2直線 |
 | `shared_point` | `Vec2` | 共有参照点（交点）の座標 |
-| `a_end_is_shared` | `bool` | `True`: `line_a.ref_end` が共有点 |
-| `b_start_is_shared` | `bool` | `True`: `line_b.ref_start` が共有点 |
+| `a_end_is_shared` | `bool` | `True`: `line_a.ref_end` が共有点（折れ線接続でどちら側に交点があるかを記録）|
+| `b_start_is_shared` | `bool` | `True`: `line_b.ref_start` が共有点（同上） |
 | `circle` | `Circle \| None` | スムーズ接続時の中間円 |
 | `bisector_dir` | `Vec2 \| None` | 二等分線方向（スムーズ専用） |
 | `line_j_reversed` | `bool` | スムーズ接続の J 直線の反転フラグ |
@@ -212,6 +218,10 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 ---
 
 ### 1.6 `Circle` クラス
+
+クロソイド曲線の接続先となる円を表す。スムーズ接続では2本のクロソイドが1つの円を共有し、クロソイドの接点（`_circle_pt`）が円弧の端点に snap されることで直線→クロソイド→円弧→クロソイド→直線の滑らかな接続を実現する。
+
+`Circle` オブジェクト単体は純粋な幾何データ（中心・半径）のみを持ち、クロソイドとの関係は `Clothoid` 側が `self.circle` で参照することで管理する。
 
 #### `__init__(center, radius, circle_id=None)`
 
@@ -261,6 +271,12 @@ end   = Vec2(circle.center.x + circle.radius * cos(angle_end),
 
 ### 1.8 クロソイド計算関数（モジュールレベル）
 
+`Clothoid.compute()` から呼ばれる2つの非公開関数。分業は以下の通り:
+- `_fresnel_xy_tau()`: 全偏角 τ が既知のとき、クロソイド終点の局所座標変位 `(xe, ye)` を数値積分で求める
+- `_find_tau()`: 直線と円の幾何関係から全偏角 τ を二分法で逆算する
+
+外部から直接呼ぶことは想定していない（プレフィックス `_` でプライベート扱い）。
+
 #### `_fresnel_xy_tau(tau_end, R, n=500) -> tuple[float, float]`
 
 クロソイド終点の局所座標変位 `(xe, ye)` を中点則で数値積分して返す。
@@ -296,8 +312,10 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 
 #### `__init__(line, circle, reversed_flag=False, snap_segment=True, snap_arc=True, clothoid_id=None)`
 
-- コンストラクタ末尾で `compute()` を自動呼び出す
-- `_split_seg_ids`, `_split_arc_ids` は空リストで初期化
+`Clothoid` は生成時点で `compute()` を自動呼び出すため、コンストラクタが返る時点で `_line_pt`・`_circle_pt`・`_points` が確定している（または `_valid=False` が確定している）。
+
+- `_split_seg_ids`: `snap_segment=False` のとき接点で分割した線分の ID ペア `[AX_id, XB_id]` を記録する。これにより同じ接点の移動では再分割せずに端点を追従更新できる（パフォーマンスと安定性）
+- `_split_arc_ids`: `snap_arc=False` のとき同様に分割した円弧の ID ペアを記録する
 
 #### `_effective_line() -> Line`
 
@@ -348,10 +366,12 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 1. `_find_tau()` で `τ` を求める
 2. `_fresnel_xy_tau()` で `xe` を計算
 3. 接点 `cc`（円側）と `lc`（線側）を計算
-4. 等接線角度変化方式で点列を生成（`n_steps = max(80, int(τ/(2π)*512)+40)` 点）
+4. 等接線角度変化方式で点列を生成（`n_steps = max(80, int(τ/(2π)*512)+40)` 点）。この式は全偏角が大きい（急カーブ）ほど点数を増やし、ズームレベルに依らず見た目が滑らかになるよう経験的に調整された定数
 5. `_update_snaps()` を呼んで snap を反映する
 
 #### `_update_snaps()`
+
+`compute()` の末尾で呼ばれ、snap/split の状態を現在の接点位置に同期させる。`snap_segment` と `snap_arc` は独立して設定できるため、4通りの組み合わせすべてが存在しうる。snap の切り替え時（`on→off`）は切り替え先のメソッドが前の状態（`_split_*_ids`）をクリアしてから処理する。
 
 `snap_segment` と `snap_arc` の状態に応じて下記を呼び分ける。
 
@@ -420,7 +440,12 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 
 #### `_clear_arc_split()`
 
-`_split_arc_ids` の 2 本目の円弧を削除し、1 本目の `angle_end` を 2 本目の元の `angle_end` に戻す。
+`_split_arc_ids` で管理されている分割を元に戻す。具体的には:
+1. `_split_arc_ids[0]`（start→X の円弧）の `angle_end` を `_split_arc_ids[1]`（X→end の円弧）の `angle_end` で上書きする（元の end に戻す）
+2. `_split_arc_ids[1]` の円弧を `circle.arcs` から削除する
+3. `_split_arc_ids = []` にクリアする
+
+`snap_arc=False` → `snap_arc=True` の切り替え時と、クロソイド削除時（`Scene.remove_clothoid()`）に呼ばれる。
 
 #### `_dist_to_seg(pt, seg) -> float` （静的メソッド）
 
@@ -429,6 +454,8 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 ---
 
 ### 1.10 `plan_length_of(obj) -> float`（モジュールレベル関数）
+
+平面線形要素の平面長（道路上の長さ）を型に依らず統一インターフェースで取得するユーティリティ。`ElementProfile.plan_length` の設定（`_get_or_create_ep()`）、3D 中心線生成（`build_centerline()`）、縦断線形ウィンドウの累積距離計算（`set_plan_elements()`）など、型を問わず要素を扱う処理で広く使われる。
 
 | 入力型 | 計算式 |
 |---|---|
@@ -440,6 +467,12 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 ---
 
 ### 1.11 `ElementProfile` データクラス
+
+平面線形要素（`Segment`/`Arc`/`Clothoid`）と縦断線形データを 1 対 1 で対応させるブリッジ。平面線形はワールド座標で定義され縦断線形は「平面距離に対する標高」で定義されるという異なる座標系を、`ElementProfile` が橋渡しする。
+
+設計上の重要な点:
+- 縦断線形の距離はこの要素内の**相対距離**（始端=0、終端=`plan_length`）で管理する。チェーン全体での絶対距離への変換は `ProfileCanvas.set_plan_elements()` が担当する
+- `reversed_flag` が `True` のとき、この要素はチェーン上で終点→始点の向きで使われており、保存データの dist/elev も逆順で変換される
 
 #### `elev_at(rel: float) -> float`
 
@@ -462,6 +495,10 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 
 ### 1.12 `GradeLine` データクラス
 
+勾配直線（一定勾配の直線区間）を表す。`dist_start`〜`dist_end` の距離範囲と `elev_start`〜`elev_end` の標高で定義する。隣接する `GradeLine` の端点は `_snap_grade_lines()` によって強制一致させる（隙間ゼロを保証）。
+
+`next_curve`/`prev_curve` フィールドは隣接する `VerticalCurve` への参照だが、ファイルには保存されない（メモリ上の参照のみ）。縦断曲線の g1/g2 を再計算する `_recalc_vc_gradients()` がこの参照の代わりに `pvi_dist` で勾配直線を検索する。
+
 #### `gradient` プロパティ
 
 `(elev_end - elev_start) / (dist_end - dist_start) * 100` [%]。`dist_end - dist_start < 1e-9` のとき `0.0`。
@@ -478,7 +515,7 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 | `vpt_dist` | `pvi_dist + length/2` |
 | `vpc_elev` | `pvi_elev - g1/100 * length/2` |
 | `vpt_elev` | `pvi_elev + g2/100 * length/2` |
-| `K` | `length / |g2-g1|`（`\|g2-g1\| < 1e-9` なら `inf`） |
+| `K` | `length / |g2-g1|`（`\|g2-g1\| < 1e-9` なら `inf`）。K 値は「勾配が 1% 変化するのに必要な距離 [m/%]」を表す設計指標。大きいほど緩やかな縦断曲線 |
 
 #### `elevation_at(dist: float) -> float`
 
@@ -494,6 +531,12 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 ---
 
 ### 1.14 `Scene` クラス
+
+アプリケーション全体の唯一の状態保持者（Single Source of Truth）。すべての図形・縦断データ・ニックネームをこのオブジェクト1つが管理する。
+
+Undo 機能は `Canvas.push_undo()` が `scene.to_dict()` で Scene 全体を JSON にシリアライズしてスタックに積む方式で実現している。このため Scene は常に完全にシリアライズ可能でなければならない（循環参照を持たず、すべてのフィールドが JSON 変換可能）。
+
+`segment_snaps`/`arc_snaps` は将来の拡張用フィールドで、現バージョンでは `Clothoid` の `_split_seg_ids`/`_split_arc_ids` が内部で分割管理を行うため実質未使用。
 
 #### `__init__()`
 
@@ -610,7 +653,9 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 
 #### `resolve_chain(elems, element_profiles=None) -> tuple[list, list[bool]]`
 
-要素リストからチェーン順序と `reversed_flags` を解決して返す。詳細は基本設計書 9 章を参照。
+平面線形要素の無秩序なリストから「始点→終点」方向のチェーン順序と各要素の向き（`reversed_flag`）を決定する。縦断線形ウィンドウ起動時と 3D ビューア起動時に呼ばれる。
+
+`element_profiles` 引数は「以前保存された向き情報」を提供するためのもの。同じ幾何形状でも複数の順序解釈がある場合（例: 端点が4本以上集まる分岐点）、以前の `reversed_flag` と一致する候補を優先することで再開時に向きが変わらないようにする。詳細アルゴリズムは基本設計書 9 章を参照。
 
 - **入力**: `elems` が空リスト → `([], [])` を返す
 - **入力**: `elems` が 1 要素 → EP の `reversed_flag` をそのまま使う（EP がなければ `False`）
@@ -626,6 +671,11 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 |---|---|---|
 | `HIT_DIST` | `8` | ヒット判定の許容距離（スクリーンピクセル） |
 | `HANDLE_R` | `6` | ハンドルの描画半径（ピクセル） |
+| `Canvas.MODE_SELECT` | `"select"` | 選択・編集モード |
+| `Canvas.MODE_LINE` | `"line"` | 直線入力モード |
+| `Canvas.MODE_CIRCLE` | `"circle"` | 円入力モード |
+
+`HIT_DIST` と `HANDLE_R` はスクリーンピクセル単位の固定値。ズームレベルによらず一定のクリック精度を保つために、ヒット判定はスクリーン座標系で行い、判定後にワールド座標へ変換する。
 
 ### 2.2 `Handle` データクラス
 
@@ -720,7 +770,9 @@ screen_y = -p.y * scale + offset.y   # y 反転
 
 #### `_rebuild_handles()`
 
-選択中の図形に応じてハンドルを生成する。選択図形の組み合わせによって異なるハンドルが生成される。
+選択中の図形に応じてハンドルリスト `_handles` を再構築する。`set_selection()` と `undo()` から呼ばれ、選択が変わるたびに一から再生成する（差分更新は行わない）。
+
+選択図形の組み合わせによって異なるハンドルが生成される。
 
 **1直線選択時**:
 - `"ref_start"`, `"ref_end"`: 参照点ハンドル（灰色）
@@ -947,6 +999,8 @@ screen_y = -p.y * scale + offset.y   # y 反転
 
 #### `_propagate_line(ln, _updating_smooth=False)`
 
+直線 `ln` の参照点が変更されたあとに呼ばれる。「伝播」とは、直線の変形によって影響を受けるすべての従属オブジェクトを連鎖的に更新することを指す。具体的には:
+
 直線変更をクロソイドと SegmentSnap に伝播する。
 
 1. `ln` を参照するクロソイドに `compute()` を呼ぶ
@@ -958,6 +1012,8 @@ screen_y = -p.y * scale + offset.y   # y 反転
 `SegmentSnap` で繋がれた線分の端点を追従させる。`ln` が変更された場合に相手側の `t_start` / `t_end` を更新する。
 
 #### `_propagate_circle(ci)`
+
+円 `ci` の中心・半径が変更されたあとに呼ばれる。円に接続しているクロソイドの接点・点列を再計算し、ArcSnap で接続された円弧端点を追従させる。`_propagate_line()` と対になる存在。
 
 円変更をクロソイドと ArcSnap に伝播する。
 
@@ -1014,6 +1070,14 @@ return ln.ref_start if ds >= de else ln.ref_end
 ## 3. vertical_window.py — 縦断線形設計ウィンドウ
 
 ### 3.1 `ProfileCanvas` クラス
+
+縦断線形設計ウィンドウの中核となるキャンバス。「**編集は全体、保存は要素単位**」という設計方針を実装する。
+
+- **開いたとき（`set_plan_elements()`）**: 各 `ElementProfile` の `grade_lines` を累積距離に変換してチェーン全体の `_grade_lines` に統合する。これにより要素境界を意識せずに勾配直線を横断的に編集できる
+- **編集中**: `_grade_lines` / `_vertical_curves` を直接操作する（`ElementProfile` は変更しない）
+- **閉じたとき（`save_to_profiles()`）**: チェーン全体の `_grade_lines` / `_vertical_curves` を各要素の距離範囲に切り出して `ElementProfile` に書き戻す
+
+`ProfileCanvas` は `QWidget` を継承し、縦断プロファイルの描画・マウス操作・ハンドル管理を担当する。右パネルの `VerticalAlignmentWindow` がプロパティ表示・操作ボタンを提供し、`selection_changed` シグナルで連携する。
 
 #### `__init__(scene, parent=None)`
 
@@ -1481,6 +1545,15 @@ HUD テキストを現在の状態に更新する。
 
 ### 5.1 `RightPanel` クラス
 
+設計画面（Canvas）と連動して図形のプロパティ表示・編集、および図形間の接続操作を提供するサイドパネル。
+
+**役割の分担**:
+- `Canvas` は図形の描画・マウス操作・選択を担当する
+- `RightPanel` は選択された図形のプロパティ表示・数値入力・接続操作を担当する
+- 接続操作（スムーズ接続など）は `RightPanel` が `request_*` シグナルを emit し、`MainWindow` が受けて `Canvas` のメソッドを呼ぶ。この間接構造により `RightPanel` が `Canvas` を直接参照することなく疎結合を保つ
+
+**コンボボックスの多段階隣接表示**は `RightPanel` の最も複雑な機能であり、選択した図形の端点に隣接する次の図形を候補として先頭表示し、チェーン状に選択を続けられる UI を実現する。`[順]/[逆]` 表示もここで計算される。
+
 シグナル一覧（emit 側）:
 
 | シグナル | 型 | 用途 |
@@ -1649,11 +1722,19 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 
 ### 6.1 `MainWindow` クラス
 
+アプリケーションのエントリーポイントとなるウィンドウ。`Canvas`・`RightPanel`・`VerticalAlignmentWindow`・`road_viewer` を統合し、コンポーネント間のシグナルを配線する。
+
+**設計上の位置づけ**: `Canvas` と `RightPanel` は互いを直接参照しない。`RightPanel` から発行された `request_*` シグナルをすべて `MainWindow` が受け取り、対応する `Canvas` メソッド・`Scene` 操作を実行する。このハブ構造により、`Canvas` / `RightPanel` が独立してテスト可能になる。
+
+`_get_or_create_ep()` と `_collect_all_display()` は縦断線形ウィンドウと 3D ビューアの両方から使われる共通ヘルパーとして `MainWindow` に集約している。
+
 #### `__init__()`
 
 メインウィンドウを構築する。`Canvas`・`RightPanel`・`VerticalAlignmentWindow`（遅延生成）を生成し、シグナルを接続する。
 
 #### `_setup_signals()`
+
+`Canvas` / `RightPanel` のシグナルを `MainWindow` のスロットに接続する。この配線を `__init__` から分離しているのは読みやすさのためで、初期化後に動的な変更は行わない。
 
 以下のシグナルを接続する:
 - `Canvas.selection_changed` → `_on_selection_changed` + `RightPanel.update_selection`
@@ -1864,6 +1945,8 @@ Canvas での選択をコンボボックスに反映する。コンボの数が�
 プロパティパネルの全ウィジェットを削除する（`deleteLater()` で安全に削除）。
 
 #### `_rebuild_props()`
+
+プロパティパネルの内容を選択状態に合わせて一から再構築する。差分更新は行わず、`_clear_props()` で既存ウィジェットをすべて削除してから再生成する。これにより状態管理の複雑さを避けている（メモリの短期的な割り当て・解放はトレードオフとして許容）。
 
 選択図形の組み合わせに応じてプロパティパネルを再構築する。
 
