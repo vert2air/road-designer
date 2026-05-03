@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
-"""
-道路設計アプリ エントリーポイント
+"""道路設計アプリ エントリーポイント。
+
+起動方法
+--------
+    python src/main.py
+
+依存ライブラリ
+--------------
+    PyQt6 : UI フレームワーク
+    Panda3D : 3D 走行ビューア（road_viewer.py が別プロセスで使用）
 """
 import sys
 from PyQt6.QtWidgets import QApplication
 from main_window import MainWindow
 
 
-def main():
+def main() -> None:
+    """アプリケーションを初期化して起動する。
+
+    QApplication を生成し、MainWindow を表示してイベントループを開始する。
+    イベントループ終了時に sys.exit へ渡すことで終了コードを呼び出し元に伝播させる。
+    """
     app = QApplication(sys.argv)
     app.setApplicationName("道路設計アプリ")
     app.setOrganizationName("RoadDesign")
