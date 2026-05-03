@@ -638,41 +638,56 @@ class RoadViewer(ShowBase):
 #   エントリーポイント：設計アプリから呼ばれる
 # ══════════════════════════════════════════════════════════════
 
-def launch_viewer(scene: Scene,
-                  elements: list,
-                  profiles: list[ElementProfile],
-                  rev_flags: list[bool],
-                  all_display: list = None):
+def prepare_viewer_data(scene: Scene,
+                        elements: list,
+                        profiles: list,
+                        rev_flags: list[bool],
+                        all_display: list = None) -> dict:
     """
-    設計アプリのメインウィンドウから呼ぶ。
-    elements/profiles/rev_flags: 走行チェーン
-    all_display: 表示する全要素（線分・円弧・クロソイド）
-    """
-    import subprocess, tempfile, os
+    走行チェーンと背景表示データを計算して辞書で返す（I/O なし・純粋関数）。
 
-    # all_display 用の中心線（走行なし・背景表示のみ）
-    # 各要素を独立した点列として管理する（繋げない）
+    戻り値:
+      {
+        "centerline_3d":    [(x, y, z, dist), ...],
+        "display_segments": [[(x, y, z, dist), ...], ...],  # 要素ごとの独立点列
+      }
+    """
     display_segs = []
     if all_display:
         for obj in all_display:
-            # 実際の ElementProfile を使う（なければダミー）
             ep = next((e for e in scene.element_profiles
                        if e.element_id == obj.id), None)
             if ep is None:
                 ep = ElementProfile()
                 ep.plan_length = plan_length_of(obj)
             else:
-                ep.plan_length = plan_length_of(obj)  # 常に最新値で更新
+                ep.plan_length = plan_length_of(obj)
             if ep.plan_length < 0.001:
                 continue
             cl = build_centerline([obj], [ep], [False], n_per_m=0.5)
             if cl:
                 display_segs.append(cl)
 
-    data = {
-        "centerline_3d":     build_centerline(elements, profiles, rev_flags),
-        "display_segments":  display_segs,   # 要素ごとの独立点列
+    return {
+        "centerline_3d":    build_centerline(elements, profiles, rev_flags),
+        "display_segments": display_segs,
     }
+
+
+def launch_viewer(scene: Scene,
+                  elements: list,
+                  profiles: list,
+                  rev_flags: list[bool],
+                  all_display: list = None):
+    """
+    設計アプリのメインウィンドウから呼ぶ。別プロセスで Panda3D ウィンドウを起動する。
+    elements/profiles/rev_flags: 走行チェーン
+    all_display: 表示する全要素（線分・円弧・クロソイド）
+    """
+    import subprocess, tempfile, os
+
+    data = prepare_viewer_data(scene, elements, profiles, rev_flags, all_display)
+
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", delete=False, encoding="utf-8")
     json.dump(data, tmp, ensure_ascii=False)
