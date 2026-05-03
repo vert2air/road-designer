@@ -219,26 +219,8 @@ class ProfileCanvas(QWidget):
 
             # 要素の始端・終端標高を更新（縦断曲線があればそちらを優先）
             if ep.grade_lines:
-                # 始端標高: dist=0 に縦断曲線があれば縦断曲線から取得
-                elev_s = ep.grade_lines[0].elev_start
-                for vc in ep.vertical_curves:
-                    if vc.vpc_dist <= 0.001 <= vc.vpt_dist:
-                        e = vc.elevation_at(0.0)
-                        if not math.isnan(e):
-                            elev_s = e
-                        break
-                ep.elev_start = elev_s
-
-                # 終端標高: dist=plan_length に縦断曲線があれば縦断曲線から取得
-                elev_e = ep.grade_lines[-1].elev_end
-                L = ep.plan_length
-                for vc in ep.vertical_curves:
-                    if vc.vpc_dist <= L - 0.001 <= vc.vpt_dist:
-                        e = vc.elevation_at(L)
-                        if not math.isnan(e):
-                            elev_e = e
-                        break
-                ep.elev_end = elev_e
+                ep.elev_start = ep.elev_at(0.0)
+                ep.elev_end   = ep.elev_at(ep.plan_length)
 
     @staticmethod
     def _elev_at(dist: float, gl: GradeLine) -> float:

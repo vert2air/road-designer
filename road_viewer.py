@@ -28,7 +28,7 @@ from direct.gui.OnscreenText import OnscreenText
 sys.path.insert(0, ".")
 from models import (
     Scene, Segment, Arc, Clothoid, GradeLine, ElementProfile,
-    plan_length_of,
+    plan_length_of, resolve_chain, tangent_at, entry_tangent, SNAP_TOL
 )
 
 
@@ -36,29 +36,9 @@ from models import (
 #   3D 中心線の生成
 # ══════════════════════════════════════════════════════════════
 
-def _ep_elev(ep: 'ElementProfile', rel: float) -> float:
-    """EP 内の相対距離 rel での高さを返す（縦断曲線優先）"""
-    rel = max(0.0, min(rel, ep.plan_length))
-    for vc in ep.vertical_curves:
-        if vc.vpc_dist - 0.001 <= rel <= vc.vpt_dist + 0.001:
-            e = vc.elevation_at(rel)
-            if not math.isnan(e):
-                return e
-    for gl in sorted(ep.grade_lines, key=lambda g: g.dist_start):
-        if gl.dist_start - 0.001 <= rel <= gl.dist_end + 0.001:
-            t = ((rel - gl.dist_start) / (gl.dist_end - gl.dist_start)
-                 if abs(gl.dist_end - gl.dist_start) > 1e-9 else 0)
-            return gl.elev_start + (gl.elev_end - gl.elev_start) * t
-    return 0.0
-
-
 def _elev_at_dist(dist: float, profiles: list,
                   offsets: list) -> float:
-    """
-    チェーン累積距離 dist に対する標高を返す。
-    縦断曲線（VPC〜VPT）の範囲では縦断曲線の値を優先し、
-    それ以外は勾配直線から補間する。
-    """
+    """チェーン累積距離 dist に対する標高を返す（縦断曲線優先）。"""
     n = len(profiles)
     for i, (ep, off) in enumerate(zip(profiles, offsets)):
         d_end = off + ep.plan_length
@@ -68,7 +48,7 @@ def _elev_at_dist(dist: float, profiles: list,
         if dist > d_end + 1e-9:
             continue
         rel = max(0.0, min(dist - off, ep.plan_length))
-        return _ep_elev(ep, rel)
+        return ep.elev_at(rel)
     return 0.0
 
 
@@ -151,7 +131,7 @@ def build_centerline(elements: list, profiles: list[ElementProfile],
             if i == 0 and points:
                 z = points[-1][2]
             else:
-                z = _ep_elev(ep, dist - offset if not rev else L - (dist - offset))
+                z = ep.elev_at(dist - offset if not rev else L - (dist - offset))
             points.append((wx, wy, z, dist))
 
     return points
@@ -247,7 +227,6 @@ def build_piers(centerline: list[tuple], half_width: float,
     橋脚は道路幅の外側（左右）に配置する。
     橋脚: 地面(z=0) から道路面まで伸びる角柱。
     """
-    import math as _m
     fmt   = GeomVertexFormat.get_v3n3c4()
     vdata = GeomVertexData("piers", fmt, Geom.UH_static)
     vw    = GeomVertexWriter(vdata, "vertex")
@@ -314,7 +293,7 @@ def build_piers(centerline: list[tuple], half_width: float,
         else:
             tx = centerline[i+1][0]-centerline[i-1][0]
             ty = centerline[i+1][1]-centerline[i-1][1]
-        ln = _m.hypot(tx, ty)
+        ln = math.hypot(tx, ty)
         if ln < 1e-9:
             tx, ty = 1, 0
         else:
@@ -338,7 +317,6 @@ def build_road_markings(centerline: list[tuple],
     - 左右の白線（路肩ライン）
     """
     from panda3d.core import GeomLinestrips
-    import math as _m
 
     fmt   = GeomVertexFormat.get_v3c4()
     vdata = GeomVertexData("markings", fmt, Geom.UH_static)
@@ -364,7 +342,7 @@ def build_road_markings(centerline: list[tuple],
             else:
                 tx = centerline[i+1][0]-centerline[i-1][0]
                 ty = centerline[i+1][1]-centerline[i-1][1]
-            ln = _m.hypot(tx, ty)
+            ln = math.hypot(tx, ty)
             if ln < 1e-9: tx, ty = 1, 0
             else: tx /= ln; ty /= ln
             nx_v, ny_v = ty, -tx
@@ -395,7 +373,7 @@ def build_road_markings(centerline: list[tuple],
             else:
                 tx = centerline[i+1][0]-centerline[i-1][0]
                 ty = centerline[i+1][1]-centerline[i-1][1]
-            ln = _m.hypot(tx, ty)
+            ln = math.hypot(tx, ty)
             if ln < 1e-9: tx, ty = 1, 0
             else: tx /= ln; ty /= ln
             nx_v, ny_v = ty, -tx
@@ -660,41 +638,56 @@ class RoadViewer(ShowBase):
 #   エントリーポイント：設計アプリから呼ばれる
 # ══════════════════════════════════════════════════════════════
 
-def launch_viewer(scene: Scene,
-                  elements: list,
-                  profiles: list[ElementProfile],
-                  rev_flags: list[bool],
-                  all_display: list = None):
+def prepare_viewer_data(scene: Scene,
+                        elements: list,
+                        profiles: list,
+                        rev_flags: list[bool],
+                        all_display: list = None) -> dict:
     """
-    設計アプリのメインウィンドウから呼ぶ。
-    elements/profiles/rev_flags: 走行チェーン
-    all_display: 表示する全要素（線分・円弧・クロソイド）
-    """
-    import subprocess, tempfile, os
+    走行チェーンと背景表示データを計算して辞書で返す（I/O なし・純粋関数）。
 
-    # all_display 用の中心線（走行なし・背景表示のみ）
-    # 各要素を独立した点列として管理する（繋げない）
+    戻り値:
+      {
+        "centerline_3d":    [(x, y, z, dist), ...],
+        "display_segments": [[(x, y, z, dist), ...], ...],  # 要素ごとの独立点列
+      }
+    """
     display_segs = []
     if all_display:
         for obj in all_display:
-            # 実際の ElementProfile を使う（なければダミー）
             ep = next((e for e in scene.element_profiles
                        if e.element_id == obj.id), None)
             if ep is None:
                 ep = ElementProfile()
                 ep.plan_length = plan_length_of(obj)
             else:
-                ep.plan_length = plan_length_of(obj)  # 常に最新値で更新
+                ep.plan_length = plan_length_of(obj)
             if ep.plan_length < 0.001:
                 continue
             cl = build_centerline([obj], [ep], [False], n_per_m=0.5)
             if cl:
                 display_segs.append(cl)
 
-    data = {
-        "centerline_3d":     build_centerline(elements, profiles, rev_flags),
-        "display_segments":  display_segs,   # 要素ごとの独立点列
+    return {
+        "centerline_3d":    build_centerline(elements, profiles, rev_flags),
+        "display_segments": display_segs,
     }
+
+
+def launch_viewer(scene: Scene,
+                  elements: list,
+                  profiles: list,
+                  rev_flags: list[bool],
+                  all_display: list = None):
+    """
+    設計アプリのメインウィンドウから呼ぶ。別プロセスで Panda3D ウィンドウを起動する。
+    elements/profiles/rev_flags: 走行チェーン
+    all_display: 表示する全要素（線分・円弧・クロソイド）
+    """
+    import subprocess, tempfile, os
+
+    data = prepare_viewer_data(scene, elements, profiles, rev_flags, all_display)
+
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", delete=False, encoding="utf-8")
     json.dump(data, tmp, ensure_ascii=False)

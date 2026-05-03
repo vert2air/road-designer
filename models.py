@@ -804,6 +804,27 @@ class ElementProfile:
                               for v in d.get("vertical_curves", [])]
         return ep
 
+    def elev_at(self, rel: float) -> float:
+        """
+        この EP 内の相対距離 rel [m] での標高を返す（縦断曲線優先）。
+        - rel は [0, plan_length] にクリップする
+        - VPC〜VPT 範囲内の VerticalCurve があればその放物線値を優先
+        - それ以外は GradeLine の線形補間
+        - 見つからない場合は 0.0
+        """
+        rel = max(0.0, min(rel, self.plan_length))
+        for vc in self.vertical_curves:
+            if vc.vpc_dist - 0.001 <= rel <= vc.vpt_dist + 0.001:
+                e = vc.elevation_at(rel)
+                if not math.isnan(e):
+                    return e
+        for gl in sorted(self.grade_lines, key=lambda g: g.dist_start):
+            if gl.dist_start - 0.001 <= rel <= gl.dist_end + 0.001:
+                span = gl.dist_end - gl.dist_start
+                t = (rel - gl.dist_start) / span if abs(span) > 1e-9 else 0.0
+                return gl.elev_start + (gl.elev_end - gl.elev_start) * t
+        return 0.0
+
 
 @dataclass
 class VerticalAlignment:
@@ -1116,3 +1137,189 @@ class Scene:
             _reset_id_counter_after(max(all_ids))
 
         return sc
+
+
+# ── チェーン順序解決ユーティリティ ───────────────────────────────
+
+SNAP_TOL = 1.0   # 端点が同一とみなす距離閾値 [m]
+
+
+def _elem_endpoints(obj):
+    """(start_pt, end_pt) を Vec2 で返す。取得できない場合は None。"""
+    if isinstance(obj, Segment):
+        return obj.start, obj.end
+    if isinstance(obj, Arc):
+        return obj.start, obj.end
+    if isinstance(obj, Clothoid):
+        if obj.is_valid and obj._line_pt and obj._circle_pt:
+            return obj._line_pt, obj._circle_pt
+    return None, None
+
+
+def _pt_dist(a, b) -> float:
+    if a is None or b is None:
+        return float('inf')
+    import math
+    return math.hypot(a.x - b.x, a.y - b.y)
+
+
+def tangent_at(obj, at_end: bool) -> tuple:
+    """
+    obj の始点(at_end=False)または終点(at_end=True)での進行方向接線ベクトル（単位ベクトル）を返す。
+    Segment / Arc / Clothoid に対応。
+    """
+    import math
+    if isinstance(obj, Segment):
+        dx = obj.end.x - obj.start.x
+        dy = obj.end.y - obj.start.y
+        ln = math.hypot(dx, dy) or 1
+        return (dx/ln, dy/ln)
+    elif isinstance(obj, Arc):
+        ang = obj.angle_end if at_end else obj.angle_start
+        return (-math.sin(ang), math.cos(ang))
+    elif isinstance(obj, Clothoid):
+        raw = obj.points
+        if raw and len(raw) >= 2:
+            if at_end:
+                dx = raw[-1].x - raw[-2].x
+                dy = raw[-1].y - raw[-2].y
+            else:
+                dx = raw[1].x - raw[0].x
+                dy = raw[1].y - raw[0].y
+            ln = math.hypot(dx, dy) or 1
+            return (dx/ln, dy/ln)
+    return (1, 0)
+
+
+def entry_tangent(obj, connect_at_start: bool):
+    """
+    図形の「共有端点 → 近傍点」方向ベクトルを返す（単位ベクトル）。
+    connect_at_start=True:  共有端点が obj の始点
+    connect_at_start=False: 共有端点が obj の終点
+    取得できない場合は None を返す。
+    """
+    import math
+    if isinstance(obj, Segment):
+        if connect_at_start:
+            dx = obj.end.x - obj.start.x
+            dy = obj.end.y - obj.start.y
+        else:
+            dx = obj.start.x - obj.end.x
+            dy = obj.start.y - obj.end.y
+        ln = math.hypot(dx, dy) or 1
+        return (dx/ln, dy/ln)
+    elif isinstance(obj, Arc):
+        DELTA = math.radians(0.1)
+        if connect_at_start:
+            ang0 = obj.angle_start
+            ang1 = obj.angle_start + DELTA
+        else:
+            ang0 = obj.angle_end
+            ang1 = obj.angle_end - DELTA
+        R  = obj.circle.radius
+        cx = obj.circle.center.x
+        cy = obj.circle.center.y
+        x0 = cx + R * math.cos(ang0); y0 = cy + R * math.sin(ang0)
+        x1 = cx + R * math.cos(ang1); y1 = cy + R * math.sin(ang1)
+        dx = x1 - x0; dy = y1 - y0
+        ln = math.hypot(dx, dy) or 1
+        return (dx/ln, dy/ln)
+    elif isinstance(obj, Clothoid):
+        raw = obj.points
+        if not raw or len(raw) < 2:
+            return None
+        if connect_at_start:
+            dx = raw[1].x - raw[0].x
+            dy = raw[1].y - raw[0].y
+        else:
+            dx = raw[-2].x - raw[-1].x
+            dy = raw[-2].y - raw[-1].y
+        ln = math.hypot(dx, dy) or 1
+        return (dx/ln, dy/ln)
+    return None
+
+
+def resolve_chain(elems, element_profiles=None):
+    """
+    Segment / Arc / Clothoid のリストから (順序付きリスト, reversed_flags) を返す。
+
+    - 共有端点（SNAP_TOL 以内）を検出してチェーンの順序と向きを決定する
+    - 既存の ElementProfile に reversed_flag が保存されている場合はそれを優先する
+    - element_profiles: Scene.element_profiles のリスト（省略可）
+    """
+    if not elems:
+        return [], []
+
+    eps = element_profiles or []
+
+    if len(elems) == 1:
+        ep = next((e for e in eps if e.element_id == elems[0].id), None)
+        return list(elems), [ep.reversed_flag if ep else False]
+
+    pts = {id(e): _elem_endpoints(e) for e in elems}
+
+    def connects_to_other(pt, exclude_elem):
+        for e in elems:
+            if e is exclude_elem:
+                continue
+            s, ep_ = pts[id(e)]
+            if _pt_dist(pt, s) < SNAP_TOL or _pt_dist(pt, ep_) < SNAP_TOL:
+                return True
+        return False
+
+    # 孤立端点を持つ要素を先頭候補とする
+    candidates = []
+    for cand in elems:
+        s, e = pts[id(cand)]
+        s_iso = s is not None and not connects_to_other(s, cand)
+        e_iso = e is not None and not connects_to_other(e, cand)
+        if s_iso and not e_iso:
+            candidates.append((cand, False))   # 正順で先頭
+        elif e_iso and not s_iso:
+            candidates.append((cand, True))    # 逆順で先頭
+
+    # 既存 ElementProfile の reversed_flag と一致する候補を優先
+    if candidates:
+        best_first = None
+        for cand, cand_rev in candidates:
+            ep_ex = next((e for e in eps if e.element_id == cand.id), None)
+            saved_rev = ep_ex.reversed_flag if ep_ex else None
+            if saved_rev is not None and saved_rev == cand_rev:
+                best_first = (cand, cand_rev)
+                break
+        if best_first is None:
+            best_first = candidates[0]
+        first, first_rev = best_first
+    else:
+        first, first_rev = elems[0], False
+
+    # 貪欲にチェーンを構築
+    remaining = list(elems)
+    chain     = [first]
+    rev_flags = [first_rev]
+    remaining.remove(first)
+
+    while remaining:
+        last_elem = chain[-1]
+        last_rev  = rev_flags[-1]
+        ls, le    = pts[id(last_elem)]
+        cur_end   = le if not last_rev else ls
+
+        best = None; best_rev = False; best_d = float('inf')
+        for cand in remaining:
+            cs, ce = pts[id(cand)]
+            d_fwd = _pt_dist(cur_end, cs)
+            d_rev = _pt_dist(cur_end, ce)
+            if d_fwd < best_d:
+                best_d = d_fwd; best = cand; best_rev = False
+            if d_rev < best_d:
+                best_d = d_rev; best = cand; best_rev = True
+
+        if best is None or best_d > SNAP_TOL * 10:
+            best = remaining[0]; best_rev = False
+
+        chain.append(best)
+        rev_flags.append(best_rev)
+        remaining.remove(best)
+
+    return chain, rev_flags

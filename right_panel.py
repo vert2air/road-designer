@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
-                    SegmentSnap, ArcSnap)
+                    SegmentSnap, ArcSnap, tangent_at, entry_tangent, SNAP_TOL)
 
 
 def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
@@ -159,12 +159,11 @@ class RightPanel(QWidget):
             cb.deleteLater()
 
     # ─── 隣接図形の計算 ──────────────────────────────────────
-    SNAP_TOL = 1.0   # m
+    SNAP_TOL = SNAP_TOL  # models.SNAP_TOL を参照（= 1.0 m）
 
     def _endpoints_of(self, obj) -> list:
         """図形の端点座標リストを返す（Segment/Arc/Clothoid のみ）"""
         from models import Vec2
-        import math as _m
         if isinstance(obj, Segment):
             return [obj.start, obj.end]
         if isinstance(obj, Arc):
@@ -182,11 +181,10 @@ class RightPanel(QWidget):
           is_forward=True  → cand の始点側で接続（順方向）
           is_forward=False → cand の終点側で接続（逆方向）
         """
-        import math as _m
         my_pts = self._endpoints_of(obj)
         if exclude_pt is not None:
             my_pts = [p for p in my_pts
-                      if _m.hypot(p.x - exclude_pt.x, p.y - exclude_pt.y) > self.SNAP_TOL]
+                      if math.hypot(p.x - exclude_pt.x, p.y - exclude_pt.y) > self.SNAP_TOL]
         if not my_pts:
             return []
 
@@ -209,12 +207,12 @@ class RightPanel(QWidget):
             cand_end   = cand_pts[-1]
             for mp in my_pts:
                 matched = False
-                if _m.hypot(mp.x - cand_start.x, mp.y - cand_start.y) < self.SNAP_TOL:
+                if math.hypot(mp.x - cand_start.x, mp.y - cand_start.y) < self.SNAP_TOL:
                     if id(cand) not in seen:
                         result.append((cand, True))   # 始点で接続 → 順方向
                         seen.add(id(cand))
                     matched = True
-                elif _m.hypot(mp.x - cand_end.x, mp.y - cand_end.y) < self.SNAP_TOL:
+                elif math.hypot(mp.x - cand_end.x, mp.y - cand_end.y) < self.SNAP_TOL:
                     if id(cand) not in seen:
                         result.append((cand, False))  # 終点で接続 → 逆方向
                         seen.add(id(cand))
@@ -227,18 +225,16 @@ class RightPanel(QWidget):
         """
         obj の端点のうち shared_pt と一致しない方を返す。
         """
-        import math as _m
         for p in self._endpoints_of(obj):
-            if _m.hypot(p.x - shared_pt.x, p.y - shared_pt.y) > self.SNAP_TOL:
+            if math.hypot(p.x - shared_pt.x, p.y - shared_pt.y) > self.SNAP_TOL:
                 return p
         return None
 
     def _shared_pt(self, obj_a, obj_b) -> object:
         """obj_a と obj_b の共有端点を返す（なければ None）"""
-        import math as _m
         for pa in self._endpoints_of(obj_a):
             for pb in self._endpoints_of(obj_b):
-                if _m.hypot(pa.x - pb.x, pa.y - pb.y) < self.SNAP_TOL:
+                if math.hypot(pa.x - pb.x, pa.y - pb.y) < self.SNAP_TOL:
                     return pa
         return None
 
@@ -262,7 +258,6 @@ class RightPanel(QWidget):
         内積 < 0 → 逆方向（スムーズに繋がる）= [順]
         内積 > 0 → 同方向（逆走）= [逆]
         """
-        import math as _m
 
         prev_pts = self._endpoints_of(prev_obj)
         next_pts = self._endpoints_of(next_obj)
@@ -276,8 +271,8 @@ class RightPanel(QWidget):
             exit_tan = (-exit_tan[0], -exit_tan[1])
 
         # 共有点 = 次の図形の始点側か終点側か
-        d_start = _m.hypot(exit_pt.x-next_pts[0].x,  exit_pt.y-next_pts[0].y)
-        d_end   = _m.hypot(exit_pt.x-next_pts[-1].x, exit_pt.y-next_pts[-1].y)
+        d_start = math.hypot(exit_pt.x-next_pts[0].x,  exit_pt.y-next_pts[0].y)
+        d_end   = math.hypot(exit_pt.x-next_pts[-1].x, exit_pt.y-next_pts[-1].y)
         connect_at_start = d_start < d_end
 
         # 次の図形の「共有点→近傍点」ベクトル
@@ -293,77 +288,12 @@ class RightPanel(QWidget):
         return dot >= 0
 
     def _tangent_at(self, obj, at_end: bool) -> tuple:
-        """obj の始点(at_end=False)または終点(at_end=True)での進行方向接線ベクトル"""
-        import math as _m
-        if isinstance(obj, Segment):
-            dx = obj.end.x - obj.start.x
-            dy = obj.end.y - obj.start.y
-            ln = _m.hypot(dx, dy) or 1
-            return (dx/ln, dy/ln)
-        elif isinstance(obj, Arc):
-            ang = obj.angle_end if at_end else obj.angle_start
-            return (-_m.sin(ang), _m.cos(ang))
-        elif isinstance(obj, Clothoid):
-            raw = obj.points
-            if raw and len(raw) >= 2:
-                if at_end:
-                    dx = raw[-1].x - raw[-2].x
-                    dy = raw[-1].y - raw[-2].y
-                else:
-                    dx = raw[1].x - raw[0].x
-                    dy = raw[1].y - raw[0].y
-                ln = _m.hypot(dx, dy) or 1
-                return (dx/ln, dy/ln)
-        return (1, 0)
+        """models.tangent_at への委譲"""
+        return tangent_at(obj, at_end)
 
     def _entry_tangent(self, obj, connect_at_start: bool) -> tuple:
-        """
-        次の図形の「共有点 → 近傍点」方向ベクトルを返す。
-        connect_at_start=True: 共有点が obj の始点
-        connect_at_start=False: 共有点が obj の終点
-        """
-        import math as _m
-        if isinstance(obj, Segment):
-            if connect_at_start:
-                dx = obj.end.x - obj.start.x
-                dy = obj.end.y - obj.start.y
-            else:
-                dx = obj.start.x - obj.end.x
-                dy = obj.start.y - obj.end.y
-            ln = _m.hypot(dx, dy) or 1
-            return (dx/ln, dy/ln)
-
-        elif isinstance(obj, Arc):
-            DELTA = _m.radians(0.1)
-            if connect_at_start:
-                ang0 = obj.angle_start
-                ang1 = obj.angle_start + DELTA   # 少し CCW 方向へ
-            else:
-                ang0 = obj.angle_end
-                ang1 = obj.angle_end - DELTA      # 少し CW 方向（終点から戻る方向）
-            R  = obj.circle.radius
-            cx = obj.circle.center.x
-            cy = obj.circle.center.y
-            x0 = cx + R * _m.cos(ang0); y0 = cy + R * _m.sin(ang0)
-            x1 = cx + R * _m.cos(ang1); y1 = cy + R * _m.sin(ang1)
-            dx = x1 - x0; dy = y1 - y0
-            ln = _m.hypot(dx, dy) or 1
-            return (dx/ln, dy/ln)
-
-        elif isinstance(obj, Clothoid):
-            raw = obj.points
-            if not raw or len(raw) < 2:
-                return None
-            if connect_at_start:
-                dx = raw[1].x - raw[0].x
-                dy = raw[1].y - raw[0].y
-            else:
-                dx = raw[-2].x - raw[-1].x
-                dy = raw[-2].y - raw[-1].y
-            ln = _m.hypot(dx, dy) or 1
-            return (dx/ln, dy/ln)
-
-        return None
+        """models.entry_tangent への委譲"""
+        return entry_tangent(obj, connect_at_start)
 
     def _next_is_forward(self, prev_obj, prev_is_fwd, next_obj) -> bool:
         """
@@ -371,36 +301,25 @@ class RightPanel(QWidget):
         共有点が next_obj の始点側 → is_forward=True（正順）
         共有点が next_obj の終点側 → is_forward=False（逆順）
         """
-        import math as _m
         prev_pts = self._endpoints_of(prev_obj)
         next_pts = self._endpoints_of(next_obj)
         if not prev_pts or not next_pts:
             return True
         exit_pt = prev_pts[-1] if prev_is_fwd else prev_pts[0]
-        d_start = _m.hypot(exit_pt.x-next_pts[0].x,  exit_pt.y-next_pts[0].y)
-        d_end   = _m.hypot(exit_pt.x-next_pts[-1].x, exit_pt.y-next_pts[-1].y)
+        d_start = math.hypot(exit_pt.x-next_pts[0].x,  exit_pt.y-next_pts[0].y)
+        d_end   = math.hypot(exit_pt.x-next_pts[-1].x, exit_pt.y-next_pts[-1].y)
         return d_start < d_end   # 始点で接続 → 正順(True)
 
     def _refresh_nick_combos(self):
-        """
-        コンボボックスの選択肢を更新する。
-        1つ目: 全図形
-        2つ目以降: 前の図形の出口端点に隣接する図形を先頭
-                   隣接が2個以上なら [順]/[逆] を付加
-        """
-        import math as _m
+        """コンボボックスの選択肢を更新する。"""
         all_items = self._all_items()
+        selected_objs = [self._find_by_nick_label(cb.currentText())
+                         for cb in self._nick_combos]
 
-        selected_objs = []
-        for cb in self._nick_combos:
-            obj = self._find_by_nick_label(cb.currentText())
-            selected_objs.append(obj)
-
-        # 各コンボの is_forward を追跡（チェーン方向の管理）
+        # is_forward を追跡（チェーン方向の管理）
         is_forward = [True] * len(self._nick_combos)
         for i in range(1, len(selected_objs)):
-            prev = selected_objs[i - 1]
-            cur  = selected_objs[i]
+            prev, cur = selected_objs[i-1], selected_objs[i]
             if prev is None or cur is None:
                 break
             is_forward[i] = self._next_is_forward(prev, is_forward[i-1], cur)
@@ -418,63 +337,47 @@ class RightPanel(QWidget):
                     cb.addItems(all_items)
                 else:
                     if i == 1:
-                        # 2つ目: 1つ目の両端点に隣接する図形すべて
                         adj = self._adjacent_from_obj(prev_obj, excludes=selected_objs)
-                        show_dir = len(adj) >= 2
                     else:
-                        # 3つ目以降: 前の図形の出口端点のみ
                         prev_pts = self._endpoints_of(prev_obj)
                         exit_pt  = prev_pts[-1] if is_forward[i-1] else prev_pts[0]
                         adj = self._adjacent_from_pt(exit_pt, excludes=selected_objs,
                                                       prev_obj=prev_obj)
-                        show_dir = len(adj) >= 2
-
                     cb.addItem("(なし)")
-                    for cand, _ in adj:
-                        base_label = self._label_for_obj(cand)
-                        if not base_label:
-                            continue
-                        if show_dir:
-                            if i == 1:
-                                # 2つ目: cand が prev_obj のどちらの端点側に接続しているかで
-                                # prev_is_fwd を決める
-                                # 終点側に接続 → prev を正順(True)で通過してきた
-                                # 始点側に接続 → prev を逆順(False)で通過してきた
-                                prev_exit_fwd = self._prev_is_fwd_for_adj(prev_obj, cand)
-                                cand_fwd = self._compute_next_forward(
-                                    prev_obj, prev_exit_fwd, cand)
-                            else:
-                                cand_fwd = self._compute_next_forward(
-                                    prev_obj, is_forward[i-1], cand)
-                            prefix = "[順] " if cand_fwd else "[逆] "
-                            cb.addItem(prefix + base_label)
-                        else:
-                            cb.addItem(base_label)
-
+                    self._fill_adjacent_items(cb, adj, prev_obj, is_forward[i-1], is_2nd=(i==1))
                     if adj:
                         cb.insertSeparator(cb.count())
                     for item in all_items:
                         cb.addItem(item)
 
-            # 現在の選択を復元
-            # cur_text から base（プレフィックスなし）を取得
+            # 現在の選択を復元（[順]/[逆] プレフィックスも考慮）
             base = cur_text
             for prefix in ("[順] ", "[逆] "):
                 if base.startswith(prefix):
                     base = base[len(prefix):]
                     break
-
-            # 検索優先順: そのまま → "[順] base" → "[逆] base" → base
             found = -1
-            for search in [cur_text,
-                           "[順] " + base,
-                           "[逆] " + base,
-                           base]:
+            for search in [cur_text, "[順] " + base, "[逆] " + base, base]:
                 found = cb.findText(search)
                 if found >= 0:
                     break
             cb.setCurrentIndex(found if found >= 0 else 0)
             cb.blockSignals(False)
+
+    def _fill_adjacent_items(self, cb, adj, prev_obj, prev_is_fwd, is_2nd: bool):
+        """隣接候補リストをコンボボックスに追加する（[順]/[逆] プレフィックス付き）。"""
+        show_dir = len(adj) >= 2
+        for cand, _ in adj:
+            base_label = self._label_for_obj(cand)
+            if not base_label:
+                continue
+            if show_dir:
+                pef = (self._prev_is_fwd_for_adj(prev_obj, cand)
+                       if is_2nd else prev_is_fwd)
+                prefix = "[順] " if self._compute_next_forward(prev_obj, pef, cand) else "[逆] "
+                cb.addItem(prefix + base_label)
+            else:
+                cb.addItem(base_label)
 
     def _prev_is_fwd_for_adj(self, prev_obj, cand) -> bool:
         """
@@ -482,7 +385,6 @@ class RightPanel(QWidget):
         - cand が prev_obj の終点側に接続 → prev_obj を正順(True)で通過してきた
         - cand が prev_obj の始点側に接続 → prev_obj を逆順(False)で通過してきた
         """
-        import math as _m
         prev_pts = self._endpoints_of(prev_obj)
         cand_pts = self._endpoints_of(cand)
         if not prev_pts or not cand_pts:
@@ -493,29 +395,29 @@ class RightPanel(QWidget):
 
         # cand の端点が prev_obj の終点に近い → 正順
         for cp in cand_pts:
-            if _m.hypot(cp.x - end_pt.x, cp.y - end_pt.y) < self.SNAP_TOL:
+            if math.hypot(cp.x - end_pt.x, cp.y - end_pt.y) < self.SNAP_TOL:
                 return True
 
         # cand の端点が prev_obj の始点に近い → 逆順
         for cp in cand_pts:
-            if _m.hypot(cp.x - start_pt.x, cp.y - start_pt.y) < self.SNAP_TOL:
+            if math.hypot(cp.x - start_pt.x, cp.y - start_pt.y) < self.SNAP_TOL:
                 return False
 
         # Clothoid の line_pt/circle_pt が prev_obj に接続している場合も考慮
         if isinstance(prev_obj, Clothoid) and prev_obj.is_valid:
             if prev_obj._circle_pt:
                 for cp in cand_pts:
-                    if _m.hypot(cp.x - prev_obj._circle_pt.x,
+                    if math.hypot(cp.x - prev_obj._circle_pt.x,
                                  cp.y - prev_obj._circle_pt.y) < self.SNAP_TOL:
                         return True   # circle_pt 側 = 終点 = 正順で通過
 
         # prev_obj が Arc で cand が Clothoid の場合
         if isinstance(cand, Clothoid) and cand.is_valid and isinstance(prev_obj, Arc):
             if cand._circle_pt:
-                if _m.hypot(cand._circle_pt.x - end_pt.x,
+                if math.hypot(cand._circle_pt.x - end_pt.x,
                              cand._circle_pt.y - end_pt.y) < self.SNAP_TOL:
                     return True
-                if _m.hypot(cand._circle_pt.x - start_pt.x,
+                if math.hypot(cand._circle_pt.x - start_pt.x,
                              cand._circle_pt.y - start_pt.y) < self.SNAP_TOL:
                     return False
 
@@ -530,7 +432,6 @@ class RightPanel(QWidget):
         - 交点を共有する他の直線の線分
         戻り値: [(cand, is_forward), ...] (重複なし)
         """
-        import math as _m
         exclude_set = set(id(e) for e in excludes if e is not None) if excludes else set()
         result = []
         seen = set()
@@ -569,7 +470,7 @@ class RightPanel(QWidget):
                 clo_pts = self._endpoints_of(clo)
                 for pt in pts:
                     for cp in clo_pts:
-                        if _m.hypot(pt.x - cp.x, pt.y - cp.y) < self.SNAP_TOL:
+                        if math.hypot(pt.x - cp.x, pt.y - cp.y) < self.SNAP_TOL:
                             fwd = (cp is clo_pts[0])  # line_pt側=True, circle_pt側=False
                             add(clo, fwd)
 
@@ -596,7 +497,6 @@ class RightPanel(QWidget):
         excludes: 除外するオブジェクトのリスト（選択済み全図形）
         戻り値: [(cand, is_forward), ...]
         """
-        import math as _m
         exclude_set = set(id(e) for e in excludes if e is not None) if excludes else set()
         result = []
         seen = set()
@@ -613,8 +513,8 @@ class RightPanel(QWidget):
             cand_pts = self._endpoints_of(cand)
             if len(cand_pts) < 2:
                 continue
-            d_start = _m.hypot(pt.x - cand_pts[0].x, pt.y - cand_pts[0].y)
-            d_end   = _m.hypot(pt.x - cand_pts[-1].x, pt.y - cand_pts[-1].y)
+            d_start = math.hypot(pt.x - cand_pts[0].x, pt.y - cand_pts[0].y)
+            d_end   = math.hypot(pt.x - cand_pts[-1].x, pt.y - cand_pts[-1].y)
             if d_start < self.SNAP_TOL:
                 if id(cand) not in seen:
                     result.append((cand, True))
@@ -628,7 +528,7 @@ class RightPanel(QWidget):
         # clo.line と同じ直線上の線分のみを対象に「線分上にあるか」で判定
         if (prev_obj is not None and isinstance(prev_obj, Clothoid)
                 and prev_obj._line_pt is not None
-                and _m.hypot(pt.x - prev_obj._line_pt.x,
+                and math.hypot(pt.x - prev_obj._line_pt.x,
                               pt.y - prev_obj._line_pt.y) < self.SNAP_TOL):
             clo_line = prev_obj.line
             t = clo_line.project_t(prev_obj._line_pt)
@@ -1431,8 +1331,7 @@ class RightPanel(QWidget):
             if not clo.is_valid:
                 continue
             if clo.snap_arc and clo.circle is arc.circle and clo._circle_pt is not None:
-                import math as _m
-                ang = _m.atan2(clo._circle_pt.y - arc.circle.center.y,
+                ang = math.atan2(clo._circle_pt.y - arc.circle.center.y,
                                clo._circle_pt.x - arc.circle.center.x)
                 if end == 'start' and abs(arc.angle_start - ang) < 1e-4: return True
                 if end == 'end'   and abs(arc.angle_end   - ang) < 1e-4: return True

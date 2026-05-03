@@ -188,9 +188,8 @@ class Canvas(QWidget):
                         snapped_seg_ends.add((sid, 'end'))
                         snapped_seg_ends.add((sid, 'start'))
             if clo.snap_arc and clo._circle_pt is not None:
-                import math as _m
-                ang = _m.atan2(clo._circle_pt.y - clo.circle.center.y,
-                               clo._circle_pt.x - clo.circle.center.x)
+                ang = math.atan2(clo._circle_pt.y - clo.circle.center.y,
+                                 clo._circle_pt.x - clo.circle.center.x)
                 for arc in clo.circle.arcs:
                     if abs(arc.angle_start - ang) < 1e-4:
                         snapped_arc_ends.add((arc.id, 'start'))

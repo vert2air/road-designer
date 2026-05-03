@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QKeySequence, QIcon, QAction, QActionGroup
 
-from models import Scene, Line, Circle, Clothoid, Segment, Arc, Vec2
+from models import Scene, Line, Circle, Clothoid, Segment, Arc, Vec2, resolve_chain, SNAP_TOL
 from canvas import Canvas
 from right_panel import RightPanel
 from vertical_window import VerticalAlignmentWindow
@@ -355,277 +355,79 @@ class MainWindow(QMainWindow):
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     # ─── 縦断線形 ────────────────────────────────────────────
-    def _open_vertical_window(self):
+    def _get_or_create_ep(self, obj, rev: bool):
+        """obj に対応する ElementProfile を取得または新規作成して返す。"""
         from models import ElementProfile, plan_length_of
-        import math as _math
+        ep = next((e for e in self.scene.element_profiles
+                   if e.element_id == obj.id), None)
+        if ep is None:
+            ep = ElementProfile()
+            ep.element_id = obj.id
+            self.scene.element_profiles.append(ep)
+        ep.element_type  = ('segment'  if isinstance(obj, Segment)  else
+                             'arc'      if isinstance(obj, Arc)       else
+                             'clothoid')
+        ep.plan_length   = plan_length_of(obj)
+        ep.reversed_flag = rev
+        return ep
 
+    def _collect_all_display(self):
+        """シーン内の全線分・全円弧・全クロソイドを返す（背景表示用）。"""
+        result = []
+        for ln in self.scene.lines:
+            result.extend(ln.segments)
+        for ci in self.scene.circles:
+            result.extend(ci.arcs)
+        result.extend(self.scene.clothoids)
+        return result
+
+    def _open_vertical_window(self):
         # 選択中の平面線形要素を収集
-        raw_elements = [obj for obj in self._canvas._selected
-                        if isinstance(obj, (Segment, Arc, Clothoid))]
-        if not raw_elements:
+        raw = [o for o in self._canvas._selected
+               if isinstance(o, (Segment, Arc, Clothoid))]
+        if not raw:
             return
 
-        # ── チェーンの順序と向きを解決 ──────────────────────────
-        # 各要素の端点（始点・終点のワールド座標）を取得
-        def endpoints(obj):
-            """(start_pt, end_pt) を Vec2 で返す"""
-            from models import Vec2, Segment, Arc, Clothoid
-            if isinstance(obj, Segment):
-                return obj.start, obj.end
-            if isinstance(obj, Arc):
-                return obj.start, obj.end
-            if isinstance(obj, Clothoid):
-                if obj.is_valid and obj._line_pt and obj._circle_pt:
-                    return obj._line_pt, obj._circle_pt
-            return None, None
+        elements, rev_flags = resolve_chain(raw, self.scene.element_profiles)
+        profiles = [self._get_or_create_ep(obj, rev)
+                    for obj, rev in zip(elements, rev_flags)]
 
-        def pt_dist(a, b):
-            if a is None or b is None:
-                return float('inf')
-            return _math.hypot(a.x - b.x, a.y - b.y)
-
-        def resolve_chain(elems):
-            """
-            要素リストから (順序付きリスト, reversed_flags) を返す。
-            共有端点（SNAP_TOL 以内）を検出してチェーンの順序と向きを決定する。
-            既存の ElementProfile に reversed_flag が保存されている場合はそれを優先する。
-            """
-            if len(elems) == 1:
-                ep = next((ep for ep in self.scene.element_profiles
-                           if ep.element_id == elems[0].id), None)
-                rev = ep.reversed_flag if ep else False
-                return list(elems), [rev]
-
-            pts      = {id(e): endpoints(e) for e in elems}
-            SNAP_TOL = 1.0
-
-            def connects_to_other(pt, exclude_elem):
-                for e in elems:
-                    if e is exclude_elem: continue
-                    s, ep_ = pts[id(e)]
-                    if pt_dist(pt, s) < SNAP_TOL or pt_dist(pt, ep_) < SNAP_TOL:
-                        return True
-                return False
-
-            # チェーンの真の末端要素を探す
-            # 「片方の端点が孤立している」要素が先頭候補
-            candidates = []
-            for cand in elems:
-                s, e = pts[id(cand)]
-                s_iso = s is not None and not connects_to_other(s, cand)
-                e_iso = e is not None and not connects_to_other(e, cand)
-                if s_iso and not e_iso:
-                    candidates.append((cand, False))   # 正順で先頭
-                elif e_iso and not s_iso:
-                    candidates.append((cand, True))    # 逆順で先頭
-
-            # 既存データがある場合、reversed_flag と一致する候補を優先
-            # 具体的には「最初の要素が rev=False（正順の先頭）」となる候補を優先
-            if candidates:
-                # ep.reversed_flag が False の要素を正順先頭として優先
-                best_first = None
-                for cand, cand_rev in candidates:
-                    ep_existing = next((ep for ep in self.scene.element_profiles
-                                        if ep.element_id == cand.id), None)
-                    saved_rev = ep_existing.reversed_flag if ep_existing else None
-                    if saved_rev is not None and saved_rev == cand_rev:
-                        best_first = (cand, cand_rev)
-                        break
-                if best_first is None:
-                    best_first = candidates[0]
-                first, first_rev = best_first
-            else:
-                first, first_rev = elems[0], False
-
-            # 貪欲にチェーンを構築
-            remaining = list(elems)
-            chain     = [first]
-            rev_flags = [first_rev]
-            remaining.remove(first)
-
-            while remaining:
-                last_elem = chain[-1]
-                last_rev  = rev_flags[-1]
-                ls, le    = pts[id(last_elem)]
-                cur_end   = le if not last_rev else ls
-
-                best = None; best_rev = False; best_d = float('inf')
-                for cand in remaining:
-                    cs, ce = pts[id(cand)]
-                    d_fwd = pt_dist(cur_end, cs)
-                    d_rev = pt_dist(cur_end, ce)
-                    if d_fwd < best_d:
-                        best_d = d_fwd; best = cand; best_rev = False
-                    if d_rev < best_d:
-                        best_d = d_rev; best = cand; best_rev = True
-
-                if best is None or best_d > SNAP_TOL * 10:
-                    best = remaining[0]; best_rev = False
-
-                chain.append(best)
-                rev_flags.append(best_rev)
-                remaining.remove(best)
-
-            return chain, rev_flags
-
-        elements, rev_flags = resolve_chain(raw_elements)
-
-        # 各要素に対応する ElementProfile を取得または新規作成
-        def get_or_create_ep(obj) -> ElementProfile:
-            ep = next((ep for ep in self.scene.element_profiles
-                       if ep.element_id == obj.id), None)
-            if ep is None:
-                ep = ElementProfile()
-                ep.element_id = obj.id
-                self.scene.element_profiles.append(ep)
-            # 常に最新の情報で上書き（element_type が古い場合に備える）
-            ep.element_type  = (
-                'segment'  if isinstance(obj, Segment)  else
-                'arc'      if isinstance(obj, Arc)       else
-                'clothoid')
-            ep.plan_length   = plan_length_of(obj)
-            ep.reversed_flag = rev_flags[elements.index(obj)]
-            return ep
-
-        profiles = [get_or_create_ep(obj) for obj in elements]
-
-        # 隣接する ElementProfile 間の接点標高を同期
+        # 隣接 ElementProfile 間の境界標高を同期
         for i in range(len(profiles) - 1):
-            ep_cur  = profiles[i]
-            ep_next = profiles[i + 1]
-            if ep_cur.grade_lines:
-                last_gl = max(ep_cur.grade_lines, key=lambda g: g.dist_end)
-                shared_elev = last_gl.elev_end
-                ep_cur.elev_end    = shared_elev
-                ep_next.elev_start = shared_elev
-            elif ep_next.grade_lines:
-                first_gl = min(ep_next.grade_lines, key=lambda g: g.dist_start)
-                shared_elev = first_gl.elev_start
-                ep_cur.elev_end    = shared_elev
-                ep_next.elev_start = shared_elev
+            cur, nxt = profiles[i], profiles[i + 1]
+            if cur.grade_lines:
+                elev = max(cur.grade_lines, key=lambda g: g.dist_end).elev_end
+            elif nxt.grade_lines:
+                elev = min(nxt.grade_lines, key=lambda g: g.dist_start).elev_start
+            else:
+                continue
+            cur.elev_end   = elev
+            nxt.elev_start = elev
 
         self._vertical_window = VerticalAlignmentWindow(
             self.scene, profiles, elements, rev_flags, parent=None)
         self._vertical_window.show()
 
     def _open_3d_viewer(self):
-        """3D 走行ビューアを起動する。
-        - 表示: シーン内の全線分・全円弧・全クロソイド
-        - 走行: 選択した要素チェーン（未選択なら全要素を繋げて走行）
-        """
-        from models import ElementProfile, plan_length_of
+        """3D 走行ビューアを起動する。"""
         from road_viewer import launch_viewer
-        import math as _math
 
-        # ── 走行対象要素の決定 ──────────────────────────────
-        selected = [obj for obj in self._canvas._selected
-                    if isinstance(obj, (Segment, Arc, Clothoid))]
-
-        # 未選択なら全要素を走行対象にする
+        # 走行対象要素を収集（未選択なら全要素）
+        selected = [o for o in self._canvas._selected
+                    if isinstance(o, (Segment, Arc, Clothoid))]
         if not selected:
-            for ln in self.scene.lines:
-                selected.extend(ln.segments)
-            for ci in self.scene.circles:
-                selected.extend(ci.arcs)
-            selected.extend(self.scene.clothoids)
-
+            selected = self._collect_all_display()
         if not selected:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(self, "3Dビューア", "表示できる図形がありません。")
             return
 
-        # ── 表示対象要素（全線分・全円弧・全クロソイド）──────
-        all_display = []
-        for ln in self.scene.lines:
-            all_display.extend(ln.segments)
-        for ci in self.scene.circles:
-            all_display.extend(ci.arcs)
-        all_display.extend(self.scene.clothoids)
+        ride_elems, rev_flags = resolve_chain(selected, self.scene.element_profiles)
+        profiles = [self._get_or_create_ep(obj, rev)
+                    for obj, rev in zip(ride_elems, rev_flags)]
 
-        # ── resolve_chain（走行チェーンの順序・向き解決）──────
-        def endpoints(obj):
-            if isinstance(obj, Segment): return obj.start, obj.end
-            if isinstance(obj, Arc):     return obj.start, obj.end
-            if isinstance(obj, Clothoid):
-                if obj.is_valid and obj._line_pt and obj._circle_pt:
-                    return obj._line_pt, obj._circle_pt
-            return None, None
-
-        def pt_dist(a, b):
-            if a is None or b is None: return float('inf')
-            return _math.hypot(a.x - b.x, a.y - b.y)
-
-        def resolve_chain(elems):
-            if len(elems) == 1:
-                ep = next((e for e in self.scene.element_profiles
-                           if e.element_id == elems[0].id), None)
-                return list(elems), [ep.reversed_flag if ep else False]
-            pts = {id(e): endpoints(e) for e in elems}
-            SNAP_TOL = 1.0
-            def connects(pt, excl):
-                for e in elems:
-                    if e is excl: continue
-                    s, ep_ = pts[id(e)]
-                    if pt_dist(pt, s) < SNAP_TOL or pt_dist(pt, ep_) < SNAP_TOL:
-                        return True
-                return False
-            candidates = []
-            for cand in elems:
-                s, e = pts[id(cand)]
-                s_iso = s is not None and not connects(s, cand)
-                e_iso = e is not None and not connects(e, cand)
-                if s_iso and not e_iso: candidates.append((cand, False))
-                elif e_iso and not s_iso: candidates.append((cand, True))
-            if candidates:
-                best = None
-                for cand, crev in candidates:
-                    ep_ex = next((e for e in self.scene.element_profiles
-                                  if e.element_id == cand.id), None)
-                    saved = ep_ex.reversed_flag if ep_ex else None
-                    if saved is not None and saved == crev:
-                        best = (cand, crev); break
-                if best is None: best = candidates[0]
-                first, first_rev = best
-            else:
-                first, first_rev = elems[0], False
-            remaining = list(elems)
-            chain = [first]; rev_flags = [first_rev]; remaining.remove(first)
-            while remaining:
-                le = chain[-1]; le_rev = rev_flags[-1]
-                ls, lend = pts[id(le)]
-                cur_end = lend if not le_rev else ls
-                bst = None; brev = False; bd = float('inf')
-                for cand in remaining:
-                    cs, ce = pts[id(cand)]
-                    df = pt_dist(cur_end, cs); dr = pt_dist(cur_end, ce)
-                    if df < bd: bd = df; bst = cand; brev = False
-                    if dr < bd: bd = dr; bst = cand; brev = True
-                if bst is None or bd > SNAP_TOL * 10:
-                    bst = remaining[0]; brev = False
-                chain.append(bst); rev_flags.append(brev); remaining.remove(bst)
-            return chain, rev_flags
-
-        ride_elements, rev_flags = resolve_chain(selected)
-
-        def get_or_create_ep(obj, rev):
-            ep = next((e for e in self.scene.element_profiles
-                       if e.element_id == obj.id), None)
-            if ep is None:
-                ep = ElementProfile()
-                ep.element_id = obj.id
-                self.scene.element_profiles.append(ep)
-            ep.element_type  = ('segment'  if isinstance(obj, Segment)  else
-                                 'arc'      if isinstance(obj, Arc)       else
-                                 'clothoid')
-            ep.plan_length   = plan_length_of(obj)
-            ep.reversed_flag = rev
-            return ep
-
-        profiles = [get_or_create_ep(obj, rev)
-                    for obj, rev in zip(ride_elements, rev_flags)]
-
-        launch_viewer(self.scene, ride_elements, profiles, rev_flags,
-                      all_display=all_display)
+        launch_viewer(self.scene, ride_elems, profiles, rev_flags,
+                      all_display=self._collect_all_display())
 
     # ─── デモデータ ──────────────────────────────────────────
     def _add_demo(self):
