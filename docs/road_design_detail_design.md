@@ -147,6 +147,12 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 
 `direction.perp()` を返す。`Vec2(-dy, dx)` で CCW 90° 回転した左法線。
 
+#### `to_dict() / from_dict(d)`
+
+**to_dict**: `{"id", "ref_start", "ref_end", "segments"}` の形式で返す。`ref_start`/`ref_end` は `Vec2.to_dict()` の出力（`{"x", "y"}`）。
+
+**from_dict**: `Line(Vec2.from_dict(...), Vec2.from_dict(...), id)` で復元し、`segments` を `Segment.from_dict(s, ln)` で復元して追加する。
+
 ---
 
 ### 1.4 `Segment` クラス
@@ -172,6 +178,12 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 
 - **エッジケース**: `t_start == t_end` のとき `0.0`
 
+#### `to_dict() / from_dict(d, line)`
+
+**to_dict**: `{"id", "t_start", "t_end"}` の形式で返す。親 `Line` への参照はシリアライズしない（`from_dict` で再設定する）。
+
+**from_dict**: `Segment(line, t_start, t_end, id)` で復元する。`line` 引数は呼び出し元（`Line.from_dict`）が渡す。
+
 ---
 
 ### 1.5 `LineConnection` データクラス
@@ -190,6 +202,13 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 | `line_j_reversed` | `bool` | スムーズ接続の J 直線の反転フラグ |
 | `line_k_reversed` | `bool` | スムーズ接続の K 直線の反転フラグ |
 
+**ライフサイクル**:
+- 折れ線接続: `Canvas._connect_polyline()` で生成し、`line_a.connection = line_b.connection = conn` と設定する
+- スムーズ接続: `Canvas.smooth_connect()` で `kind` を `"smooth"` に昇格させ、`circle`・`bisector_dir` を追記する
+- 接続解除: `Canvas.disconnect_lines()` で `line_a.connection = line_b.connection = None` に設定する（オブジェクト自体は GC に委ねる）
+
+**不変条件**: `line_a.connection is line_b.connection`（同一オブジェクトを両直線が参照する）
+
 ---
 
 ### 1.6 `Circle` クラス
@@ -197,13 +216,24 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 #### `__init__(center, radius, circle_id=None)`
 
 - `arcs`: 空リストで初期化
-- `bisector_origin`, `bisector_dir`: スムーズ接続時に設定される二等分線情報（`None` で初期化）
+- `bisector_origin`: スムーズ接続の交点 X の座標（`Vec2 | None`）。円の中心を二等分線上に拘束する際の基準点
+- `bisector_dir`: 二等分線の方向単位ベクトル（`Vec2 | None`）。円中心ドラッグ時に `ci.center = bisector_origin + bisector_dir * t` の形で移動を制限する
+
+これら2フィールドは通常 `None`。`smooth_connect()` 実行時に設定される。折れ線接続への降格や接続解除時はクリアされない（`_update_smooth_circle()` が常に最新値で上書きするため問題ない）。
 
 ---
 
 ### 1.7 `Arc` クラス
 
 円の部分区間。`angle_start` から CCW 方向に `angle_end` まで至る弧。
+
+#### `__init__(circle, angle_start, angle_end, arc_id=None)`
+
+- `circle`: 親 `Circle` オブジェクトへの参照
+- `angle_start`: 弧の開始角度（ラジアン、x 軸正方向 = 0、CCW が正）
+- `angle_end`: 弧の終了角度（ラジアン）
+- `arc_id`: `None` のとき `new_id()` で採番
+- コンストラクタは `circle.arcs.append(self)` を行わない。追加は呼び出し元が責任を持つ
 
 #### `arc_angle() -> float`
 
@@ -219,6 +249,13 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 #### `start`, `end` プロパティ
 
 `angle_start`, `angle_end` の円周上の座標を返す。
+
+```python
+start = Vec2(circle.center.x + circle.radius * cos(angle_start),
+             circle.center.y + circle.radius * sin(angle_start))
+end   = Vec2(circle.center.x + circle.radius * cos(angle_end),
+             circle.center.y + circle.radius * sin(angle_end))
+```
 
 ---
 
@@ -327,20 +364,37 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 
 #### `_apply_segment_snap()`
 
-線側接点 `_line_pt` に最も近い線分の端点（`t_end` または `t_start`）を接点の t 値に移動する。
+線側接点 `_line_pt` に最も近い線分の端点を接点の t 値に移動する。
 
-- `reversed_flag=False` → 線分の `t_end` を移動
-- `reversed_flag=True` → 線分の `t_start` を移動
-- **エッジケース**: 移動後に `t_start >= t_end` になる場合、反対の端点を 0.1 だけ離す
+**最近傍線分の選択**:
+1. `_split_seg_ids` に含まれない線分のうち `_dist_to_seg(_line_pt, seg)` が最小のものを選ぶ
+2. 接点の t 値: `t_x = line.project_t(_line_pt)`
+3. 移動対象:
+   - `reversed_flag=False` → `seg.t_end = t_x`
+   - `reversed_flag=True` → `seg.t_start = t_x`
+
+**エッジケース**:
+- 線分がない → 何もしない
+- 移動後に `t_start >= t_end` になる場合、反対の端点を `t_x ± 0.1` に強制移動（線分の縮退防止）
+- `_split_seg_ids` に登録済みの線分は候補から除外（スプリット管理と競合しないよう）
 
 #### `_apply_segment_split()`
 
-線側接点 X で線分 AB を AX・XB に分割する。
+線側接点 X で線分 AB を AX・XB に分割し、`_split_seg_ids = [AB_id, XB_id]` に記録する。
 
-- 既に `_split_seg_ids` が設定済みの場合は端点を追従更新のみ行う（再分割しない）
-- 分割対象: `_split_seg_ids` 以外の線分のうち、接点に最も近いもの
-- 接点が線分の端点に非常に近い（`t_x <= t_start + 1e-6` または `t_x >= t_end - 1e-6`）場合は分割しない
-- **エッジケース**: 線分がない場合は何もしない
+**既に分割済みの場合（`_split_seg_ids` が設定済み）**:
+- AX の `t_end` と XB の `t_start` を現在の `t_x` に追従更新するだけで再分割しない
+
+**未分割の場合の手順**:
+1. `_split_seg_ids` に含まれない線分の中から `_dist_to_seg(_line_pt, seg)` が最小のものを選ぶ
+2. `t_x = line.project_t(_line_pt)` で接点の t 値を計算
+3. `t_x <= seg.t_start + 1e-6` または `t_x >= seg.t_end - 1e-6` の場合は端点に非常に近いため分割しない
+4. 元の線分を AX（`t_start → t_x`）に縮め、新しい線分 XB（`t_x → t_end`）を生成して `line.segments` に追加
+5. `_split_seg_ids = [AB.id, XB.id]` を記録
+
+**エッジケース**:
+- 線分がない → 何もしない
+- 接点が線分の端点に非常に近い → 分割しない（AX または XB が長さゼロになるのを防ぐ）
 
 #### `_clear_segment_split()`
 
@@ -374,7 +428,7 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 
 ---
 
-### 1.10 `plan_length_of`（モジュールレベル関数）(obj) -> float
+### 1.10 `plan_length_of(obj) -> float`（モジュールレベル関数）
 
 | 入力型 | 計算式 |
 |---|---|
@@ -441,6 +495,21 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 
 ### 1.14 `Scene` クラス
 
+#### `__init__()`
+
+以下のフィールドを空リストで初期化する:
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `lines` | `list[Line]` | 全直線 |
+| `circles` | `list[Circle]` | 全円 |
+| `clothoids` | `list[Clothoid]` | 全クロソイド |
+| `element_profiles` | `list[ElementProfile]` | 縦断線形データ（要素単位） |
+| `vertical_alignments` | `list[VerticalAlignment]` | 旧フォーマット互換用 |
+| `segment_snaps` | `list[SegmentSnap]` | 線分端点の接続情報 |
+| `arc_snaps` | `list[ArcSnap]` | 円弧端点の接続情報 |
+| `nicknames` | `dict[int, str]` | ID → ニックネーム |
+
 #### `get_nickname(obj_id, prefix="") -> str`
 
 `nicknames[obj_id]` を返す。未設定のとき `f"nickname_{prefix}_{obj_id}"` を返す。
@@ -460,6 +529,10 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 #### `remove_circle(circle)`
 
 関連クロソイド（`c.circle is circle`）を先に削除してから `circles` から除去する。
+
+#### `remove_clothoid(clothoid)`
+
+`clothoids` リストから `clothoid` を除去する。除去前に `clothoid._clear_segment_split()` と `clothoid._clear_arc_split()` を呼んで分割済み線分・円弧を復元する。
 
 #### `clothoids_for(line, circle) -> list[Clothoid]`
 
@@ -578,10 +651,26 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 #### `__init__(scene, parent=None)`
 
 初期状態:
-- `_scale = 1.0`（1 px/m）
-- `_offset = Vec2(width/2, height/2)`（中心原点）
-- `mode = MODE_SELECT`
-- `_undo_stack = []`（最大 500 エントリ）
+
+| フィールド | 初期値 | 説明 |
+|---|---|---|
+| `_scale` | `1.0` | ズーム倍率（px/m） |
+| `_offset` | `Vec2(w/2, h/2)` | パンオフセット（px） |
+| `mode` | `MODE_SELECT` | 現在の描画モード |
+| `_selected` | `[]` | 選択中の図形リスト |
+| `_handles` | `[]` | 現在表示中のハンドルリスト |
+| `_hover_obj` | `None` | ホバー中の図形（ハイライト用） |
+| `_drag_handle` | `None` | ドラッグ中のハンドル |
+| `_line_first_pt` | `None` | 直線モードの1点目座標 |
+| `_last_line` | `None` | 直線モードで直前に追加した Line |
+| `_rubber_end` | `None` | ラバー線の現在終点（マウス位置） |
+| `_circle_center` | `None` | 円モードで記憶した中心点 |
+| `_pan_start` | `None` | パン開始時のスクリーン座標 |
+| `_pan_offset_start` | `None` | パン開始時の `_offset` 値 |
+| `_mouse_moved_px` | `0.0` | マウスダウンからの累積移動量（px）|
+| `_undo_stack` | `[]` | Undo スタック（最大 500） |
+
+`setMouseTracking(True)` でマウスボタンを押さなくてもホバーイベントを受け取る。`setFocusPolicy(Qt.FocusPolicy.StrongFocus)` でキーイベントを受け取る。
 
 #### `w2s(p: Vec2) -> QPointF`
 
@@ -754,24 +843,52 @@ screen_y = -p.y * scale + offset.y   # y 反転
 
 #### `mousePressEvent(event)`
 
-- 左ボタン + 選択モード: ハンドルヒット → ドラッグ開始。図形ヒット → 選択更新（Shift で複数選択）。ヒットなし → 選択解除
-- 左ボタン + 直線モード: `_line_click(w)`
-- 左ボタン + 円モード: 中心点を記憶
-- 中ボタン: パン開始
+左ボタン + **選択モード**:
+1. `_hit_handle(sw)` でハンドルヒット判定 → ヒットすれば `_drag_handle` に設定し `push_undo()` を呼ぶ
+2. ハンドルなし → `_hit_object(sw)` で図形ヒット判定
+   - `Shift` なし: ヒットした図形のみ選択（`_selected = [obj]`）
+   - `Shift` あり: `_selected` に追加または除去（トグル）
+   - ヒットなし: `_selected = []`（選択解除）
+3. `_rebuild_handles()` → `selection_changed.emit()`
+4. パン開始のための `_pan_start`, `_pan_offset_start` を記録
+
+左ボタン + **直線モード**: `_line_click(w)` を呼ぶ
+
+左ボタン + **円モード**: `_circle_center = w`（中心点を記憶）。リリースで半径を確定する
+
+中ボタン: `_pan_start = sw`, `_pan_offset_start = Vec2(_offset)` を記録してパン開始
 
 #### `mouseMoveEvent(event)`
 
-- ドラッグ中: `_do_drag(w)` で図形変形
-- ハンドル外: ホバーオブジェクト更新 + マウス座標 emit
-- パン中: `_offset` を更新
+**ドラッグ中**（`_drag_handle` が設定済み）:
+- `_mouse_moved_px += distance` を累積
+- `_mouse_moved_px > 2` になった時点で `_do_drag(w)` を呼ぶ（微小移動でのノイズ防止）
+- `mouse_world_pos.emit(x, y)` でマウス座標を右パネルに通知
 
-パン判定: マウスダウンからの移動が 4px 未満はパン開始しない（クリックと区別）。
+**パン中**（`_pan_start` が設定済み + 中ボタンまたは左ボタン）:
+- 移動量 `(dx, dy)` を `_offset` に加算
+- 選択モードで左ボタンパン: 移動量が 4px 未満のうちはパンしない（クリックと区別）
+
+**ドラッグなし・パンなし**:
+- `_hit_object(sw)` でホバーオブジェクトを更新
+- `_hover_obj` が変わった場合のみ `update()` を呼ぶ（不要な再描画を避ける）
+- `mouse_world_pos.emit(x, y)` でマウス座標を通知
 
 #### `mouseReleaseEvent(event)`
 
-- ドラッグ中: `push_undo()` + `scene_changed.emit()` でコミット
-- 円モード左ボタンリリース: 中心・半径で `Circle` を生成して Scene に追加
-- 4px 未満の移動: クリックとして扱い選択解除
+**ドラッグ終了**（`_drag_handle` が設定済み）:
+- `_mouse_moved_px > 2` のとき（実際に移動した場合）: `scene_changed.emit()` でコミット
+- `_drag_handle = None` でドラッグ状態をリセット
+
+**円モード左ボタンリリース**:
+- `_circle_center` が設定済みの場合: `radius = (w - _circle_center).length()` を計算
+- `radius > 0.1` のとき `Circle(center, radius)` を生成して `scene.add_circle()` → `scene_changed.emit()`
+- `_circle_center = None` にリセット
+
+**選択モード左ボタンリリース（`_mouse_moved_px < 4`）**:
+- クリックとして扱い、ドラッグではなく選択操作の完了とみなす
+
+**パン終了**: `_pan_start = None` にリセット
 
 #### `wheelEvent(event)`
 
@@ -795,8 +912,21 @@ screen_y = -p.y * scale + offset.y   # y 反転
 
 直線モードでの左クリック処理。
 
-- **1回目**: 始点を記憶（`_line_first_pt`）し、Scene に `Line` を追加
-- **2回目以降**: 前の直線の終端に新しい直線を折れ線接続。前の直線の `ref_end` を共有参照点に設定
+**1回目のクリック**（`_line_first_pt is None`）:
+- `_line_first_pt = w`（始点を記憶）
+- `Line(w, w)` を生成して `scene.add_line()` し、`_last_line` に設定
+- この時点では長さゼロの直線（次のクリックで終点を確定する）
+
+**2回目以降のクリック**:
+- `_last_line.ref_end = w`（前の直線の終点を確定）
+- `push_undo()` を呼ぶ
+- 新しい `Line(w, w)` を生成して `scene.add_line()`
+- `_connect_polyline(_last_line, new_line)` で前の直線と折れ線接続
+- `_last_line = new_line` で更新し、次のクリックへ継続
+
+**ラバー線**: `mouseMoveEvent` 内で `_rubber_end = w` を更新し、`_draw_rubber()` で現在のマウス位置まで点線を描く。
+
+**エッジケース**: 1回目と2回目が同じ座標 → 長さゼロの直線が残るが例外にはならない
 
 #### `_connect_polyline(a: Line, b: Line)`
 
@@ -974,6 +1104,45 @@ screen_y = -elev * scale_y + offset.y   # y 反転
 
 各ハンドル辞書: `{'dist': float, 'elev': float, 'partners': list[(GradeLine, str)]}`
 
+#### `mousePressEvent(event)`
+
+**中ボタン**: パン開始（`_pan_start`, `_pan_offset_start` を記録）。
+
+**左ボタン + 選択モード**:
+1. `_hit_handle(sx, sy)` でハンドルヒット判定 → ヒットすれば `_drag_handle` に設定して返す
+2. `_hit_test(sx, sy)` で勾配直線・縦断曲線のヒット判定
+3. 選択が変わった場合 `selection_changed.emit(hit)` を呼ぶ
+4. パン開始のために `_pan_start` を記録
+
+**左ボタン + 勾配直線モード（`"grade"`）**:
+1. クリック座標 `(dist, elev)` を `s2w()` で変換
+2. `snap_dist()` でスナップ候補（既存端点 + チェーン両端 0/total_len）に 12px 以内なら吸着
+3. `_grade_first is None` → 1点目として記憶
+4. `_grade_first` 設定済み → 2点目として勾配直線を追加:
+   - `[d0, dist]` の範囲で既存勾配直線と重複する部分を置換
+   - 重複する GL の左右はみ出し部分は `_elev_at()` で標高を補間して残す
+   - 新しい `GradeLine` を追加し `dist_start` でソート
+   - `_snap_grade_lines()` を呼んで境界を揃える
+   - `_grade_first = (dist, elev)`（次の入力の始点として再利用）
+
+**エッジケース**: 始点と終点の距離が 0.01m 未満 → 何もしない（縮退した勾配直線を防ぐ）
+
+#### `mouseReleaseEvent(event)`
+
+**ドラッグ終了**（`_drag_handle` が設定済み）:
+- 全縦断曲線の `g1`/`g2` を `_recalc_vc_gradients()` で再確定
+- `_drag_handle = None` にリセット
+- `selection_changed.emit(self._selected)` で右パネルを更新
+
+**パン終了**: `_pan_start = None` にリセット
+
+#### `keyPressEvent(event)`
+
+| キー | 処理 |
+|---|---|
+| `Delete` | 選択中の `GradeLine` を `_delete_grade_line()` で削除 |
+| `Escape` | 勾配直線モードの入力をリセット（`_grade_first = None`, `_mouse_screen = None`） |
+
 #### `_hit_handle(sx, sy) -> Optional[dict]`
 
 スクリーン座標でハンドルヒット判定を行う。選択モード以外は常に `None`。距離 `HANDLE_R + 2 = 9px` 以内。
@@ -1138,12 +1307,20 @@ screen_y = -elev * scale_y + offset.y   # y 反転
 
 #### `build_road_mesh(centerline, half_width=4.0, color_override=None, z_offset=0.02) -> GeomNode`
 
-中心線に沿った帯状メッシュを生成する。
+中心線に沿った帯状三角形メッシュを生成する。
 
-- 各点で接線方向を計算し、左法線方向に `half_width` だけオフセットした左右2頂点を生成
-- 頂点の z 座標 = `centerline[i][2] + z_offset`（地面より上）
-- 三角形: `(bl, tl, tr)` と `(bl, tr, br)` の2三角形、さらに裏面（逆順）も追加
-- `color_override=None` のとき: デフォルト色 `(0.25, 0.25, 0.25, 1)`
+**頂点生成**:
+- 各中心線点 `(x, y, z, dist)` で接線方向を計算（前後点の差分。先頭・末尾は片側差分）
+- 接線に直交する左法線方向 `(ny, -nx)` に `half_width` だけオフセットした左右2頂点を生成
+- 頂点の z 座標 = `z + z_offset`（`z_offset=0.02m`）
+
+**`z_offset` の役割**: 地面メッシュ（`z = -0.1m`）と路面メッシュが重なると Z-fighting（どちらが手前かGPUが不定になる現象）が発生する。`z_offset=0.02m` で路面が確実に地面の上に描画されるようにする。
+
+**三角形の構成**（点 `i` と `i+1` の間の4頂点 `bl, br, tl, tr`）:
+- 表面: `(bl, tl, tr)`, `(bl, tr, br)`
+- 裏面: `(bl, tr, tl)`, `(bl, br, tr)`（両面描画。下から見上げたときも路面が見える）
+
+- `color_override=None` のとき: デフォルト色 `LColor(0.25, 0.25, 0.25, 1)`
 
 #### `build_center_line_node(centerline, color_override=None) -> GeomNode`
 
@@ -1325,6 +1502,21 @@ HUD テキストを現在の状態に更新する。
 #### `_remove_nick_combo()`
 
 末尾のコンボボックスを削除する。コンボが1個のみの場合は削除しない（最低1個維持）。削除後 `_refresh_nick_combos()` を呼ぶ。
+
+#### `__init__(scene, parent=None)`
+
+UIを構築する。構成（上から順）:
+
+1. **マウス座標表示エリア**: X/Y ラベルを `QGroupBox` に配置
+2. **ニックネームで選択エリア**: コンボボックス群 + ボタン行1（`+`/`-`/`選択を適用`/`図形を削除`）+ ボタン行2（`再描画`）
+3. **プロパティ表示エリア**: `QScrollArea` 内の `_prop_layout` に動的にウィジェットを追加・削除する
+
+初期状態:
+- `_block = False`: スピンボックスの値変更 → モデル更新 → スピンボックス値更新 の無限ループを防ぐフラグ
+- `_selected = []`: 選択中の図形リスト
+- `_nick_combos = []`: コンボボックスのリスト（`_add_nick_combo()` で初期2個を追加）
+
+幅制約: `minimumWidth=260`, `maximumWidth=360`
 
 #### `update_mouse_pos(x, y)`
 
@@ -1703,7 +1895,13 @@ Canvas での選択をコンボボックスに反映する。コンボの数が�
 
 #### `_add_nickname_editor(obj)`
 
-ニックネーム入力フィールドを構築する。`scene.get_nickname()` で現在値を表示し、入力変更時に `scene.set_nickname()` を呼ぶ。
+ニックネーム入力フィールドを構築する。
+
+- `QLineEdit` に `scene.get_nickname(obj.id, prefix)` で現在値を表示
+- `textChanged` シグナルで `on_change(text)` を呼ぶ:
+  - `scene.set_nickname(obj.id, text.strip())`（空文字のとき辞書から削除）
+  - `scene_changed.emit()` は呼ばない（ニックネーム変更は Undo 対象外）
+- ID も `QLabel` で表示する（読み取り専用）
 
 #### `_add_related_objects(obj)`
 
