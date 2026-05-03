@@ -159,7 +159,7 @@ class RightPanel(QWidget):
             cb.deleteLater()
 
     # ─── 隣接図形の計算 ──────────────────────────────────────
-    SNAP_TOL = 1.0   # m
+    SNAP_TOL = SNAP_TOL  # models.SNAP_TOL を参照（= 1.0 m）
 
     def _endpoints_of(self, obj) -> list:
         """図形の端点座標リストを返す（Segment/Arc/Clothoid のみ）"""
@@ -311,24 +311,15 @@ class RightPanel(QWidget):
         return d_start < d_end   # 始点で接続 → 正順(True)
 
     def _refresh_nick_combos(self):
-        """
-        コンボボックスの選択肢を更新する。
-        1つ目: 全図形
-        2つ目以降: 前の図形の出口端点に隣接する図形を先頭
-                   隣接が2個以上なら [順]/[逆] を付加
-        """
+        """コンボボックスの選択肢を更新する。"""
         all_items = self._all_items()
+        selected_objs = [self._find_by_nick_label(cb.currentText())
+                         for cb in self._nick_combos]
 
-        selected_objs = []
-        for cb in self._nick_combos:
-            obj = self._find_by_nick_label(cb.currentText())
-            selected_objs.append(obj)
-
-        # 各コンボの is_forward を追跡（チェーン方向の管理）
+        # is_forward を追跡（チェーン方向の管理）
         is_forward = [True] * len(self._nick_combos)
         for i in range(1, len(selected_objs)):
-            prev = selected_objs[i - 1]
-            cur  = selected_objs[i]
+            prev, cur = selected_objs[i-1], selected_objs[i]
             if prev is None or cur is None:
                 break
             is_forward[i] = self._next_is_forward(prev, is_forward[i-1], cur)
@@ -346,63 +337,47 @@ class RightPanel(QWidget):
                     cb.addItems(all_items)
                 else:
                     if i == 1:
-                        # 2つ目: 1つ目の両端点に隣接する図形すべて
                         adj = self._adjacent_from_obj(prev_obj, excludes=selected_objs)
-                        show_dir = len(adj) >= 2
                     else:
-                        # 3つ目以降: 前の図形の出口端点のみ
                         prev_pts = self._endpoints_of(prev_obj)
                         exit_pt  = prev_pts[-1] if is_forward[i-1] else prev_pts[0]
                         adj = self._adjacent_from_pt(exit_pt, excludes=selected_objs,
                                                       prev_obj=prev_obj)
-                        show_dir = len(adj) >= 2
-
                     cb.addItem("(なし)")
-                    for cand, _ in adj:
-                        base_label = self._label_for_obj(cand)
-                        if not base_label:
-                            continue
-                        if show_dir:
-                            if i == 1:
-                                # 2つ目: cand が prev_obj のどちらの端点側に接続しているかで
-                                # prev_is_fwd を決める
-                                # 終点側に接続 → prev を正順(True)で通過してきた
-                                # 始点側に接続 → prev を逆順(False)で通過してきた
-                                prev_exit_fwd = self._prev_is_fwd_for_adj(prev_obj, cand)
-                                cand_fwd = self._compute_next_forward(
-                                    prev_obj, prev_exit_fwd, cand)
-                            else:
-                                cand_fwd = self._compute_next_forward(
-                                    prev_obj, is_forward[i-1], cand)
-                            prefix = "[順] " if cand_fwd else "[逆] "
-                            cb.addItem(prefix + base_label)
-                        else:
-                            cb.addItem(base_label)
-
+                    self._fill_adjacent_items(cb, adj, prev_obj, is_forward[i-1], is_2nd=(i==1))
                     if adj:
                         cb.insertSeparator(cb.count())
                     for item in all_items:
                         cb.addItem(item)
 
-            # 現在の選択を復元
-            # cur_text から base（プレフィックスなし）を取得
+            # 現在の選択を復元（[順]/[逆] プレフィックスも考慮）
             base = cur_text
             for prefix in ("[順] ", "[逆] "):
                 if base.startswith(prefix):
                     base = base[len(prefix):]
                     break
-
-            # 検索優先順: そのまま → "[順] base" → "[逆] base" → base
             found = -1
-            for search in [cur_text,
-                           "[順] " + base,
-                           "[逆] " + base,
-                           base]:
+            for search in [cur_text, "[順] " + base, "[逆] " + base, base]:
                 found = cb.findText(search)
                 if found >= 0:
                     break
             cb.setCurrentIndex(found if found >= 0 else 0)
             cb.blockSignals(False)
+
+    def _fill_adjacent_items(self, cb, adj, prev_obj, prev_is_fwd, is_2nd: bool):
+        """隣接候補リストをコンボボックスに追加する（[順]/[逆] プレフィックス付き）。"""
+        show_dir = len(adj) >= 2
+        for cand, _ in adj:
+            base_label = self._label_for_obj(cand)
+            if not base_label:
+                continue
+            if show_dir:
+                pef = (self._prev_is_fwd_for_adj(prev_obj, cand)
+                       if is_2nd else prev_is_fwd)
+                prefix = "[順] " if self._compute_next_forward(prev_obj, pef, cand) else "[逆] "
+                cb.addItem(prefix + base_label)
+            else:
+                cb.addItem(base_label)
 
     def _prev_is_fwd_for_adj(self, prev_obj, cand) -> bool:
         """

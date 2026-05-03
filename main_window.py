@@ -355,111 +355,79 @@ class MainWindow(QMainWindow):
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     # ─── 縦断線形 ────────────────────────────────────────────
-    def _open_vertical_window(self):
+    def _get_or_create_ep(self, obj, rev: bool):
+        """obj に対応する ElementProfile を取得または新規作成して返す。"""
         from models import ElementProfile, plan_length_of
+        ep = next((e for e in self.scene.element_profiles
+                   if e.element_id == obj.id), None)
+        if ep is None:
+            ep = ElementProfile()
+            ep.element_id = obj.id
+            self.scene.element_profiles.append(ep)
+        ep.element_type  = ('segment'  if isinstance(obj, Segment)  else
+                             'arc'      if isinstance(obj, Arc)       else
+                             'clothoid')
+        ep.plan_length   = plan_length_of(obj)
+        ep.reversed_flag = rev
+        return ep
 
+    def _collect_all_display(self):
+        """シーン内の全線分・全円弧・全クロソイドを返す（背景表示用）。"""
+        result = []
+        for ln in self.scene.lines:
+            result.extend(ln.segments)
+        for ci in self.scene.circles:
+            result.extend(ci.arcs)
+        result.extend(self.scene.clothoids)
+        return result
+
+    def _open_vertical_window(self):
         # 選択中の平面線形要素を収集
-        raw_elements = [obj for obj in self._canvas._selected
-                        if isinstance(obj, (Segment, Arc, Clothoid))]
-        if not raw_elements:
+        raw = [o for o in self._canvas._selected
+               if isinstance(o, (Segment, Arc, Clothoid))]
+        if not raw:
             return
 
-        # チェーンの順序と向きを解決
-        elements, rev_flags = resolve_chain(raw_elements, self.scene.element_profiles)
+        elements, rev_flags = resolve_chain(raw, self.scene.element_profiles)
+        profiles = [self._get_or_create_ep(obj, rev)
+                    for obj, rev in zip(elements, rev_flags)]
 
-        # 各要素に対応する ElementProfile を取得または新規作成
-        def get_or_create_ep(obj) -> ElementProfile:
-            ep = next((ep for ep in self.scene.element_profiles
-                       if ep.element_id == obj.id), None)
-            if ep is None:
-                ep = ElementProfile()
-                ep.element_id = obj.id
-                self.scene.element_profiles.append(ep)
-            # 常に最新の情報で上書き（element_type が古い場合に備える）
-            ep.element_type  = (
-                'segment'  if isinstance(obj, Segment)  else
-                'arc'      if isinstance(obj, Arc)       else
-                'clothoid')
-            ep.plan_length   = plan_length_of(obj)
-            ep.reversed_flag = rev_flags[elements.index(obj)]
-            return ep
-
-        profiles = [get_or_create_ep(obj) for obj in elements]
-
-        # 隣接する ElementProfile 間の接点標高を同期
+        # 隣接 ElementProfile 間の境界標高を同期
         for i in range(len(profiles) - 1):
-            ep_cur  = profiles[i]
-            ep_next = profiles[i + 1]
-            if ep_cur.grade_lines:
-                last_gl = max(ep_cur.grade_lines, key=lambda g: g.dist_end)
-                shared_elev = last_gl.elev_end
-                ep_cur.elev_end    = shared_elev
-                ep_next.elev_start = shared_elev
-            elif ep_next.grade_lines:
-                first_gl = min(ep_next.grade_lines, key=lambda g: g.dist_start)
-                shared_elev = first_gl.elev_start
-                ep_cur.elev_end    = shared_elev
-                ep_next.elev_start = shared_elev
+            cur, nxt = profiles[i], profiles[i + 1]
+            if cur.grade_lines:
+                elev = max(cur.grade_lines, key=lambda g: g.dist_end).elev_end
+            elif nxt.grade_lines:
+                elev = min(nxt.grade_lines, key=lambda g: g.dist_start).elev_start
+            else:
+                continue
+            cur.elev_end   = elev
+            nxt.elev_start = elev
 
         self._vertical_window = VerticalAlignmentWindow(
             self.scene, profiles, elements, rev_flags, parent=None)
         self._vertical_window.show()
 
     def _open_3d_viewer(self):
-        """3D 走行ビューアを起動する。
-        - 表示: シーン内の全線分・全円弧・全クロソイド
-        - 走行: 選択した要素チェーン（未選択なら全要素を繋げて走行）
-        """
-        from models import ElementProfile, plan_length_of
+        """3D 走行ビューアを起動する。"""
         from road_viewer import launch_viewer
 
-        # ── 走行対象要素の決定 ──────────────────────────────
-        selected = [obj for obj in self._canvas._selected
-                    if isinstance(obj, (Segment, Arc, Clothoid))]
-
-        # 未選択なら全要素を走行対象にする
+        # 走行対象要素を収集（未選択なら全要素）
+        selected = [o for o in self._canvas._selected
+                    if isinstance(o, (Segment, Arc, Clothoid))]
         if not selected:
-            for ln in self.scene.lines:
-                selected.extend(ln.segments)
-            for ci in self.scene.circles:
-                selected.extend(ci.arcs)
-            selected.extend(self.scene.clothoids)
-
+            selected = self._collect_all_display()
         if not selected:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(self, "3Dビューア", "表示できる図形がありません。")
             return
 
-        # ── 表示対象要素（全線分・全円弧・全クロソイド）──────
-        all_display = []
-        for ln in self.scene.lines:
-            all_display.extend(ln.segments)
-        for ci in self.scene.circles:
-            all_display.extend(ci.arcs)
-        all_display.extend(self.scene.clothoids)
+        ride_elems, rev_flags = resolve_chain(selected, self.scene.element_profiles)
+        profiles = [self._get_or_create_ep(obj, rev)
+                    for obj, rev in zip(ride_elems, rev_flags)]
 
-        # チェーンの順序と向きを解決
-        ride_elements, rev_flags = resolve_chain(selected, self.scene.element_profiles)
-
-        def get_or_create_ep(obj, rev):
-            ep = next((e for e in self.scene.element_profiles
-                       if e.element_id == obj.id), None)
-            if ep is None:
-                ep = ElementProfile()
-                ep.element_id = obj.id
-                self.scene.element_profiles.append(ep)
-            ep.element_type  = ('segment'  if isinstance(obj, Segment)  else
-                                 'arc'      if isinstance(obj, Arc)       else
-                                 'clothoid')
-            ep.plan_length   = plan_length_of(obj)
-            ep.reversed_flag = rev
-            return ep
-
-        profiles = [get_or_create_ep(obj, rev)
-                    for obj, rev in zip(ride_elements, rev_flags)]
-
-        launch_viewer(self.scene, ride_elements, profiles, rev_flags,
-                      all_display=all_display)
+        launch_viewer(self.scene, ride_elems, profiles, rev_flags,
+                      all_display=self._collect_all_display())
 
     # ─── デモデータ ──────────────────────────────────────────
     def _add_demo(self):
