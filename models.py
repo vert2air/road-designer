@@ -804,6 +804,27 @@ class ElementProfile:
                               for v in d.get("vertical_curves", [])]
         return ep
 
+    def elev_at(self, rel: float) -> float:
+        """
+        この EP 内の相対距離 rel [m] での標高を返す（縦断曲線優先）。
+        - rel は [0, plan_length] にクリップする
+        - VPC〜VPT 範囲内の VerticalCurve があればその放物線値を優先
+        - それ以外は GradeLine の線形補間
+        - 見つからない場合は 0.0
+        """
+        rel = max(0.0, min(rel, self.plan_length))
+        for vc in self.vertical_curves:
+            if vc.vpc_dist - 0.001 <= rel <= vc.vpt_dist + 0.001:
+                e = vc.elevation_at(rel)
+                if not math.isnan(e):
+                    return e
+        for gl in sorted(self.grade_lines, key=lambda g: g.dist_start):
+            if gl.dist_start - 0.001 <= rel <= gl.dist_end + 0.001:
+                span = gl.dist_end - gl.dist_start
+                t = (rel - gl.dist_start) / span if abs(span) > 1e-9 else 0.0
+                return gl.elev_start + (gl.elev_end - gl.elev_start) * t
+        return 0.0
+
 
 @dataclass
 class VerticalAlignment:
