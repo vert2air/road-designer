@@ -387,7 +387,7 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 線側接点 `_line_pt` に最も近い線分の端点を接点の t 値に移動する。
 
 **最近傍線分の選択**:
-1. `_split_seg_ids` に含まれない線分のうち `_dist_to_seg(_line_pt, seg)` が最小のものを選ぶ
+1. `_split_seg_ids` に含まれない線分のうち `_dist_to_seg(_line_pt, seg)` が最小のものを選ぶ。端点間距離ではなく「線分全体への距離」を使うのは、接点が線分の中央付近にある場合でも正しい線分を選べるようにするため
 2. 接点の t 値: `t_x = line.project_t(_line_pt)`
 3. 移動対象:
    - `reversed_flag=False` → `seg.t_end = t_x`
@@ -1401,7 +1401,7 @@ screen_y = -elev * scale_y + offset.y   # y 反転
 
 #### `build_road_markings(centerline, half_width) -> GeomNode`
 
-左右の白線（`GeomLinestrips`）を生成する。白線の z = `centerline[i][2] + EDGE_Z` where `EDGE_Z=0.08m`。
+左右の白線を生成する。メッシュ（`GeomTriangles`）ではなく `GeomLinestrips` を使うのは、白線は幅のある面より線として描く方が実装がシンプルで、かつ道路幅（3.5m）に対して白線幅は視覚的に無視できるほど細いため。白線の z = `centerline[i][2] + EDGE_Z`（`EDGE_Z=0.08m`）で路面より上に描き、路面メッシュとの Z-fighting を防ぐ。
 
 #### `build_ground(cx, cy, size=2000) -> GeomNode`
 
@@ -1639,9 +1639,13 @@ Scene 内の全図形のラベル文字列リストを返す。空要素 `"(な�
 
 チェーンを `prev_obj → next_obj` と進むとき、`next_obj` の `is_forward` を返す。`exit_pt` と `next_obj` の両端点との距離を比較して、より近い側が始点なら `True`（正順）。
 
+**`_compute_next_forward` との違い**: このメソッドは「どちらの端点が共有点に近いか（距離）」で正順/逆順を判定し、コンボボックスの `is_forward` 状態の追跡に使う。一方 `_compute_next_forward` は「接線方向の内積（向き）」で `[順]/[逆]` ラベルの表示用文字列を決める。目的が異なるため2つのメソッドが共存している。
+
 #### `_compute_next_forward(prev_obj, prev_is_fwd, cand) -> bool`
 
-`[順]/[逆]` 表示用の判定。`exit_tan` と `entry_tangent(cand, ...)` の内積が非負なら `True`（順方向）。
+コンボボックスの `[順]/[逆]` ラベル表示専用の判定。`exit_tan`（前の図形の出口接線）と `entry_tangent(cand, ...)` の内積が非負なら `True`（順方向）。
+
+`_next_is_forward()` が「どの端点が共有点か」の追跡に使われるのに対し、このメソッドは「スムーズに繋がる向きか否かを接線角度で判断し UI に表示する」目的に特化している。内積がゼロの境界（直交接続）では `True`（順）を返す。
 
 #### `_prev_is_fwd_for_adj(prev_obj, cand) -> bool`
 
@@ -1651,9 +1655,13 @@ Scene 内の全図形のラベル文字列リストを返す。空要素 `"(な�
 
 全コンボボックスの選択肢を更新する。`_fill_adjacent_items()` で隣接候補に `[順]/[逆]` を付与する。選択中のテキストを可能な限り復元する（`[順]/[逆]` プレフィックスが変わっても復元する）。
 
-#### `_fill_adjacent_items(cb, adj, prev_obj, prev_is_fwd, is_2nd)`
+#### `_fill_adjacent_items(cb, adj, prev_obj, prev_is_fwd, is_2nd: bool)`
 
 隣接候補リストをコンボボックスに追加する。`len(adj) >= 2` のとき `[順]/[逆]` を付与する。
+
+`is_2nd=True`（2つ目コンボ）のとき: `cand` が `prev_obj` のどちらの端点側に接続しているかを `_prev_is_fwd_for_adj()` で動的に判定してから `_compute_next_forward()` に渡す。2つ目コンボは `prev_obj` の両端点からの隣接を収集するため、同じ `prev_obj` を「正順で通過してきた場合」と「逆順で通過してきた場合」の両方の隣接が混在しうる。
+
+`is_2nd=False`（3つ目以降のコンボ）のとき: 前のコンボの `prev_is_fwd` が確定しているので、それをそのまま使う。
 
 #### `_apply_nick_select()`
 
@@ -1732,6 +1740,10 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 
 メインウィンドウを構築する。`Canvas`・`RightPanel`・`VerticalAlignmentWindow`（遅延生成）を生成し、シグナルを接続する。
 
+#### `_on_selection_changed(selected: list)`
+
+`Canvas.selection_changed` シグナルを受けて呼ばれる。`RightPanel.update_selection(selected, scene)` を呼んでプロパティパネルを更新する。`MainWindow` 自体は選択状態を保持しない（`Canvas._selected` が唯一の選択状態）。
+
 #### `_setup_signals()`
 
 `Canvas` / `RightPanel` のシグナルを `MainWindow` のスロットに接続する。この配線を `__init__` から分離しているのは読みやすさのためで、初期化後に動的な変更は行わない。
@@ -1744,7 +1756,7 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 
 #### `_on_scene_changed()`
 
-ウィンドウタイトルに `*` を付加して未保存を示す。
+`Canvas.scene_changed` シグナルを受けて呼ばれる。ウィンドウタイトルに `*` を付加して未保存状態を示す。プロパティパネルの更新は行わない（`selection_changed` シグナルを通じた `_on_selection_changed` が担当）。
 
 #### `_save() / _save_as()`
 
