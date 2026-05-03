@@ -19,7 +19,25 @@ pip install PyQt6 panda3d
 ## 起動
 
 ```bash
-python main.py
+python src/main.py
+```
+
+## ディレクトリ構造
+
+```
+road_designer/
+├── README.md
+├── docs/
+│   ├── road_design_spec.md
+│   └── road_design_basic_design.md
+└── src/
+    ├── main.py
+    ├── models.py
+    ├── canvas.py
+    ├── right_panel.py
+    ├── main_window.py
+    ├── vertical_window.py
+    └── road_viewer.py
 ```
 
 ## ファイル構成
@@ -178,4 +196,4 @@ ye(τ) = d − R·cos(τ)
 
 ## 詳細仕様
 
-より詳細な仕様は [`road_design_spec.md`](road_design_spec.md) を参照。
+より詳細な仕様は [`docs/road_design_spec.md`](docs/road_design_spec.md) を、実装の設計詳細は [`docs/road_design_basic_design.md`](docs/road_design_basic_design.md) を参照。
