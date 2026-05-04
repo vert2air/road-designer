@@ -4,22 +4,27 @@
 
 ## 必要環境
 
-- Python 3.10+
-- PyQt6
-- Panda3D（3D 走行ビューアのみ使用）
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/)（パッケージマネージャ）
 
-## インストール
+## セットアップ
 
 ```bash
-pip install PyQt6 panda3d
+git clone <repository-url>
+cd road_designer
+uv sync
 ```
 
-> **Note**: scipy・numpy は不要。Fresnel 積分は純粋な Python で実装済み。
+3D 走行ビューアも使う場合（Panda3D を含む）:
+
+```bash
+uv sync  # pyproject.toml の dependencies に panda3d が含まれるため自動でインストールされる
+```
 
 ## 起動
 
 ```bash
-python src/main.py
+uv run python src/main.py
 ```
 
 ## ディレクトリ構造
@@ -27,17 +32,30 @@ python src/main.py
 ```
 road_designer/
 ├── README.md
+├── pyproject.toml
+├── uv.lock
 ├── docs/
-│   ├── road_design_spec.md
-│   └── road_design_basic_design.md
-└── src/
-    ├── main.py
-    ├── models.py
-    ├── canvas.py
-    ├── right_panel.py
-    ├── main_window.py
-    ├── vertical_window.py
-    └── road_viewer.py
+│   ├── road_design_spec.md           # 仕様書（ユーザー向け・再実装向け）
+│   ├── road_design_basic_design.md   # 基本設計書
+│   └── road_design_detail_design.md  # 詳細設計書
+├── src/
+│   ├── main.py
+│   ├── models.py
+│   ├── canvas.py
+│   ├── right_panel.py
+│   ├── main_window.py
+│   ├── vertical_window.py
+│   └── road_viewer.py
+└── tests/
+    ├── conftest.py
+    ├── test_models.py
+    ├── test_canvas.py
+    ├── test_canvas_qtest.py
+    ├── test_right_panel.py
+    ├── test_vertical_window.py
+    ├── test_road_viewer.py
+    ├── test_main_window.py
+    └── test_main.py
 ```
 
 ## ファイル構成
@@ -50,7 +68,67 @@ road_designer/
 | `right_panel.py` | 右パネル（図形選択コンボ・プロパティ表示・操作ボタン） |
 | `vertical_window.py` | 縦断線形設計ウィンドウ |
 | `main_window.py` | メインウィンドウ（メニュー・ファイル操作・ウィンドウ管理） |
-| `road_viewer.py` | 3D 走行ビューア（Panda3D、別プロセスで起動） |
+| `road_viewer.py` | 3D 走行ビューア（Panda3D） |
+
+## テスト
+
+### 実行方法
+
+```bash
+# 全テストを実行
+uv run pytest
+
+# 詳細出力
+uv run pytest -v
+
+# 特定ファイルのみ
+uv run pytest tests/test_models.py
+```
+
+### カバレッジ計測
+
+```bash
+# ターミナルに未カバー行を表示
+uv run pytest --cov=src --cov-branch --cov-report=term-missing
+
+# HTML レポートを生成（htmlcov/index.html で確認）
+uv run pytest --cov=src --cov-branch --cov-report=html
+```
+
+### Windows での注意
+
+Qt のヘッドレス実行（`QT_QPA_PLATFORM=offscreen`）は Linux/macOS 向けの設定です。
+`conftest.py` がプラットフォームを自動判別するため、Windows では設定不要です。
+
+```bash
+# Linux / macOS（CI 環境など）
+QT_QPA_PLATFORM=offscreen uv run pytest
+
+# Windows（設定不要）
+uv run pytest
+```
+
+### テスト構成
+
+| ファイル | 対象 | 件数 |
+|---|---|---|
+| `test_models.py` | データモデル・計算ロジック | 240件 |
+| `test_canvas.py` | 座標変換・ヒット判定・UI ロジック | 94件 |
+| `test_canvas_qtest.py` | `QTest` を使ったイベント・描画 | 47件 |
+| `test_right_panel.py` | 隣接検索・接線判定・結合操作 | 74件 |
+| `test_vertical_window.py` | 縦断線形の計算・snap | 79件 |
+| `test_road_viewer.py` | 3D 中心線生成（Panda3D なしでスキップ） | 31件 |
+| `test_main_window.py` | ウィンドウの操作ロジック | 50件 |
+| `test_main.py` | エントリーポイント | 14件 |
+
+## CI
+
+GitHub Actions により push / PR のたびに自動テストを実行します。
+設定ファイル: `.github/workflows/ci.yml`
+
+- **対象 OS**: Ubuntu / macOS / Windows
+- **対象 Python**: 3.11 / 3.12
+- **カバレッジ**: Ubuntu + Python 3.12 の結果を Codecov にアップロード
 
 ## 操作方法
 
@@ -124,6 +202,7 @@ road_designer/
 - **円**・**円弧**: 中心と半径により定義。円弧の始点・終点をハンドルで編集
 - **クロソイド**: Fresnel 積分による正確な計算（scipy 不使用、二分法 80 回反復）
   - 線分・円弧への snap 機能（snap=off 時は線分・円弧を接点で自動分割）
+  - デフォルト snap off。スムーズ接続で自動生成した場合のみ on
   - 反転フラグ（同一直線・円に 2 本作成可能）
 - **接続操作**: 折れ線接続・スムーズ接続（クロソイドを自動生成）・接続解除
 - **ハンドル編集**: 参照点・端点・半径・共有点をドラッグで変形
@@ -196,4 +275,6 @@ ye(τ) = d − R·cos(τ)
 
 ## 詳細仕様
 
-より詳細な仕様は [`docs/road_design_spec.md`](docs/road_design_spec.md) を、実装の設計詳細は [`docs/road_design_basic_design.md`](docs/road_design_basic_design.md) を参照。
+- 仕様書（ユーザー向け・再実装向け）: [`docs/road_design_spec.md`](docs/road_design_spec.md)
+- 基本設計書: [`docs/road_design_basic_design.md`](docs/road_design_basic_design.md)
+- 詳細設計書: [`docs/road_design_detail_design.md`](docs/road_design_detail_design.md)
