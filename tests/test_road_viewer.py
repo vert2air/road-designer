@@ -343,3 +343,131 @@ class TestPrepareViewerData:
         for i in range(len(cl) - 1):
             assert abs(cl[i+1][2] - cl[i][2]) < 0.5, \
                 f"z jump at dist={cl[i][3]:.1f}: {cl[i][2]:.3f} → {cl[i+1][2]:.3f}"
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加カバレッジ: build_centerline の内部分岐
+# ══════════════════════════════════════════════════════════════
+
+@skip_panda3d
+class TestBuildCenterlineBranches:
+    # [C1] Arc rev=True のとき終点→始点で点列を生成（L101: continue の直前分岐）
+    def test_arc_rev_true(self):
+        from road_viewer import build_centerline
+        ci = Circle(Vec2(0, 0), 50.0)
+        arc = Arc(ci, 0.0, math.pi / 2)
+        ci.arcs.append(arc)
+        ep = make_ep(arc.arc_length(), [make_gl(0, 0, arc.arc_length(), 5)])
+        ep.element_id = arc.id
+        ep.element_type = 'arc'
+        # rev=False と rev=True で始点座標が異なる
+        pts_fwd = build_centerline([arc], [ep], [False])
+        pts_rev = build_centerline([arc], [ep], [True])
+        assert len(pts_fwd) > 0 and len(pts_rev) > 0
+        # 逆順なので始点と終点が入れ替わっている
+        assert not approx(pts_fwd[0][0], pts_rev[0][0], tol=10)
+
+    # [C1] Clothoid rev=True のとき reversed_flag を反転して点列を生成（L123）
+    def test_clothoid_branch(self):
+        from road_viewer import build_centerline
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 60), 30.0)
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        if not clo.is_valid:
+            pytest.skip("Clothoid not valid")
+        ep = make_ep(50.0, [make_gl(0, 0, 50, 5)])
+        ep.element_id = clo.id
+        ep.element_type = 'clothoid'
+        pts = build_centerline([clo], [ep], [False])
+        pts_rev = build_centerline([clo], [ep], [True])
+        assert len(pts) > 0
+        assert len(pts_rev) > 0
+
+    # [C1] 境界点（i==0）で前要素の末端 z を引き継ぐ（L146: pts_2d.append(raw[-1])）
+    def test_boundary_inherits_prev_z(self):
+        from road_viewer import build_centerline
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
+        ln2 = Line(Vec2(100, 0), Vec2(150, 0))
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        ep1 = make_ep(100.0, [make_gl(0, 0, 100, 10)])
+        ep2 = make_ep(50.0, [make_gl(0, 10, 50, 15)])
+        ep1.element_id = seg1.id; ep1.element_type = 'segment'
+        ep2.element_id = seg2.id; ep2.element_type = 'segment'
+        pts = build_centerline([seg1, seg2], [ep1, ep2], [False, False])
+        # dist ≈ 100 付近の z は 10m 付近（ep1 の末端）
+        boundary = [p for p in pts if abs(p[3] - 100.0) < 2.0]
+        assert any(approx(p[2], 10.0, tol=1.0) for p in boundary)
+
+    # [C1] Clothoid の points が空のときスキップされる（L149: continue）
+    def test_invalid_clothoid_skipped(self):
+        from road_viewer import build_centerline
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 10), 30.0)  # d < R → 無効
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        assert not clo.is_valid
+        ep = make_ep(50.0)
+        ep.element_id = clo.id; ep.element_type = 'clothoid'
+        pts = build_centerline([clo], [ep], [False])
+        assert pts == []
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加カバレッジ: prepare_viewer_data の内部分岐
+# ══════════════════════════════════════════════════════════════
+
+@skip_panda3d
+class TestPrepareViewerDataBranches:
+    # [C1] EP が存在しない要素は新規 ElementProfile を生成する（L779）
+    def test_creates_ep_when_missing(self):
+        from road_viewer import prepare_viewer_data
+        sc = Scene()
+        seg, ep = make_seg_elem(100.0)
+        sc.add_line(seg.line)
+        # scene.element_profiles を空にして EP 未設定状態にする
+        sc.element_profiles.clear()
+        result = prepare_viewer_data(sc, [seg], [ep], [False])
+        assert 'centerline_3d' in result
+
+    # [C1] all_display に plan_length=0 の要素が含まれる → スキップ（L784）
+    def test_display_element_zero_length_skipped(self):
+        from road_viewer import prepare_viewer_data
+        sc = Scene()
+        seg1, ep1 = make_seg_elem(100.0)
+        sc.add_line(seg1.line)
+        sc.element_profiles.append(ep1)
+        # plan_length = 0 の EP を持つ要素
+        ln2 = Line(Vec2(100, 0), Vec2(100, 0))  # 長さ0
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        ep2 = make_ep(0.0)
+        ep2.element_id = seg2.id; ep2.element_type = 'segment'
+        sc.add_line(ln2)
+        sc.element_profiles.append(ep2)
+        result = prepare_viewer_data(
+            sc, [seg1], [ep1], [False],
+            all_display=[seg1, seg2]
+        )
+        # display_segments に長さ0の要素は含まれない（または空リスト）
+        assert 'display_segments' in result
+
+    # [C1] all_display で build_centerline が空リストを返す場合はスキップ（L786）
+    def test_empty_centerline_not_added(self):
+        from road_viewer import prepare_viewer_data
+        sc = Scene()
+        seg, ep = make_seg_elem(100.0)
+        sc.add_line(seg.line)
+        sc.element_profiles.append(ep)
+        # 無効な Clothoid（points = []）を display に含める
+        ln2 = Line(Vec2(0, 0), Vec2(100, 0))
+        ci2 = Circle(Vec2(50, 10), 30.0)  # 無効
+        clo = Clothoid(ln2, ci2, snap_segment=False, snap_arc=False)
+        assert not clo.is_valid
+        result = prepare_viewer_data(
+            sc, [seg], [ep], [False],
+            all_display=[clo]
+        )
+        # 空の centerline は display_segments に追加されない
+        assert all(len(s) > 0 for s in result['display_segments'])

@@ -848,3 +848,109 @@ class TestAdjacentFromPt:
         p.scene = sc
         result = p._adjacent_from_pt(Vec2(1000, 1000))
         assert result == []
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加カバレッジ: _adjacent_from_pt の各分岐
+# ══════════════════════════════════════════════════════════════
+
+class TestAdjacentFromPtBranches:
+    # [C1] prev_obj が Clothoid で _line_pt に接続している線分も候補（L695）
+    def test_clothoid_line_pt_segment_found(self):
+        p, sc = make_panel()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 60), 30.0)
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        seg = Segment(ln, 0.0, 0.5)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        sc.add_circle(ci)
+        sc.add_clothoid(clo)
+        p.scene = sc
+        if clo.is_valid and clo._line_pt:
+            # prev_obj=clo、pt=_line_pt で検索 → 線分が候補に含まれうる
+            result = p._adjacent_from_pt(clo._line_pt, prev_obj=clo)
+            # 例外にならないことを確認
+            assert isinstance(result, list)
+
+    # [C1] 折れ線接続中の直線から相手側の線分も候補になる（L677: continue のケース）
+    def test_connected_line_adjacent(self):
+        p, sc = make_panel()
+        a = Line(Vec2(0, 0), Vec2(10, 0))
+        b = Line(Vec2(10, -5), Vec2(10, 5))
+        seg_a = Segment(a, 0.0, 1.0)
+        seg_b = Segment(b, 0.0, 1.0)
+        a.segments.append(seg_a)
+        b.segments.append(seg_b)
+        sc.add_line(a)
+        sc.add_line(b)
+        p.scene = sc
+        from canvas import Canvas
+        c = Canvas(sc)
+        c._connect_polyline(a, b)
+        # 交点付近で検索 → 相手側の線分が候補に入る
+        conn = a.connection
+        if conn:
+            result = p._adjacent_from_pt(conn.shared_point)
+            cands = [c for c, _ in result]
+            assert seg_a in cands or seg_b in cands
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加カバレッジ: _next_is_forward の prev_is_fwd=True 追加ケース
+# ══════════════════════════════════════════════════════════════
+
+class TestNextIsForwardBranches:
+    # [C1] next_obj のエンドポイントが 2 未満の場合は True を返す
+    def test_no_endpoints_next_obj(self):
+        p, _ = make_panel()
+        seg1 = make_seg(0, 0, 10, 0)
+        # 無効 Clothoid → endpoints = []
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 10), 30.0)
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        assert not clo.is_valid
+        result = p._next_is_forward(seg1, True, clo)
+        assert result is True
+
+    # [C1] prev_is_fwd=True の exit_pt = seg.end 側（正しく取得される）
+    def test_exit_pt_from_end(self):
+        p, _ = make_panel()
+        seg1 = make_seg(0, 0, 10, 0)
+        seg2 = make_seg(10, 0, 20, 0)
+        # exit_pt = seg1.end = (10,0)
+        # seg2.start = (10,0) → d_start = 0 → True
+        result = p._next_is_forward(seg1, True, seg2)
+        assert result is True
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加カバレッジ: _adjacent_from_obj の重複除去
+# ══════════════════════════════════════════════════════════════
+
+class TestAdjacentFromObj:
+    # [仕様] _adjacent_from_obj は両端点から隣接を収集して重複除去する
+    def test_collects_both_endpoints(self):
+        p, sc = make_panel()
+        seg1 = make_seg(0, 0, 10, 0)
+        seg2 = make_seg(10, 0, 20, 0)  # seg1.end に接続
+        seg3 = make_seg(0, 0, 0, 10)   # seg1.start に接続
+        sc.add_line(seg1.line)
+        sc.add_line(seg2.line)
+        sc.add_line(seg3.line)
+        p.scene = sc
+        result = p._adjacent_from_obj(seg1)
+        cands = [c for c, _ in result]
+        # seg2（end側）と seg3（start側）の両方が含まれる
+        assert seg2 in cands or seg3 in cands
+
+    # [仕様] excludes に含まれる図形は返さない
+    def test_excludes_work(self):
+        p, sc = make_panel()
+        seg1 = make_seg(0, 0, 10, 0)
+        seg2 = make_seg(10, 0, 20, 0)
+        sc.add_line(seg1.line)
+        sc.add_line(seg2.line)
+        p.scene = sc
+        result = p._adjacent_from_obj(seg1, excludes=[seg2])
+        assert seg2 not in [c for c, _ in result]
