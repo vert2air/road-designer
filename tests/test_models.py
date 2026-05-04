@@ -463,7 +463,7 @@ class TestClothoid:
         ci = Circle(Vec2(50, 60), 40.0)
         arc = Arc(ci, -math.pi / 4, math.pi / 4)
         ci.arcs.append(arc)
-        return Clothoid(ln, ci)
+        return Clothoid(ln, ci, snap_segment=True, snap_arc=True)  # snap on でテスト（スムーズ接続相当）
 
     def _make_right_curve(self):
         """x 軸方向の直線と y<0 方向の円で右カーブのクロソイドを生成。"""
@@ -473,7 +473,19 @@ class TestClothoid:
         ci = Circle(Vec2(50, -60), 40.0)
         arc = Arc(ci, 3 * math.pi / 4, 5 * math.pi / 4)
         ci.arcs.append(arc)
-        return Clothoid(ln, ci)
+        return Clothoid(ln, ci, snap_segment=True, snap_arc=True)  # snap on でテスト（スムーズ接続相当）
+
+    # [仕様] デフォルトは snap_segment=False, snap_arc=False
+    def test_default_snap_is_false(self):
+        """[仕様] Clothoid のデフォルトは snap off。
+        直接生成する場合は線分・円弧を接点で分割して管理する。
+        スムーズ接続（Canvas.smooth_connect）で生成する場合のみ True を渡す。
+        """
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 60), 40.0)
+        clo = Clothoid(ln, ci)  # snap 引数を省略
+        assert clo.snap_segment is False
+        assert clo.snap_arc is False
 
     # [仕様] 有効なクロソイドは is_valid=True
     def test_is_valid_true(self):

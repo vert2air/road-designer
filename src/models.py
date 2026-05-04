@@ -809,8 +809,8 @@ class Clothoid:
 
     def __init__(self, line: Line, circle: Circle,
                  reversed_flag: bool = False,
-                 snap_segment: bool = True,
-                 snap_arc: bool = True,
+                 snap_segment: bool = False,
+                 snap_arc: bool = False,
                  clothoid_id: int = None):
         """
         Parameters
@@ -824,10 +824,12 @@ class Clothoid:
             同一 Line・Circle に 2 本のクロソイドを生成するときに使う。
         snap_segment : bool, optional
             True のとき線側接点に最も近い Segment 端点を接点座標に吸着する。
-            False のとき線分を接点で分割して管理する。
+            False のとき線分を接点で分割して管理する。デフォルト False。
+            スムーズ接続（`Canvas.smooth_connect`）で生成する場合のみ True を渡す。
         snap_arc : bool, optional
             True のとき円側接点に最も近い Arc 端点を接点角度に吸着する。
-            False のとき円弧を接点で分割して管理する。
+            False のとき円弧を接点で分割して管理する。デフォルト False。
+            スムーズ接続（`Canvas.smooth_connect`）で生成する場合のみ True を渡す。
         clothoid_id : int, optional
             指定しない場合は `new_id()` で採番する。
 

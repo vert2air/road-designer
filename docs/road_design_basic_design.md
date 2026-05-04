@@ -224,6 +224,10 @@ lc = proj_center + direction * (R*sin(τ) - xe)
 
 #### 4.2.4 snap 機能
 
+**デフォルト動作**: `snap_segment=False`, `snap_arc=False`（デフォルト off）。
+直接生成した Clothoid は線分・円弧を接点で分割して管理する。
+スムーズ接続（`Canvas.smooth_connect`）で自動生成されるクロソイドのみ両側 `True` で生成する。
+
 | snap 設定 | 動作 |
 |---|---|
 | `snap_segment=True` | 線側接点に最も近い線分の端点を接点に一致させる（`reversed_flag` に応じて終点/始点） |

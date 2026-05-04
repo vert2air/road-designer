@@ -310,12 +310,11 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 
 ### 1.9 `Clothoid` クラス
 
-#### `__init__(line, circle, reversed_flag=False, snap_segment=True, snap_arc=True, clothoid_id=None)`
+#### `__init__(line, circle, reversed_flag=False, snap_segment=False, snap_arc=False, clothoid_id=None)`
 
 `Clothoid` は生成時点で `compute()` を自動呼び出すため、コンストラクタが返る時点で `_line_pt`・`_circle_pt`・`_points` が確定している（または `_valid=False` が確定している）。
 
-- `_split_seg_ids`: `snap_segment=False` のとき接点で分割した線分の ID ペア `[AX_id, XB_id]` を記録する。これにより同じ接点の移動では再分割せずに端点を追従更新できる（パフォーマンスと安定性）
-- `_split_arc_ids`: `snap_arc=False` のとき同様に分割した円弧の ID ペアを記録する
+- `snap_segment`・`snap_arc` は**デフォルト False**。直接生成した Clothoid は snap off（線分・円弧を接点で分割して管理）が基本動作。`Canvas.smooth_connect` でスムーズ接続を生成する場合のみ `True` を渡す。
 
 #### `_effective_line() -> Line`
 
@@ -1813,7 +1812,7 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 
 #### `_do_add_clothoid(ln, ci)`
 
-`push_undo()` 後に `Clothoid(ln, ci)` を生成して Scene に追加する。snap 設定はデフォルト（`snap_segment=True`, `snap_arc=True`）。
+`push_undo()` 後に `Clothoid(ln, ci)` を生成して Scene に追加する。snap 設定はデフォルト（`snap_segment=False`, `snap_arc=False`）。ユーザーが右パネルのチェックボックスから個別に設定する。
 
 #### `_do_delete_clothoid(clo)`
 
