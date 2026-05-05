@@ -19,10 +19,10 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import pytest
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtTest import QTest
-from PyQt6.QtCore import Qt, QPoint
-from PyQt6.QtGui import QColor
+from PySide6.QtWidgets import QApplication
+from PySide6.QtTest import QTest
+from PySide6.QtCore import Qt, QPoint
+from PySide6.QtGui import QColor
 
 _app = QApplication.instance() or QApplication(sys.argv)
 
@@ -567,22 +567,17 @@ class TestMouseAndKey:
     def test_wheel_zoom(self):
         c, _ = make_canvas()
         old_scale = c._scale
-        from PyQt6.QtCore import QPoint
-        from PyQt6.QtGui import QWheelEvent
-        from PyQt6.QtCore import QPointF
-        # QTest.wheelEvent は使えないので直接 wheelEvent を呼ぶ
-        # ズームイベントのシミュレーション
-        delta = QPoint(0, 120)  # 1ノッチ上
-        pos = QPointF(500, 500)
-        wheel = QWheelEvent(pos, c.mapToGlobal(QPoint(500, 500)).toPointF(),
-                            QPoint(0, 0), delta,
-                            Qt.MouseButton.NoButton,
-                            Qt.KeyboardModifier.NoModifier,
-                            Qt.ScrollPhase.NoScrollPhase,
-                            False)
-        c.wheelEvent(wheel)
-        # ズームが変わる
-        assert c._scale != old_scale or True  # 例外にならない
+        from PySide6.QtCore import QPoint, QPointF, Qt
+        from PySide6.QtGui import QWheelEvent
+        # PySide6 の QWheelEvent: (pos, globalPos, pixelDelta, angleDelta, buttons, modifiers)
+        e = QWheelEvent(QPointF(500, 500), QPointF(500, 500),
+                        QPoint(0, 0), QPoint(0, 120),
+                        Qt.MouseButton.NoButton,
+                        Qt.KeyboardModifier.NoModifier,
+                        Qt.ScrollPhase.NoScrollPhase,
+                        False)
+        c.wheelEvent(e)
+        assert c._scale != old_scale  # ズームが変わる
 
 
 # ══════════════════════════════════════════════════════════════

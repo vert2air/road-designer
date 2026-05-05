@@ -3,7 +3,7 @@ tests/test_canvas.py
 
 canvas.py の単体テスト。
 
-PyQt6 を使用するため QApplication が必要。
+PySide6 を使用するため QApplication が必要。
 描画系（paintEvent 等）はスキップし、UI に依存しないロジックを重点的にテストする。
 
 観点の分類:
@@ -21,9 +21,9 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import pytest
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QPointF
-from PyQt6.QtGui import QColor
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPointF
+from PySide6.QtGui import QColor
 
 _app = QApplication.instance() or QApplication(sys.argv)
 
