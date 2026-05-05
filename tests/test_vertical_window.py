@@ -20,7 +20,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import pytest
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 _app = QApplication.instance() or QApplication(sys.argv)
 
 from models import (
@@ -663,7 +663,7 @@ class TestElementColor:
     # [C1] その他の型 → グレー
     def test_unknown_type(self):
         c, _ = make_canvas()
-        from PyQt6.QtGui import QColor
+        from PySide6.QtGui import QColor
         col = c._element_color("unknown")
         assert isinstance(col, QColor)
 

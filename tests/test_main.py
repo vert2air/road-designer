@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import pytest
 from unittest.mock import patch, MagicMock
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 
 
 def _main_source() -> str:
@@ -85,7 +85,7 @@ class TestImport:
         import main
         assert main.main.__doc__ is not None
 
-    # [仕様] PyQt6.QtWidgets.QApplication をインポートしている
+    # [仕様] PySide6.QtWidgets.QApplication をインポートしている
     def test_imports_qapplication(self):
         assert 'QApplication' in _main_source()
 

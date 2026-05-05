@@ -9,7 +9,7 @@ tests/ から実行するとき src/ をインポートパスに追加する。
   Windows  : 設定しない（Qt が自動的に "windows" プラグインを使う）
              実際のウィンドウが一瞬表示されるが、テスト自体は正常に動作する。
              タスクバーに表示が煩わしい場合は QT_QPA_PLATFORM=offscreen を
-             手動で設定することも可能（PyQt6 が offscreen DLL を含む場合のみ）。
+             手動で設定することも可能（PySide6 が offscreen DLL を含む場合のみ）。
 """
 import sys
 import os

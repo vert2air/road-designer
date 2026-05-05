@@ -11,13 +11,13 @@ ProfileCanvas と VerticalAlignmentWindow の 2 クラスで構成される。
 from __future__ import annotations
 import math
 from typing import Optional, List
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QDoubleSpinBox, QGroupBox, QScrollArea, QFrame,
     QSplitter, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
-from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QFont
+from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QFont
 
 from models import (Vec2, GradeLine, VerticalCurve, VerticalAlignment,
                     Scene, Segment, Arc, Clothoid, new_id)
@@ -83,8 +83,8 @@ class ProfileCanvas(QWidget):
     CB_H : int = 26
         カラーバーの高さ [px]。
     """
-    selection_changed     = pyqtSignal(object)
-    mouse_world_pos       = pyqtSignal(float, float)
+    selection_changed     = Signal(object)
+    mouse_world_pos       = Signal(float, float)
 
     HANDLE_R = 6   # ハンドル半径 [px]
     HIT_TOL  = 8   # ヒット許容距離 [px]
@@ -1353,7 +1353,7 @@ class VerticalAlignmentWindow(QMainWindow):
         bool
             KeyPress イベントを処理した場合 True。それ以外は super() に委譲。
         """
-        from PyQt6.QtCore import QEvent
+        from PySide6.QtCore import QEvent
         if event.type() == QEvent.Type.KeyPress:
             self.keyPressEvent(event)
             return True

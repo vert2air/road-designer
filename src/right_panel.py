@@ -6,12 +6,12 @@ Canvas での選択に連動してプロパティ表示・数値入力・接続�
 from __future__ import annotations
 import math
 from typing import Optional, Callable
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QDoubleSpinBox, QGroupBox, QScrollArea, QFrame, QLineEdit,
     QCheckBox, QComboBox, QSizePolicy
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PySide6.QtCore import Qt, Signal
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
                     SegmentSnap, ArcSnap, tangent_at, entry_tangent, SNAP_TOL)
 
@@ -69,15 +69,15 @@ def _style_disabled(btn: QPushButton, disabled: bool):
 
 
 class RightPanel(QWidget):
-    request_smooth_connect  = pyqtSignal(object, object)   # line_a, line_b
-    request_polyline_connect = pyqtSignal(object, object)
-    request_disconnect      = pyqtSignal(object, object)
-    request_add_clothoid    = pyqtSignal(object, object)   # line, circle
-    request_delete_clothoid = pyqtSignal(object)
-    request_flip_clothoid   = pyqtSignal(object)
-    request_select          = pyqtSignal(list)
-    request_delete          = pyqtSignal(list)   # 削除要求
-    scene_changed           = pyqtSignal()
+    request_smooth_connect  = Signal(object, object)   # line_a, line_b
+    request_polyline_connect = Signal(object, object)
+    request_disconnect      = Signal(object, object)
+    request_add_clothoid    = Signal(object, object)   # line, circle
+    request_delete_clothoid = Signal(object)
+    request_flip_clothoid   = Signal(object)
+    request_select          = Signal(list)
+    request_delete          = Signal(list)   # 削除要求
+    scene_changed           = Signal()
 
     def __init__(self, scene: Scene, parent=None):
         super().__init__(parent)
@@ -726,7 +726,7 @@ class RightPanel(QWidget):
         確認ダイアログでキャンセルされた場合は何もしない。
         削除は request_delete シグナル経由で MainWindow に委譲する。
         """
-        from PyQt6.QtWidgets import QMessageBox
+        from PySide6.QtWidgets import QMessageBox
         objs = []
         for cb in self._nick_combos:
             obj = self._find_by_nick_label(cb.currentText())
@@ -1454,7 +1454,7 @@ class RightPanel(QWidget):
         def do_merge(checked=False, _c=combo, _p=pairs, _a=seg_a, _b=seg_b):
             p = _p[_c.currentIndex()]
             if p['blocked_a'] or p['blocked_b']:
-                from PyQt6.QtWidgets import QMessageBox
+                from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "結合不可",
                     "選択した端点は他の図形に束縛されているため結合できません。")
                 return
@@ -1561,7 +1561,7 @@ class RightPanel(QWidget):
         def do_merge(checked=False, _c=combo, _p=pairs, _a=arc_a, _b=arc_b):
             p = _p[_c.currentIndex()]
             if p['blocked_a'] or p['blocked_b']:
-                from PyQt6.QtWidgets import QMessageBox
+                from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "結合不可",
                     "選択した端点は他の図形に束縛されているため結合できません。")
                 return

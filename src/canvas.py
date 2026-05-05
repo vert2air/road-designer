@@ -11,9 +11,9 @@
 from __future__ import annotations
 import math
 from typing import Optional, Callable
-from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
-from PyQt6.QtGui import (QPainter, QPen, QBrush, QColor, QCursor,
+from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+from PySide6.QtGui import (QPainter, QPen, QBrush, QColor, QCursor,
                           QPolygonF,
                           QPainterPath, QFont)
 
@@ -61,9 +61,9 @@ class Handle:
 
 
 class Canvas(QWidget):
-    selection_changed = pyqtSignal(list)   # 選択図形リスト
-    scene_changed     = pyqtSignal()       # シーン変更
-    mouse_world_pos   = pyqtSignal(float, float)  # マウスのワールド座標
+    selection_changed = Signal(list)   # 選択図形リスト
+    scene_changed     = Signal()       # シーン変更
+    mouse_world_pos   = Signal(float, float)  # マウスのワールド座標
 
     MODE_SELECT = "select"
     MODE_LINE   = "line"

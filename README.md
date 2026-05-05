@@ -7,6 +7,8 @@
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)（パッケージマネージャ）
 
+> **ライセンス**: UI フレームワークに PySide6（LGPL v3）を使用しています。
+
 ## セットアップ
 
 ```bash
