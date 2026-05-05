@@ -38,8 +38,26 @@ jobs:
         # uv.lock で再現性のあるインストール。dev グループも含める
         run: uv sync --group dev
 
-      - name: Run tests (Linux / macOS)
-        if: runner.os != 'Windows'
+      - name: Install Qt dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 \
+            libgl1 \
+            libxkbcommon0 \
+            libxcb-xinerama0 \
+            libxcb-cursor0 \
+            libxcb-shape0 \
+            libxcb-xfixes0
+
+      - name: Run tests
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a uv run pytest tests/
+
+      - name: Run tests (macOS)
+        if: runner.os == 'macOS'
         run: |
           uv run pytest tests/ \
             --cov=src \
@@ -58,7 +76,7 @@ jobs:
             --cov-report=xml `
             --cov-report=term-missing
         env:
-          # PyQt6 6.4+ は Windows でも offscreen が使える場合がある
+          # PySide6 6.4+ は Windows でも offscreen が使える場合がある
           # 動作しない場合はこの行を削除してください
           QT_QPA_PLATFORM: offscreen
 
