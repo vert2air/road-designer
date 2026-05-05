@@ -280,3 +280,9 @@ ye(τ) = d − R·cos(τ)
 - 仕様書（ユーザー向け・再実装向け）: [`docs/road_design_spec.md`](docs/road_design_spec.md)
 - 基本設計書: [`docs/road_design_basic_design.md`](docs/road_design_basic_design.md)
 - 詳細設計書: [`docs/road_design_detail_design.md`](docs/road_design_detail_design.md)
+
+## ライセンス
+
+このリポジトリのコードのライセンスについては LICENSE を参照のこと。
+このリポジトリのコードは、3rd party パッケージ を使用しています。
+THIRD-PARTY-LICENSE.md を参照のこと。
