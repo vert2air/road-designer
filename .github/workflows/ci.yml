@@ -64,8 +64,6 @@ jobs:
             --cov-branch \
             --cov-report=xml \
             --cov-report=term-missing
-        env:
-          QT_QPA_PLATFORM: offscreen
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
