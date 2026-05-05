@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main", "develop"]
+
+# ディレクトリ構成（想定）:
+#   road_designer/
+#   ├── src/           ← アプリ本体（*.py）
+#   ├── tests/         ← テストコード（test_*.py, conftest.py）
+#   ├── pyproject.toml
+#   └── uv.lock
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }} / Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true          # uv.lock を使ったキャッシュを有効化
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        # uv.lock で再現性のあるインストール。dev グループも含める
+        run: uv sync --group dev
+
+      - name: Install Qt dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 \
+            libgl1 \
+            libxkbcommon0 \
+            libxcb-xinerama0 \
+            libxcb-cursor0 \
+            libxcb-shape0 \
+            libxcb-xfixes0
+
+      - name: Run tests
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a uv run pytest tests/
+
+      - name: Run tests (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          uv run pytest tests/ \
+            --cov=src \
+            --cov-branch \
+            --cov-report=xml \
+            --cov-report=term-missing
+
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          uv run pytest tests/ `
+            --cov=src `
+            --cov-branch `
+            --cov-report=xml `
+            --cov-report=term-missing
+        env:
+          # PySide6 6.4+ は Windows でも offscreen が使える場合がある
+          # 動作しない場合はこの行を削除してください
+          QT_QPA_PLATFORM: offscreen
+
+      # カバレッジを Codecov にアップロード（ubuntu + 最新 Python のみ）
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false

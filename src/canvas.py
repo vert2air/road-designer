@@ -1,0 +1,1156 @@
+"""
+メイン編集キャンバス
+
+座標系:
+  ワールド座標 → w2s() → スクリーン座標
+  w2s: screen_y = -world_y * scale + offset_y  (y反転)
+
+  QPainter.drawArc の角度はワールド座標(y上向き・反時計正)をそのまま渡す。
+  startAngle_16 = int(round(+world_angle_deg * 16))  ← 符号反転不要
+"""
+from __future__ import annotations
+import math
+from typing import Optional, Callable
+from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+from PySide6.QtGui import (QPainter, QPen, QBrush, QColor, QCursor,
+                          QPolygonF,
+                          QPainterPath, QFont)
+
+from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
+                    LineConnection, new_id)
+
+# ─── 色定数 ────────────────────────────────────────────────────
+C_LINE_REF   = QColor(160, 160, 160)
+C_SEGMENT    = QColor( 60, 120, 220)
+C_CIRCLE     = QColor(140,  60, 200)
+C_CIRCLE_DIM = QColor(180, 130, 220)
+C_ARC        = QColor(120,  40, 180)
+C_CLOTHOID   = QColor( 40, 180,  80)
+C_SELECT     = QColor(240, 160,  20)
+C_HOVER      = QColor(240, 240,  20)
+C_HANDLE_REF = QColor(130, 130, 130)
+C_HANDLE_END = QColor(220,  50,  50)
+C_HANDLE_RAD = QColor( 40, 180,  80)
+C_HANDLE_INT = QColor(220, 140,  20)
+
+HANDLE_RADIUS = 7  # px
+
+# ─── ヒットテスト閾値 ───────────────────────────────────────────
+HIT_DIST = 8  # px
+
+
+def qp(v: Vec2) -> QPointF:
+    """Vec2 を QPointF に変換する。QPainter の各描画メソッドに渡す際に使う。
+
+    Returns
+    -------
+    QPointF
+        (v.x, v.y) を持つ QPointF。
+    """
+    return QPointF(v.x, v.y)
+
+
+class Handle:
+    """ドラッグ可能なハンドル"""
+    def __init__(self, pos: Vec2, color: QColor, tag: str, owner):
+        self.pos   = pos
+        self.color = color
+        self.tag   = tag    # 役割識別文字列
+        self.owner = owner  # 関連する図形オブジェクト
+
+
+class Canvas(QWidget):
+    selection_changed = Signal(list)   # 選択図形リスト
+    scene_changed     = Signal()       # シーン変更
+    mouse_world_pos   = Signal(float, float)  # マウスのワールド座標
+
+    MODE_SELECT = "select"
+    MODE_LINE   = "line"
+    MODE_CIRCLE = "circle"
+
+    def __init__(self, scene: Scene, parent=None):
+        super().__init__(parent)
+        self.scene = scene
+        self.mode  = self.MODE_SELECT
+
+        # ビュー変換: world → screen
+        self._offset = Vec2(400, 300)   # スクリーン原点
+        self._scale  = 1.0              # pixel per meter
+
+        # 選択・ホバー
+        self._selected: list = []
+        self._hovered:  object = None
+
+        # ドラッグ状態
+        self._drag_obj:    object = None
+        self._drag_tag:    str    = ""
+        self._drag_start_screen = None
+        self._drag_start_world  = None
+        self._pan_start_screen  = None
+        self._pan_offset_start  = None
+        self._is_panning:  bool = False
+        self._mouse_moved_px: float = 0
+
+        # 直線モード
+        self._line_first_pt: Optional[Vec2] = None
+        self._last_line:     Optional[Line] = None  # 折れ線連続用
+        self._rubber_end:    Optional[Vec2] = None  # ラバー線終点
+
+        # 円モード
+        self._circle_center: Optional[Vec2] = None
+        self._rubber_radius: float = 0.0
+
+        # ハンドルキャッシュ
+        self._handles: list[Handle] = []
+
+        # undo スタック (最大 500)
+        self._undo_stack: list[dict] = []
+
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    # ─── 座標変換 ────────────────────────────────────────────
+    def w2s(self, p: Vec2) -> QPointF:
+        """ワールド座標 → スクリーン座標（QPointF）に変換する。
+
+        y 軸が反転する（上向き正 → 下向き正）。
+
+        Parameters
+        ----------
+        p : Vec2
+            ワールド座標。
+
+        Returns
+        -------
+        QPointF
+            スクリーン座標。screen_x = p.x * scale + offset.x、
+            screen_y = -p.y * scale + offset.y。
+        """
+        return QPointF(p.x * self._scale + self._offset.x,
+                       -p.y * self._scale + self._offset.y)
+
+    def s2w(self, x: float, y: float) -> Vec2:
+        """スクリーン座標 → ワールド座標（Vec2）に変換する（w2s の逆変換）。
+
+        Parameters
+        ----------
+        x, y : float
+            スクリーン座標（ピクセル）。
+
+        Returns
+        -------
+        Vec2
+            ワールド座標。
+        """
+        return Vec2((x - self._offset.x) / self._scale,
+                   -(y - self._offset.y) / self._scale)
+
+    def s2w_qp(self, p: QPointF) -> Vec2:
+        """QPointF を受け取る s2w のラッパー。"""
+        return self.s2w(p.x(), p.y())
+
+    def scale_w2s(self, d: float) -> float:
+        """ワールド距離 [m] → スクリーン距離 [px] に変換する。
+
+        Returns
+        -------
+        float
+            d * scale [px]。
+        """
+        return d * self._scale
+
+    def scale_s2w(self, d: float) -> float:
+        """スクリーン距離 [px] → ワールド距離 [m] に変換する。
+
+        Returns
+        -------
+        float
+            d / scale [m]。
+        """
+        return d / self._scale
+
+    # ─── モード変更 ──────────────────────────────────────────
+    def set_mode(self, mode: str):
+        self.mode = mode
+        self._line_first_pt = None
+        self._last_line     = None
+        self._rubber_end    = None
+        self._circle_center = None
+        if mode == self.MODE_SELECT:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        else:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        self.update()
+
+    # ─── Undo ────────────────────────────────────────────────
+    def push_undo(self):
+        state = self.scene.to_dict()
+        self._undo_stack.append(state)
+        if len(self._undo_stack) > 500:
+            self._undo_stack.pop(0)
+
+    def undo(self):
+        if not self._undo_stack:
+            return
+        state = self._undo_stack.pop()
+        self.scene = Scene.from_dict(state)
+        self._selected.clear()
+        self._handles.clear()
+        self.selection_changed.emit([])
+        self.scene_changed.emit()
+        self.update()
+
+    # ─── 選択 ────────────────────────────────────────────────
+    def set_selection(self, objs: list):
+        self._selected = list(objs)
+        self._rebuild_handles()
+        self.selection_changed.emit(self._selected)
+        self.update()
+
+    def _rebuild_handles(self):
+        self._handles.clear()
+        seen_connections = set()
+
+        # クロソイドにsnapされている端点を収集（ハンドルを出さない）
+        snapped_seg_ends: set[tuple] = set()   # (seg_id, 'start'|'end')
+        snapped_arc_ends: set[tuple] = set()   # (arc_id, 'start'|'end')
+        for clo in self.scene.clothoids:
+            if not clo.is_valid:
+                continue
+            if clo.snap_segment and clo._line_pt is not None:
+                # snap=on: 線側接点に吸着している端点
+                t_x = clo.line.project_t(clo._line_pt)
+                for seg in clo.line.segments:
+                    if abs(seg.t_end   - t_x) < 1e-4:
+                        snapped_seg_ends.add((seg.id, 'end'))
+                    if abs(seg.t_start - t_x) < 1e-4:
+                        snapped_seg_ends.add((seg.id, 'start'))
+            if not clo.snap_segment and clo._split_seg_ids:
+                # split=on: 分割端点（接点）はハンドル不要
+                segs_by_id = {s.id: s for s in clo.line.segments}
+                for sid in clo._split_seg_ids:
+                    seg = segs_by_id.get(sid)
+                    if seg:
+                        # AX の end と XB の start が接点 → どちらも非表示
+                        snapped_seg_ends.add((sid, 'end'))
+                        snapped_seg_ends.add((sid, 'start'))
+            if clo.snap_arc and clo._circle_pt is not None:
+                ang = math.atan2(clo._circle_pt.y - clo.circle.center.y,
+                                 clo._circle_pt.x - clo.circle.center.x)
+                for arc in clo.circle.arcs:
+                    if abs(arc.angle_start - ang) < 1e-4:
+                        snapped_arc_ends.add((arc.id, 'start'))
+                    if abs(arc.angle_end - ang) < 1e-4:
+                        snapped_arc_ends.add((arc.id, 'end'))
+            if not clo.snap_arc and clo._split_arc_ids:
+                for aid in clo._split_arc_ids:
+                    snapped_arc_ends.add((aid, 'end'))
+                    snapped_arc_ends.add((aid, 'start'))
+
+        for obj in self._selected:
+            if isinstance(obj, Line):
+                conn = obj.connection
+                shared_pos = conn.shared_point if conn else None
+
+                def is_shared(pt):
+                    return shared_pos is not None and (pt - shared_pos).length() < 1e-6
+
+                rs, re = obj.ref_start, obj.ref_end
+                if not is_shared(rs):
+                    self._handles.append(Handle(rs, C_HANDLE_REF, "line_ref_start", obj))
+                if not is_shared(re):
+                    self._handles.append(Handle(re, C_HANDLE_REF, "line_ref_end", obj))
+
+                for seg in obj.segments:
+                    if not is_shared(seg.start) and (seg.id, 'start') not in snapped_seg_ends:
+                        self._handles.append(Handle(seg.start, C_HANDLE_END, "seg_start", seg))
+                    if not is_shared(seg.end) and (seg.id, 'end') not in snapped_seg_ends:
+                        self._handles.append(Handle(seg.end, C_HANDLE_END, "seg_end", seg))
+
+                if conn:
+                    cid = id(conn)
+                    if cid not in seen_connections:
+                        seen_connections.add(cid)
+                        self._handles.append(Handle(conn.shared_point, C_HANDLE_INT, "shared_pt", conn))
+
+            elif isinstance(obj, Circle):
+                self._handles.append(Handle(obj.center, C_HANDLE_REF, "circle_center", obj))
+                rad_pt = Vec2(obj.center.x + obj.radius, obj.center.y)
+                self._handles.append(Handle(rad_pt, C_HANDLE_RAD, "circle_radius", obj))
+                for arc in obj.arcs:
+                    if (arc.id, 'start') not in snapped_arc_ends:
+                        self._handles.append(Handle(arc.start, C_HANDLE_END, "arc_start", arc))
+                    if (arc.id, 'end') not in snapped_arc_ends:
+                        self._handles.append(Handle(arc.end, C_HANDLE_END, "arc_end", arc))
+
+    # ─── ヒットテスト ─────────────────────────────────────────
+    def _hit_handle(self, sw: Vec2) -> Optional[Handle]:
+        px = HIT_DIST
+        for h in self._handles:
+            sp = self.w2s(h.pos)
+            if math.hypot(sw.x - sp.x(), sw.y - sp.y()) < px:
+                return h
+        return None
+
+    def _hit_object(self, sw: Vec2) -> Optional[object]:
+        """ワールド座標 sw に最も近い図形オブジェクトを返す。
+
+        優先順位（高→低）: Clothoid → Arc → Circle → Segment → Line。
+        各リストを reversed() で走査するため、後から追加した図形が優先される。
+
+        Parameters
+        ----------
+        sw : Vec2
+            判定するワールド座標。
+
+        Returns
+        -------
+        Clothoid or Arc or Circle or Segment or Line or None
+            HIT_DIST 以内に最も近い図形。なければ None。
+        """
+        """ワールド座標 sw でヒットした図形を返す"""
+        w = self.s2w(sw.x, sw.y)
+        px = self.scale_s2w(HIT_DIST)
+
+        # クロソイド
+        for c in reversed(self.scene.clothoids):
+            if self._hit_polyline(c.points, w, px):
+                return c
+        # 円弧
+        for ci in reversed(self.scene.circles):
+            for arc in ci.arcs:
+                if self._hit_arc(ci, arc, w, px):
+                    return arc
+        # 円
+        for ci in reversed(self.scene.circles):
+            d = math.hypot(w.x - ci.center.x, w.y - ci.center.y)
+            if abs(d - ci.radius) < px:
+                return ci
+        # 線分
+        for ln in reversed(self.scene.lines):
+            for seg in ln.segments:
+                if self._hit_segment_line(seg.start, seg.end, w, px):
+                    return seg
+        # 直線（参照線）
+        for ln in reversed(self.scene.lines):
+            if self._hit_infinite_line(ln, w, px):
+                return ln
+        return None
+
+    def _hit_polyline(self, pts: list[Vec2], w: Vec2, tol: float) -> bool:
+        for i in range(len(pts) - 1):
+            if self._dist_point_segment(w, pts[i], pts[i+1]) < tol:
+                return True
+        return False
+
+    def _hit_segment_line(self, a: Vec2, b: Vec2, w: Vec2, tol: float) -> bool:
+        return self._dist_point_segment(w, a, b) < tol
+
+    def _hit_infinite_line(self, ln: Line, w: Vec2, tol: float) -> bool:
+        return ln.distance_to(w) < tol
+
+    def _hit_arc(self, ci: Circle, arc: Arc, w: Vec2, tol: float) -> bool:
+        d = math.hypot(w.x - ci.center.x, w.y - ci.center.y)
+        if abs(d - ci.radius) > tol:
+            return False
+        ang = math.atan2(w.y - ci.center.y, w.x - ci.center.x)
+        return self._angle_in_arc(ang, arc.angle_start, arc.angle_end)
+
+    def _angle_in_arc(self, ang: float, a_start: float, a_end: float) -> bool:
+        span = (a_end - a_start) % (2 * math.pi)
+        diff = (ang - a_start) % (2 * math.pi)
+        return diff <= span
+
+    @staticmethod
+    def _dist_point_segment(p: Vec2, a: Vec2, b: Vec2) -> float:
+        ab = b - a
+        l2 = ab.dot(ab)
+        if l2 < 1e-24:
+            return (p - a).length()
+        t = max(0.0, min(1.0, (p - a).dot(ab) / l2))
+        proj = a + ab * t
+        return (p - proj).length()
+
+    # ─── 全体表示 ────────────────────────────────────────────
+    def fit_all(self):
+        """全図形の AABB を計算し、10% マージンで画面全体に収まるよう表示を調整する。
+
+        図形がない場合はスケール 1.0、中心原点にリセットする。
+        全図形が 1 点に集中する場合は最小幅 1m を確保する。
+        """
+        pts = []
+        for ln in self.scene.lines:
+            pts.extend([ln.ref_start, ln.ref_end])
+            for seg in ln.segments:
+                pts.extend([seg.start, seg.end])
+        for ci in self.scene.circles:
+            r = ci.radius
+            c = ci.center
+            pts.extend([Vec2(c.x-r,c.y-r), Vec2(c.x+r,c.y+r)])
+        for clo in self.scene.clothoids:
+            pts.extend(clo.points)
+        if not pts:
+            self._offset = Vec2(self.width()/2, self.height()/2)
+            self._scale  = 1.0
+            self.update()
+            return
+        xs = [p.x for p in pts]; ys = [p.y for p in pts]
+        xmin,xmax = min(xs),max(xs)
+        ymin,ymax = min(ys),max(ys)
+        mx = max(xmax-xmin, 1.0); my = max(ymax-ymin, 1.0)
+        margin = 0.1
+        sx = self.width()  / (mx * (1+2*margin))
+        sy = self.height() / (my * (1+2*margin))
+        self._scale = min(sx, sy)
+        cx = (xmin+xmax)/2; cy = (ymin+ymax)/2
+        self._offset = Vec2(self.width()/2 - cx*self._scale,
+                            self.height()/2 + cy*self._scale)
+        self.update()
+
+    # ─── 描画 ────────────────────────────────────────────────
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor(30, 30, 35))
+
+        self._draw_grid(painter)
+
+        # 直線参照線
+        for ln in self.scene.lines:
+            self._draw_line_ref(painter, ln)
+        # 線分
+        for ln in self.scene.lines:
+            for seg in ln.segments:
+                self._draw_segment(painter, seg)
+        # 円
+        for ci in self.scene.circles:
+            self._draw_circle(painter, ci)
+        # 円弧
+        for ci in self.scene.circles:
+            for arc in ci.arcs:
+                self._draw_arc(painter, arc)
+        # クロソイド
+        for clo in self.scene.clothoids:
+            self._draw_clothoid(painter, clo)
+        # ラバー線
+        self._draw_rubber(painter)
+        # ハンドル
+        self._draw_handles(painter)
+
+    def _color_for(self, obj, base: QColor) -> QColor:
+        """選択中・ホバー中に応じたハイライト色を返す。
+
+        Returns
+        -------
+        QColor
+            選択中 → 黄橙色（#FFA500）、ホバー中 → 黄色（#FFFF00）、
+            それ以外 → base。
+        """
+        if obj in self._selected:
+            return C_SELECT
+        if obj is self._hovered:
+            return C_HOVER
+        return base
+
+    def _draw_grid(self, painter: QPainter):
+        pen = QPen(QColor(50, 55, 60))
+        pen.setWidth(1)
+        painter.setPen(pen)
+        # グリッド間隔を適切に選択
+        raw = self.scale_s2w(60)
+        mag = 10 ** math.floor(math.log10(raw)) if raw > 0 else 1
+        steps = [1, 2, 5, 10]
+        grid = mag * min((s for s in steps if s*mag >= raw*0.9), default=10)
+        w,h = self.width(), self.height()
+        # 縦線
+        x0 = self.s2w(0, 0).x; x1 = self.s2w(w, 0).x
+        gx0 = math.floor(x0/grid)*grid
+        x = gx0
+        while x <= x1 + grid:
+            sx = self.w2s(Vec2(x, 0)).x()
+            painter.drawLine(int(sx), 0, int(sx), h)
+            x += grid
+        # 横線
+        y0 = self.s2w(0, h).y; y1 = self.s2w(0, 0).y
+        gy0 = math.floor(y0/grid)*grid
+        y = gy0
+        while y <= y1 + grid:
+            sy = self.w2s(Vec2(0, y)).y()
+            painter.drawLine(0, int(sy), w, int(sy))
+            y += grid
+
+    def _draw_line_ref(self, painter: QPainter, ln: Line):
+        color = self._color_for(ln, C_LINE_REF)
+        pen = QPen(color, 1, Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        # 画面端まで引く
+        w, h = self.width(), self.height()
+        d = ln.direction
+        if abs(d.x) < 1e-9 and abs(d.y) < 1e-9:
+            return
+        # 参照始点から両方向に大きな距離
+        big = self.scale_s2w(max(w, h) * 2)
+        p1 = ln.ref_start - d * big
+        p2 = ln.ref_start + d * big
+        painter.drawLine(self.w2s(p1), self.w2s(p2))
+        # 参照点マーカー
+        pen2 = QPen(color, 1)
+        painter.setPen(pen2)
+        for pt in [ln.ref_start, ln.ref_end]:
+            sp = self.w2s(pt)
+            r = 3
+            painter.drawEllipse(sp, r, r)
+
+    def _draw_segment(self, painter: QPainter, seg: Segment):
+        color = self._color_for(seg, C_SEGMENT)
+        pen = QPen(color, 3)
+        painter.setPen(pen)
+        painter.drawLine(self.w2s(seg.start), self.w2s(seg.end))
+
+    def _draw_circle(self, painter: QPainter, ci: Circle):
+        has_arc = bool(ci.arcs)
+        if has_arc:
+            color = self._color_for(ci, C_CIRCLE_DIM)
+            pen = QPen(color, 1, Qt.PenStyle.DotLine)
+        else:
+            color = self._color_for(ci, C_CIRCLE)
+            pen = QPen(color, 2)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        c = self.w2s(ci.center)
+        r = self.scale_w2s(ci.radius)
+        painter.drawEllipse(QRectF(c.x()-r, c.y()-r, 2*r, 2*r))
+
+    def _draw_arc(self, painter: QPainter, arc: Arc):
+        ci = arc.circle
+        color = self._color_for(arc, C_ARC)
+        pen = QPen(color, 4)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        c = self.w2s(ci.center)
+        r = self.scale_w2s(ci.radius)
+        # Qt drawArc の角度は数学座標（y上向き、反時計が正）で定義されており、
+        # w2s の y 反転とは無関係に world 角度をそのまま使える。
+        # startAngle: world の angle_start (度) * 16
+        # spanAngle:  world の arc_angle  (度) * 16 (正 = 反時計 = CCW)
+        start_ang_deg = math.degrees(arc.angle_start)
+        span_ang_deg  = math.degrees(arc.arc_angle())
+        painter.drawArc(QRectF(c.x()-r, c.y()-r, 2*r, 2*r),
+                        int(round(start_ang_deg * 16)),
+                        int(round(span_ang_deg  * 16)))
+
+    def _draw_clothoid(self, painter: QPainter, clo: Clothoid):
+        if not clo.is_valid or not clo.points:
+            return
+        color = self._color_for(clo, C_CLOTHOID)
+        pen = QPen(color, 2)
+        painter.setPen(pen)
+        pts = clo.points
+        path = QPainterPath(self.w2s(pts[0]))
+        for p in pts[1:]:
+            path.lineTo(self.w2s(p))
+        painter.drawPath(path)
+
+        # 接点マーカー（小さい菱形）
+        # ハンドルではない（ドラッグ不可）ので選択状態に関係なく固定色で表示
+        self._draw_contact_diamond(painter, clo._line_pt,   QColor(255, 220,  60))  # 線側: 黄
+        self._draw_contact_diamond(painter, clo._circle_pt, QColor(255, 140,  40))  # 円側: 橙
+
+    def _draw_contact_diamond(self, painter: QPainter, pt,
+                               color: QColor, half: float = 6.0):
+        """接点を菱形マーカーで描画（ハンドルではない表示専用）"""
+        if pt is None:
+            return
+        sp = self.w2s(pt)
+        cx, cy = sp.x(), sp.y()
+        diamond = QPolygonF([
+            QPointF(cx,        cy - half),  # 上
+            QPointF(cx + half, cy),         # 右
+            QPointF(cx,        cy + half),  # 下
+            QPointF(cx - half, cy),         # 左
+        ])
+        painter.setPen(QPen(QColor(0, 0, 0, 160), 1))
+        painter.setBrush(QBrush(color))
+        painter.drawPolygon(diamond)
+        painter.setBrush(Qt.BrushStyle.NoBrush)   # 後続の描画に影響しないようリセット
+
+    def _draw_rubber(self, painter: QPainter):
+        pen = QPen(QColor(200, 200, 200, 128), 1, Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        if self.mode == self.MODE_LINE and self._line_first_pt and self._rubber_end:
+            painter.drawLine(self.w2s(self._line_first_pt), self.w2s(self._rubber_end))
+        elif self.mode == self.MODE_CIRCLE and self._circle_center and self._rubber_radius > 0:
+            c = self.w2s(self._circle_center)
+            r = self.scale_w2s(self._rubber_radius)
+            painter.drawEllipse(QRectF(c.x()-r, c.y()-r, 2*r, 2*r))
+
+    def _draw_handles(self, painter: QPainter):
+        for h in self._handles:
+            sp = self.w2s(h.pos)
+            painter.setPen(QPen(QColor(0,0,0,180), 1))
+            painter.setBrush(QBrush(h.color))
+            painter.drawEllipse(sp, HANDLE_RADIUS, HANDLE_RADIUS)
+
+    # ─── マウスイベント ──────────────────────────────────────
+    def mousePressEvent(self, event):
+        pos = event.position()
+        sw = Vec2(pos.x(), pos.y())
+        w  = self.s2w(sw.x, sw.y)
+        btn = event.button()
+
+        if btn == Qt.MouseButton.MiddleButton:
+            self._pan_start_screen  = sw
+            self._pan_offset_start  = Vec2(self._offset.x, self._offset.y)
+            self._is_panning = True
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+
+        if btn == Qt.MouseButton.LeftButton:
+            self._drag_start_screen = sw
+            self._mouse_moved_px    = 0
+
+            if self.mode == self.MODE_SELECT:
+                # ハンドルヒット?
+                h = self._hit_handle(sw)
+                if h:
+                    self._drag_obj = h.owner
+                    self._drag_tag = h.tag
+                    return
+                # 図形ヒット?
+                hit = self._hit_object(sw)
+                if hit is not None:
+                    mods = event.modifiers()
+                    if mods & Qt.KeyboardModifier.ShiftModifier:
+                        if hit in self._selected:
+                            self._selected.remove(hit)
+                        else:
+                            self._selected.append(hit)
+                    else:
+                        self._selected = [hit]
+                    self._rebuild_handles()
+                    self.selection_changed.emit(self._selected)
+                    self.update()
+                else:
+                    self._pan_start_screen = sw
+                    self._pan_offset_start = Vec2(self._offset.x, self._offset.y)
+                    self._is_panning = True
+                    self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+            elif self.mode == self.MODE_LINE:
+                self._line_click(w)
+
+            elif self.mode == self.MODE_CIRCLE:
+                self._circle_center  = w
+                self._rubber_radius  = 0.0
+
+    def mouseMoveEvent(self, event):
+        pos = event.position()
+        sw  = Vec2(pos.x(), pos.y())
+        w   = self.s2w(sw.x, sw.y)
+
+        if self._is_panning and self._pan_start_screen:
+            dx = sw.x - self._pan_start_screen.x
+            dy = sw.y - self._pan_start_screen.y
+            self._mouse_moved_px = math.hypot(dx, dy)  # パン中も移動量を記録
+            self._offset = Vec2(self._pan_offset_start.x + dx,
+                                self._pan_offset_start.y + dy)
+            self.update()
+            return
+
+        if self._drag_start_screen:
+            dx = sw.x - self._drag_start_screen.x
+            dy = sw.y - self._drag_start_screen.y
+            self._mouse_moved_px = math.hypot(dx, dy)
+            if self._drag_obj is not None and self._mouse_moved_px > 2:
+                self._do_drag(w)
+                return
+
+        # ラバー線
+        if self.mode == self.MODE_LINE and self._line_first_pt:
+            self._rubber_end = w
+            self.update()
+        elif self.mode == self.MODE_CIRCLE and self._circle_center and \
+             event.buttons() & Qt.MouseButton.LeftButton:
+            self._rubber_radius = (w - self._circle_center).length()
+            self.update()
+
+        # ホバー
+        old = self._hovered
+        self._hovered = self._hit_object(sw)
+        if self._hovered is not old:
+            self.update()
+
+        # マウスのワールド座標を通知
+        self.mouse_world_pos.emit(w.x, w.y)
+
+    def mouseReleaseEvent(self, event):
+        btn = event.button()
+        pos = event.position()
+        sw  = Vec2(pos.x(), pos.y())
+        w   = self.s2w(sw.x, sw.y)
+
+        if btn == Qt.MouseButton.MiddleButton:
+            self._is_panning = False
+            self.setCursor(Qt.CursorShape.ArrowCursor if self.mode == self.MODE_SELECT
+                           else Qt.CursorShape.CrossCursor)
+            return
+
+        if btn == Qt.MouseButton.LeftButton:
+            if self._is_panning:
+                self._is_panning = False
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+                if self._mouse_moved_px < 4:
+                    # クリック扱い → 選択解除
+                    self._selected.clear()
+                    self._handles.clear()
+                    self.selection_changed.emit([])
+                    self.update()
+            elif self.mode == self.MODE_CIRCLE and self._circle_center:
+                r = (w - self._circle_center).length()
+                if r > 1e-3:
+                    self.push_undo()
+                    ci = Circle(self._circle_center, r)
+                    self.scene.add_circle(ci)
+                    self.scene_changed.emit()
+                self._circle_center  = None
+                self._rubber_radius  = 0.0
+                self.update()
+            self._drag_obj = None
+            self._drag_tag = ""
+            self._drag_start_screen = None
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        factor = 1.15 if delta > 0 else 1/1.15
+        pos = event.position()
+        cx, cy = pos.x(), pos.y()
+        self._offset = Vec2(cx + (self._offset.x - cx) * factor,
+                            cy + (self._offset.y - cy) * factor)
+        self._scale *= factor
+        self._rebuild_handles()
+        self.update()
+
+    def keyPressEvent(self, event):
+        k = event.key()
+        if k == Qt.Key.Key_Escape:
+            self._line_first_pt = None
+            self._last_line     = None
+            self._rubber_end    = None
+            self.update()
+        elif k == Qt.Key.Key_Delete:
+            self._delete_selected()
+        elif k == Qt.Key.Key_Z and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.undo()
+        elif k == Qt.Key.Key_S and not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # [S] 選択モード
+            pass  # メインウィンドウ側で処理
+        self.update()
+
+    # ─── 直線モード ──────────────────────────────────────────
+    def _line_click(self, w: Vec2):
+        if self._line_first_pt is None:
+            self._line_first_pt = w
+        else:
+            self.push_undo()
+            p = self._line_first_pt
+            q = w
+            # 直線作成
+            ln = Line(p, q)
+            # 線分を一本持たせる
+            seg = Segment(ln, 0.0, 1.0)
+            ln.segments.append(seg)
+            self.scene.add_line(ln)
+            # 折れ線連続接続
+            if self._last_line is not None:
+                self._connect_polyline(self._last_line, ln)
+            self._last_line     = ln
+            self._line_first_pt = q
+            self._rubber_end    = q
+            self.scene_changed.emit()
+            self.update()
+
+    def _connect_polyline(self, a: Line, b: Line):
+        """
+        折れ線接続: 2直線の交点を共有参照点として双方を更新。
+        「a の終端側」と「b の始端側」を交点に合わせる。
+        """
+        ix = a.intersect(b)
+        if ix is None:
+            return  # 平行
+
+        # a: 交点に近い側の参照点を ix に
+        if (a.ref_end - ix).length() <= (a.ref_start - ix).length():
+            a.ref_end = ix
+            a_end_shared = True
+            for seg in a.segments:
+                if seg.t_end > seg.t_start:
+                    seg.t_end = 1.0
+        else:
+            a.ref_start = ix
+            a_end_shared = False
+            for seg in a.segments:
+                if seg.t_end > seg.t_start:
+                    seg.t_start = 0.0
+
+        # b: 交点に近い側の参照点を ix に
+        if (b.ref_start - ix).length() <= (b.ref_end - ix).length():
+            b.ref_start = ix
+            b_start_shared = True
+            for seg in b.segments:
+                if seg.t_end > seg.t_start:
+                    seg.t_start = 0.0
+        else:
+            b.ref_end = ix
+            b_start_shared = False
+            for seg in b.segments:
+                if seg.t_end > seg.t_start:
+                    seg.t_end = 1.0
+
+        conn = LineConnection("polyline", a, b, ix,
+                              a_end_is_shared=a_end_shared,
+                              b_start_is_shared=b_start_shared)
+        a.connection = conn
+        b.connection = conn
+
+    # ─── ドラッグ処理 ─────────────────────────────────────────
+    def _do_drag(self, w: Vec2):
+        obj = self._drag_obj
+        tag = self._drag_tag
+
+        if isinstance(obj, Line):
+            if tag == "line_ref_start":
+                obj.ref_start = w
+                self._propagate_line(obj)
+            elif tag == "line_ref_end":
+                obj.ref_end = w
+                self._propagate_line(obj)
+
+        elif isinstance(obj, Segment):
+            ln = obj.line
+            if tag == "seg_start":
+                t = ln.project_t(w)
+                obj.t_start = t
+            elif tag == "seg_end":
+                t = ln.project_t(w)
+                obj.t_end = t
+
+        elif isinstance(obj, Circle):
+            if tag == "circle_center":
+                if obj.bisector_origin and obj.bisector_dir:
+                    # 二等分線上に束縛
+                    bd = obj.bisector_dir
+                    diff = w - obj.bisector_origin
+                    t = diff.dot(bd)
+                    obj.center = obj.bisector_origin + bd * t
+                else:
+                    obj.center = w
+                self._propagate_circle(obj)
+            elif tag == "circle_radius":
+                r = (w - obj.center).length()
+                if r > 1e-3:
+                    obj.radius = r
+                    self._propagate_circle(obj)
+
+        elif isinstance(obj, Arc):
+            ci = obj.circle
+            if tag == "arc_start":
+                ang = math.atan2(w.y - ci.center.y, w.x - ci.center.x)
+                obj.angle_start = ang
+            elif tag == "arc_end":
+                ang = math.atan2(w.y - ci.center.y, w.x - ci.center.x)
+                obj.angle_end = ang
+
+        elif isinstance(obj, LineConnection):
+            if tag == "shared_pt":
+                la, lb = obj.line_a, obj.line_b
+                # 記録済みの「どちら側が共有点か」に従って参照点を更新
+                if obj.a_end_is_shared:
+                    la.ref_end = w
+                else:
+                    la.ref_start = w
+                if obj.b_start_is_shared:
+                    lb.ref_start = w
+                else:
+                    lb.ref_end = w
+                obj.shared_point = w
+                # 両直線のクロソイド・smooth円を伝播
+                self._propagate_line(la)
+                self._propagate_line(lb)
+                if obj.kind == "smooth" and obj.circle is not None:
+                    self._update_smooth_circle(obj)
+
+        self._rebuild_handles()
+        self.scene_changed.emit()
+        self.update()
+
+    def _propagate_line(self, ln: Line, _updating_smooth: bool = False):
+        """直線変更をクロソイドと、スムーズ接続の円に伝播"""
+        for clo in self.scene.clothoids:
+            if clo.line is ln:
+                clo.compute()
+        # SegmentSnap の追従
+        self._propagate_segment_snaps(ln)
+        if not _updating_smooth:
+            conn = ln.connection
+            if conn and conn.kind == "smooth" and conn.circle is not None:
+                self._update_smooth_circle(conn)
+
+    def _propagate_segment_snaps(self, ln: Line):
+        """SegmentSnap で繋がれた線分の端点を追従させる"""
+        seg_map: dict[int, Segment] = {}
+        for line in self.scene.lines:
+            for s in line.segments:
+                seg_map[s.id] = s
+        for sn in self.scene.segment_snaps:
+            sa = seg_map.get(sn.seg_a_id)
+            sb = seg_map.get(sn.seg_b_id)
+            if not sa or not sb:
+                continue
+            if sa.line is ln or sb.line is ln:
+                # a が基準→ b を追従、または b が基準→ a を追従
+                pt_a = sa.start if sn.end_a == 'start' else sa.end
+                pt_b = sb.start if sn.end_b == 'start' else sb.end
+                # どちらが動いた直線上にあるか
+                if sa.line is ln:
+                    # a が動いた → b を追従
+                    t_new = sb.line.project_t(pt_a)
+                    if sn.end_b == 'start':
+                        sb.t_start = t_new
+                    else:
+                        sb.t_end = t_new
+                else:
+                    # b が動いた → a を追従
+                    t_new = sa.line.project_t(pt_b)
+                    if sn.end_a == 'start':
+                        sa.t_start = t_new
+                    else:
+                        sa.t_end = t_new
+
+    def _propagate_circle(self, ci: Circle):
+        for clo in self.scene.clothoids:
+            if clo.circle is ci:
+                clo.compute()
+        # ArcSnap の追従
+        self._propagate_arc_snaps(ci)
+
+    def _propagate_arc_snaps(self, ci: Circle):
+        """ArcSnap で繋がれた円弧の端点を追従させる"""
+        arc_map: dict[int, Arc] = {}
+        for circle in self.scene.circles:
+            for a in circle.arcs:
+                arc_map[a.id] = a
+        for sn in self.scene.arc_snaps:
+            aa = arc_map.get(sn.arc_a_id)
+            ab = arc_map.get(sn.arc_b_id)
+            if not aa or not ab:
+                continue
+            if aa.circle is ci or ab.circle is ci:
+                ang_a = aa.angle_start if sn.end_a == 'start' else aa.angle_end
+                ang_b = ab.angle_start if sn.end_b == 'start' else ab.angle_end
+                if aa.circle is ci:
+                    # a が動いた → b を追従
+                    if sn.end_b == 'start':
+                        ab.angle_start = ang_a
+                    else:
+                        ab.angle_end = ang_a
+                else:
+                    # b が動いた → a を追従
+                    if sn.end_a == 'start':
+                        aa.angle_start = ang_b
+                    else:
+                        aa.angle_end = ang_b
+
+    def _update_smooth_circle(self, conn: 'LineConnection'):
+        """
+        スムーズ接続の円を、現在の2直線の交点・二等分線に合わせて再配置する。
+        直線からの距離 (bisector 上の t) を保ったまま中心を移動する。
+        """
+        la, lb = conn.line_a, conn.line_b
+        ci = conn.circle
+        if ci is None:
+            return
+
+        new_ix = la.intersect(lb)
+        if new_ix is None:
+            return
+
+        # 両直線の「共有点と反対側の端点」
+        def far_end(ln, shared):
+            ds = (ln.ref_start - shared).length()
+            de = (ln.ref_end   - shared).length()
+            return ln.ref_start if ds >= de else ln.ref_end
+
+        P = far_end(la, new_ix)
+        Q = far_end(lb, new_ix)
+
+        dP = (P - new_ix).normalized()
+        dQ = (Q - new_ix).normalized()
+        bisect_sum = dP + dQ
+        if bisect_sum.length() < 1e-9:
+            return
+        bisect = bisect_sum.normalized()
+
+        if ci.bisector_dir is not None and ci.bisector_origin is not None:
+            old_t = (ci.center - ci.bisector_origin).dot(ci.bisector_dir)
+        else:
+            old_t = (ci.center - new_ix).dot(bisect)
+
+        ci.center = new_ix + bisect * old_t
+        ci.bisector_origin = new_ix
+        ci.bisector_dir    = bisect
+        conn.shared_point  = new_ix
+        conn.bisector_dir  = bisect
+
+        for line in (la, lb):
+            ds = (line.ref_start - new_ix).length()
+            de = (line.ref_end   - new_ix).length()
+            if ds <= de:
+                line.ref_start = new_ix
+            else:
+                line.ref_end = new_ix
+
+        for clo in self.scene.clothoids:
+            if clo.circle is ci:
+                clo.compute()
+
+    # ─── 削除 ────────────────────────────────────────────────
+    def _delete_selected(self):
+        if not self._selected:
+            return
+        self.push_undo()
+        for obj in list(self._selected):
+            if isinstance(obj, Line):
+                self.scene.remove_line(obj)
+            elif isinstance(obj, Circle):
+                self.scene.remove_circle(obj)
+            elif isinstance(obj, Clothoid):
+                self.scene.remove_clothoid(obj)
+            elif isinstance(obj, Segment):
+                obj.line.segments.remove(obj)
+            elif isinstance(obj, Arc):
+                obj.circle.arcs.remove(obj)
+        self._selected.clear()
+        self._handles.clear()
+        self.selection_changed.emit([])
+        self.scene_changed.emit()
+        self.update()
+
+    # ─── スムーズ接続 ─────────────────────────────────────────
+    def smooth_connect(self, line_a: Line, line_b: Line) -> bool:
+        """2直線をクロソイド経由でスムーズ接続する（仕様書 手順 1〜6）。
+
+        Parameters
+        ----------
+        line_a, line_b : Line
+            接続する 2 直線。どちらも少なくとも 1 本の Segment を持つ必要がある。
+
+        Returns
+        -------
+        bool
+            成功のとき True。失敗条件: Segment がない / 平行 / 二等分線が零ベクトル。
+
+        Notes
+        -----
+        デフォルト半径 R=50m、d=75m（d/R=1.5）でクロソイド存在条件 d>R を満たす。
+        生成した Circle と 2 本の Clothoid を Scene に追加し、`kind="smooth"` に昇格する。
+        """
+        if not line_a.segments or not line_b.segments:
+            return False
+        ix = line_a.intersect(line_b)
+        if ix is None:
+            return False  # 平行
+
+        self.push_undo()
+
+        # 手順-1: 折れ線接続して共有参照点 X を確定
+        self._connect_polyline(line_a, line_b)
+        X = ix  # 交点 = 共有参照点
+
+        # 手順-2: J, K の決定
+        # 折れ線接続後の各直線で、X と異なる側の端点 P, Q を求める
+        def far_end(ln, shared):
+            """X と遠い側の参照点を返す"""
+            if (ln.ref_start - shared).length() >= (ln.ref_end - shared).length():
+                return ln.ref_start
+            return ln.ref_end
+
+        P = far_end(line_a, X)
+        Q = far_end(line_b, X)
+
+        # PX → XQ の有向角の sin
+        PX = (X - P)
+        XQ = (Q - X)
+        sin_val = PX.cross(XQ)
+
+        # J は「UX方向」、K は「VX方向」で UX→XV の有向角が 180° 以下
+        if sin_val >= 0:
+            J, J_far = line_a, P
+            K, K_far = line_b, Q
+        else:
+            J, J_far = line_b, Q
+            K, K_far = line_a, P
+
+        # J の reversed_flag: J_far → X の方向が effective_direction になるとき
+        # effective_direction は reversed=False なら ref_start→ref_end
+        # J の X 側の端点が ref_end なら reversed=False でよい (X が ref_end)
+        # J の X 側の端点が ref_start なら reversed=True にして方向を逆に
+        J_x_is_ref_end = (J.ref_end - X).length() < (J.ref_start - X).length()
+        K_x_is_ref_end = (K.ref_end - X).length() < (K.ref_start - X).length()
+        # J の実効方向: J_far → X
+        # reversed=False → ref_start→ref_end が実効方向
+        # J_far が ref_start, X が ref_end → reversed=False ✓
+        # J_far が ref_end, X が ref_start → reversed=True ✓
+        J_rev = not J_x_is_ref_end   # X が ref_start なら reversed=True
+        K_rev = not K_x_is_ref_end
+
+        # 手順-3: 角 UXV の二等分線
+        # 仕様: XU = U-X 方向, XV = V-X 方向 の和を正規化
+        XU = (J_far - X).normalized()   # X → J_far と逆 = J_far から X を見た方向
+        XV = (K_far - X).normalized()
+        bisect = (XU + XV)
+        if bisect.length() < 1e-9:
+            return False
+        bisect = bisect.normalized()
+
+        # 手順-4: 二等分線上に円を配置
+        R_default = 50.0
+        d_default = R_default * 1.5   # d/R = 1.5 > 1 でクロソイド存在条件を満たす
+        center = X + bisect * d_default
+        ci = Circle(center, R_default)
+        ci.bisector_origin = X
+        ci.bisector_dir    = bisect
+        self.scene.add_circle(ci)
+
+        # 手順-5: クロソイド E (J + ci) — 左カーブになる
+        clo_e = Clothoid(J, ci, reversed_flag=J_rev,
+                         snap_segment=True, snap_arc=True)
+        self.scene.add_clothoid(clo_e)
+
+        # 手順-6: クロソイド F (K + ci) — 右カーブになる
+        clo_f = Clothoid(K, ci, reversed_flag=K_rev,
+                         snap_segment=True, snap_arc=True)
+        self.scene.add_clothoid(clo_f)
+
+        # 接続情報を smooth に昇格
+        conn = line_a.connection
+        if conn:
+            conn.kind         = "smooth"
+            conn.circle       = ci
+            conn.bisector_dir = bisect
+
+        self.scene_changed.emit()
+        self.update()
+        return True
+
+    def disconnect_lines(self, line_a: Line, line_b: Line):
+        """2直線の接続を解除する（折れ線/スムーズ共通）。
+
+        両直線の `connection` を None に設定する。push_undo() を呼ぶ。
+        """
+        self.push_undo()
+        line_a.connection = None
+        line_b.connection = None
+        self.scene_changed.emit()
+        self.update()
