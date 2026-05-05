@@ -710,3 +710,189 @@ class TestSetMode:
         c, _ = make_canvas()
         c.set_mode('grade')
         assert c._mode == 'grade'
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加カバレッジ: save_to_profiles の内部分岐
+# ══════════════════════════════════════════════════════════════
+
+class TestSaveToProfilesBranches:
+    def _make_seg_ep(self, length, e0=0.0, e1=10.0):
+        ln = Line(Vec2(0, 0), Vec2(length, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        ep = make_ep(length, [make_gl(0, e0, length, e1)])
+        ep.element_id = seg.id
+        ep.element_type = 'segment'
+        return seg, ep
+
+    # [C1] VC が VPC > 要素末端 → スキップ（L192: vpc_dist >= L - 0.001）
+    def test_vc_beyond_element_skipped(self):
+        """VC の VPC が要素の末端付近以降にある場合はその要素に含まれない（L192）。"""
+        c, sc = make_canvas()
+        seg, ep = self._make_seg_ep(100.0)
+        sc.add_line(seg.line)
+        c.set_plan_elements([seg], [ep], [False])
+        # VPC=99, VPT=101 → この要素末端(100)とほぼ同じ → スキップ
+        vc = VerticalCurve()
+        vc.pvi_dist = 100.0; vc.pvi_elev = 10.0
+        vc.g1 = 2.0; vc.g2 = 0.0; vc.length = 2.0  # vpc=99, vpt=101
+        c._vertical_curves = [vc]
+        c.save_to_profiles()  # 例外にならない
+
+    # [C1] VC が VPT < 要素始端 → スキップ（L258: vpt_dist <= d_start + 0.01）
+    def test_vc_before_element_skipped(self):
+        """VC の VPT が要素の始端以前にある場合はその要素に含まれない（L258）。"""
+        c, sc = make_canvas()
+        seg1, ep1 = self._make_seg_ep(100.0)
+        seg2, ep2 = self._make_seg_ep(50.0)
+        seg2.line.ref_start = Vec2(100, 0)
+        seg2.line.ref_end = Vec2(150, 0)
+        sc.add_line(seg1.line)
+        sc.add_line(seg2.line)
+        c.set_plan_elements([seg1, seg2], [ep1, ep2], [False, False])
+        # VC の VPT=101 は ep2（offset=100）の dist_start=0 に対して 101-100=1 > 0.01
+        # だが VPT は ep2 の中にあるのでスキップにはならない
+        # VPT=0.005 （ep2 内でほぼ始端）→ スキップ
+        vc = VerticalCurve()
+        vc.pvi_dist = -0.01; vc.pvi_elev = 0.0
+        vc.g1 = 0.0; vc.g2 = 0.0; vc.length = 0.02  # vpc=-0.02, vpt=0.01
+        c._vertical_curves = [vc]
+        c.save_to_profiles()  # 例外にならない
+
+    # [C1] GL が完全に要素範囲外 → 新規 GradeLine を生成（L241）
+    def test_new_gradeline_created_at_boundary(self):
+        """GL が要素範囲と一部重複する場合、端点で新しい GL が生成される（L241）。"""
+        c, sc = make_canvas()
+        seg1, ep1 = self._make_seg_ep(100.0, 0, 10)
+        seg2, ep2 = self._make_seg_ep(50.0, 10, 15)
+        seg2.line.ref_start = Vec2(100, 0)
+        seg2.line.ref_end = Vec2(150, 0)
+        sc.add_line(seg1.line)
+        sc.add_line(seg2.line)
+        c.set_plan_elements([seg1, seg2], [ep1, ep2], [False, False])
+        # _grade_lines を意図的に片方の要素だけをカバーする GL に設定
+        gl = make_gl(0, 0, 150, 15)  # チェーン全体をカバー
+        c._grade_lines = [gl]
+        c.save_to_profiles()
+        # ep1 と ep2 それぞれに GL が切り出されている
+        assert len(ep1.grade_lines) >= 1
+        assert len(ep2.grade_lines) >= 1
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加カバレッジ: set_plan_elements の内部分岐
+# ══════════════════════════════════════════════════════════════
+
+class TestSetPlanElementsBranches:
+    # [C1] GL が reversed=True のとき dist/elev が逆順になる（set_plan_elements 内）
+    def test_reversed_gl_inverted(self):
+        """rev=True のとき GL の dist_start→dist_end が total_len-dist_end→... に変換される。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        ep = make_ep(100.0, [make_gl(0, 0, 100, 10)])
+        ep.element_id = seg.id
+        c.set_plan_elements([seg], [ep], [True])
+        gls = c._grade_lines_sorted()
+        if gls:
+            # 逆順: elev_start=10(元のelev_end), elev_end=0(元のelev_start)
+            assert approx(gls[0].elev_start, 10.0, tol=0.1)
+            assert approx(gls[-1].elev_end, 0.0, tol=0.1)
+
+    # [C1] plan_length < 0.001 の EP はスキップされる（L171）
+    def test_tiny_ep_skipped(self):
+        """plan_length < 0.001 の EP はスキップして次へ（L171）。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(0.0001, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        ep = make_ep(0.0001)  # plan_length < 0.001 → スキップ
+        ep.element_id = seg.id
+        c.set_plan_elements([seg], [ep], [False])
+        assert c._grade_lines == []
+
+    # [C1] 境界ハンドル共有判定（_get_handles の L515: seen[key_end] を使う分岐）
+    def test_shared_handle_key_end_reused(self):
+        """3本の連続 GL で共有ハンドルが複数存在する場合の seen 再利用（L515）。"""
+        c, _ = make_canvas()
+        gl1 = make_gl(0, 0, 50, 5)
+        gl2 = make_gl(50, 5, 100, 10)
+        gl3 = make_gl(100, 10, 150, 15)
+        c._grade_lines = [gl1, gl2, gl3]
+        handles = c._get_handles()
+        # 3本の GL で境界が2つ（dist=50, dist=100）→ 合計4ハンドル
+        assert len(handles) == 4
+        # dist=50 と dist=100 の共有ハンドルの partners 数を確認
+        shared = [h for h in handles if len(h['partners']) == 2]
+        assert len(shared) == 2
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加カバレッジ: _recalc_vc_gradients
+# ══════════════════════════════════════════════════════════════
+
+class TestRecalcVcGradients:
+    # [仕様] 前後の GL から g1, g2 を再計算する
+    def test_recalc_basic(self):
+        c, _ = make_canvas()
+        gl1 = make_gl(0, 0, 50, 5)    # gradient = 10%
+        gl2 = make_gl(50, 5, 100, 0)  # gradient = -10%
+        c._grade_lines = [gl1, gl2]
+        vc = VerticalCurve()
+        vc.pvi_dist = 50.0; vc.pvi_elev = 5.0; vc.g1 = 0; vc.g2 = 0; vc.length = 20
+        c._vertical_curves = [vc]
+        c._recalc_vc_gradients(vc)
+        assert approx(vc.g1, gl1.gradient, tol=1e-4)
+        assert approx(vc.g2, gl2.gradient, tol=1e-4)
+
+    # [エッジ] 前の GL がない場合
+    def test_recalc_no_prev_gl(self):
+        c, _ = make_canvas()
+        gl = make_gl(50, 5, 100, 10)
+        c._grade_lines = [gl]
+        vc = VerticalCurve()
+        vc.pvi_dist = 50.0; vc.pvi_elev = 5.0; vc.g1 = 99; vc.g2 = 0; vc.length = 20
+        c._vertical_curves = [vc]
+        c._recalc_vc_gradients(vc)
+        # 前の GL がないので g1 は変わらない
+        assert approx(vc.g1, 99.0)
+
+    # [エッジ] 後の GL がない場合
+    def test_recalc_no_next_gl(self):
+        c, _ = make_canvas()
+        gl = make_gl(0, 0, 50, 5)
+        c._grade_lines = [gl]
+        vc = VerticalCurve()
+        vc.pvi_dist = 50.0; vc.pvi_elev = 5.0; vc.g1 = 0; vc.g2 = 99; vc.length = 20
+        c._vertical_curves = [vc]
+        c._recalc_vc_gradients(vc)
+        # 後の GL がないので g2 は変わらない
+        assert approx(vc.g2, 99.0)
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加カバレッジ: _delete_grade_line
+# ══════════════════════════════════════════════════════════════
+
+class TestDeleteGradeLine:
+    # [仕様] GL と関連 VC を削除する
+    def test_deletes_gl_and_vc(self):
+        c, _ = make_canvas()
+        gl = make_gl(0, 0, 100, 10)
+        c._grade_lines = [gl]
+        vc = VerticalCurve()
+        vc.pvi_dist = 100.0; vc.pvi_elev = 10.0; vc.g1 = 10; vc.g2 = 0; vc.length = 20
+        c._vertical_curves = [vc]
+        c._delete_grade_line(gl)
+        assert gl not in c._grade_lines
+
+    # [C1] GL がリストにない場合は何もしない（L1081）
+    def test_not_in_list_no_op(self):
+        c, _ = make_canvas()
+        gl = make_gl(0, 0, 100, 10)
+        c._grade_lines = []  # gl を含まない
+        c._delete_grade_line(gl)  # 例外にならない

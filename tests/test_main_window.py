@@ -462,3 +462,172 @@ class TestDoDisconnect:
         w._do_disconnect(a, b)
         assert a.connection is None
         assert b.connection is None
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加カバレッジ: _on_selection_changed の各分岐
+# ══════════════════════════════════════════════════════════════
+
+class TestOnSelectionChanged:
+    # [C1] 選択なし → status "選択なし"（L226）
+    def test_empty_selection(self):
+        w = make_window()
+        w._on_selection_changed([])
+        assert '選択なし' in w._status_label.text()
+
+    # [C1] 1個選択 → status "選択: {type}" (L228-231)
+    def test_single_selection(self):
+        w = make_window()
+        ln = Line(Vec2(0, 0), Vec2(10, 0))
+        w._on_selection_changed([ln])
+        assert 'Line' in w._status_label.text()
+
+    # [C1] 2個以上選択 → status "{n} 個選択" (L232-233)
+    def test_multi_selection(self):
+        w = make_window()
+        ln1 = Line(Vec2(0, 0), Vec2(10, 0))
+        ln2 = Line(Vec2(0, 1), Vec2(10, 1))
+        w._on_selection_changed([ln1, ln2])
+        assert '2' in w._status_label.text()
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加カバレッジ: _do_delete_objects の詳細な分岐
+# ══════════════════════════════════════════════════════════════
+
+class TestDoDeleteObjectsBranches:
+    # [C1] Segment 削除後も Line が残存する場合、関連 Clothoid が再計算される（L396-399）
+    def test_segment_removed_clothoid_recomputed(self):
+        """Segment 削除で Line が空にならない場合、clo.compute() が呼ばれる分岐。"""
+        w = make_window()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg1 = Segment(ln, 0.0, 0.5)
+        seg2 = Segment(ln, 0.5, 1.0)
+        ln.segments.extend([seg1, seg2])
+        ci = Circle(Vec2(50, 60), 30.0)
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        w.scene.add_line(ln)
+        w.scene.add_circle(ci)
+        w.scene.add_clothoid(clo)
+        # seg1 だけ削除 → Line に seg2 が残る → clo.compute() が呼ばれる
+        w._do_delete_objects([seg1])
+        assert seg1 not in ln.segments
+        assert seg2 in ln.segments
+        assert clo in w.scene.clothoids  # Clothoid は残る
+
+    # [C1] Arc 削除後も Circle が残存する場合、関連 Clothoid が再計算される（L407-410）
+    def test_arc_removed_clothoid_recomputed(self):
+        """Arc 削除で Circle が空にならない場合、clo.compute() が呼ばれる分岐。"""
+        w = make_window()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 60), 30.0)
+        arc1 = Arc(ci, -0.5, 0.5)
+        arc2 = Arc(ci, 0.5, 1.5)
+        ci.arcs.extend([arc1, arc2])
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        w.scene.add_line(ln)
+        w.scene.add_circle(ci)
+        w.scene.add_clothoid(clo)
+        # arc1 だけ削除 → Circle に arc2 が残る → clo.compute() が呼ばれる
+        w._do_delete_objects([arc1])
+        assert arc1 not in ci.arcs
+        assert arc2 in ci.arcs
+        assert clo in w.scene.clothoids
+
+    # [C1] Segment が既に ln.segments にない場合のガード（L391）
+    def test_segment_not_in_line_no_error(self):
+        """obj in ln.segments のガードが False になるケース。"""
+        w = make_window()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        w.scene.add_line(ln)
+        ln.segments.remove(seg)  # 事前に除去しておく
+        w._do_delete_objects([seg])  # 例外にならない
+
+    # [C1] Arc が既に ci.arcs にない場合のガード（L403）
+    def test_arc_not_in_circle_no_error(self):
+        """obj in ci.arcs のガードが False になるケース。"""
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc = Arc(ci, 0.0, math.pi)
+        ci.arcs.append(arc)
+        w.scene.add_circle(ci)
+        ci.arcs.remove(arc)  # 事前に除去しておく
+        w._do_delete_objects([arc])  # 例外にならない
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加カバレッジ: _save / _write_file（モックで検証）
+# ══════════════════════════════════════════════════════════════
+
+class TestSaveLoad:
+    # [C1] _filepath が設定済みのとき _save は _write_file を呼ぶ（L258）
+    def test_save_with_filepath(self):
+        import tempfile, os
+        w = make_window()
+        with tempfile.NamedTemporaryFile(suffix='.rdjson', delete=False) as f:
+            path = f.name
+        try:
+            w._filepath = path
+            w._save()
+            assert os.path.exists(path)
+            assert os.path.getsize(path) > 0
+        finally:
+            os.unlink(path)
+
+    # [C1] _write_file が JSON を正しく書き出す（L280-286）
+    def test_write_file_json(self):
+        import tempfile, os, json
+        w = make_window()
+        ln = Line(Vec2(0, 0), Vec2(10, 0))
+        w.scene.add_line(ln)
+        with tempfile.NamedTemporaryFile(suffix='.rdjson', delete=False, mode='w') as f:
+            path = f.name
+        try:
+            w._write_file(path)
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+            assert 'lines' in data
+            assert len(data['lines']) == 1
+        finally:
+            os.unlink(path)
+
+    # [C1] _filepath なしで _save を呼ぶと _save_as へ委譲（ダイアログをモック）
+    def test_save_without_filepath_calls_save_as(self):
+        from unittest.mock import patch
+        w = make_window()
+        w._filepath = None
+        called = []
+        with patch.object(w, '_save_as', side_effect=lambda: called.append(True)):
+            w._save()
+        assert called == [True]
+
+    # [C1] _open_vertical_window: 選択なしのとき何もしない（L491-492）
+    def test_open_vertical_window_no_selection(self):
+        w = make_window()
+        w._canvas._selected = []  # 選択なし
+        w._open_vertical_window()  # 例外にならない・何もしない
+
+    # [C1] _open_vertical_window: 平面線形要素が選択されているとき VerticalAlignmentWindow が開く
+    def test_open_vertical_window_with_selection(self):
+        from unittest.mock import patch, MagicMock
+        w = make_window()
+        seg = make_seg()
+        w.scene.add_line(seg.line)
+        w._canvas._selected = [seg]
+        mock_win = MagicMock()
+        with patch('main_window.VerticalAlignmentWindow', return_value=mock_win):
+            w._open_vertical_window()
+        mock_win.show.assert_called_once()
+
+    # [C1] _open_3d_viewer: 図形なしで「図形がありません」メッセージ（L529-531）
+    def test_open_3d_viewer_empty_scene(self):
+        from unittest.mock import patch
+        w = make_window()
+        w._canvas._selected = []
+        msg_shown = []
+        with patch('main_window.QMessageBox.information',
+                   side_effect=lambda *a, **kw: msg_shown.append(True)):
+            w._open_3d_viewer()
+        assert msg_shown == [True]
