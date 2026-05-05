@@ -30,7 +30,7 @@
 | 項目 | 内容 |
 |------|------|
 | 言語 | Python 3.11+ |
-| UI フレームワーク | PyQt6 |
+| UI フレームワーク | PySide6 |
 | 3D 描画 | Panda3D（別プロセスで起動） |
 | ファイル形式 | `.rdjson`（JSON 形式） |
 | 数値計算 | 標準ライブラリのみ（scipy / numpy 不使用） |
@@ -96,7 +96,7 @@ src/main.py
 
 ### 2.4 シグナル設計
 
-コンポーネント間の通知は PyQt6 シグナルを使用し、直接参照を避ける。
+コンポーネント間の通知は PySide6 シグナルを使用し、直接参照を避ける。
 
 | シグナル | 発行元 | 接続先（スロット） |
 |---|---|---|
@@ -514,9 +514,9 @@ screen_y = -elev * scale_y + offset.y   # y 軸反転
 
 | 処理 | 依存先 |
 |---|---|
-| `_write_file()` / `_open()` | `open()` / `json.load` / `QFileDialog`（PyQt6 UI） |
+| `_write_file()` / `_open()` | `open()` / `json.load` / `QFileDialog`（PySide6 UI） |
 | `launch_viewer()` | `subprocess.Popen` / `tempfile` |
-| `Canvas` の描画 | `QPainter`（PyQt6） |
+| `Canvas` の描画 | `QPainter`（PySide6） |
 | `RoadViewer` の描画 | Panda3D `ShowBase` |
 
 ### 10.3 C1 カバレッジ達成の方針
