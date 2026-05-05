@@ -7,11 +7,11 @@
 
 依存ライブラリ
 --------------
-    PyQt6 : UI フレームワーク
+    PySide6 : UI フレームワーク（LGPL v3）
     Panda3D : 3D 走行ビューア（road_viewer.py が別プロセスで使用）
 """
 import sys
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 from main_window import MainWindow
 
 

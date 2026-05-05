@@ -8,12 +8,12 @@ from __future__ import annotations
 import json
 import os
 from typing import Optional
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QToolBar,
     QSplitter, QFileDialog, QMessageBox, QLabel, QCheckBox
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QKeySequence, QIcon, QAction, QActionGroup
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QKeySequence, QIcon, QAction, QActionGroup
 
 from models import Scene, Line, Circle, Clothoid, Segment, Arc, Vec2, resolve_chain, SNAP_TOL
 from canvas import Canvas
@@ -526,7 +526,7 @@ class MainWindow(QMainWindow):
         if not selected:
             selected = self._collect_all_display()
         if not selected:
-            from PyQt6.QtWidgets import QMessageBox
+            from PySide6.QtWidgets import QMessageBox
             QMessageBox.information(self, "3Dビューア", "表示できる図形がありません。")
             return
 
