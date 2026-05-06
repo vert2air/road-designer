@@ -350,7 +350,7 @@ wheels = [
 ]
 
 [[package]]
-name = "road-designer-2"
+name = "road-designer"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
