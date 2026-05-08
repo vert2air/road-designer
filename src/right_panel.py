@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 from typing import Optional, Callable
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
     QDoubleSpinBox, QGroupBox, QScrollArea, QFrame, QLineEdit,
     QCheckBox, QComboBox, QSizePolicy
 )
@@ -69,15 +69,17 @@ def _style_disabled(btn: QPushButton, disabled: bool):
 
 
 class RightPanel(QWidget):
-    request_smooth_connect  = Signal(object, object)   # line_a, line_b
+    request_smooth_connect   = Signal(object, object)   # line_a, line_b
     request_polyline_connect = Signal(object, object)
-    request_disconnect      = Signal(object, object)
-    request_add_clothoid    = Signal(object, object)   # line, circle
-    request_delete_clothoid = Signal(object)
-    request_flip_clothoid   = Signal(object)
-    request_select          = Signal(list)
-    request_delete          = Signal(list)   # 削除要求
-    scene_changed           = Signal()
+    request_disconnect       = Signal(object, object)
+    request_add_clothoid     = Signal(object, object)   # line, circle
+    request_delete_clothoid  = Signal(object)
+    request_flip_clothoid    = Signal(object)
+    request_select           = Signal(list)
+    request_delete           = Signal(list)   # 削除要求
+    request_set_offset       = Signal(object, object, object)  # line, ci_a, ci_b
+    request_clear_offset     = Signal(object)                  # line
+    scene_changed            = Signal()
 
     def __init__(self, scene: Scene, parent=None):
         super().__init__(parent)
@@ -910,6 +912,13 @@ class RightPanel(QWidget):
             return
 
         # ── 3図形以上 ─────────────────────────────────────────
+        # 2円 + 1直線 → オフセット拘束
+        circles = [o for o in sel if isinstance(o, Circle)]
+        lines   = [o for o in sel if isinstance(o, Line)]
+        if len(circles) == 2 and len(lines) == 1 and n == 3:
+            self._build_offset_constraint(lines[0], circles[0], circles[1])
+            return
+
         self._prop_layout.addWidget(QLabel(f"{n} 個の図形が選択されています"))
         # それでも各図形のニックネームだけ表示
         for obj in sel:
@@ -1633,6 +1642,85 @@ class RightPanel(QWidget):
             ci.arcs.remove(arc_b)
 
     # ─── 2直線 ───────────────────────────────────────────────
+    def _build_offset_constraint(self, ln: 'Line',
+                                  ci_a: 'Circle', ci_b: 'Circle'):
+        """2 円 + 1 直線が選択されたときのオフセット拘束パネルを構築する。
+
+        既存の OffsetConstraint がある場合はその off_a・off_b を表示して編集できる。
+        ない場合は「オフセット拘束を設定」ボタンを表示する。
+
+        スムーズ接続で生成された円（bisector_dir が設定された円）は選択不可として
+        警告を表示する。
+        """
+        from models import OffsetConstraint
+
+        self._prop_layout.addWidget(QLabel("─ オフセット拘束 ─"))
+
+        # スムーズ接続の円は不可
+        for ci, label in ((ci_a, "円 A"), (ci_b, "円 B")):
+            if ci.bisector_dir is not None:
+                self._prop_layout.addWidget(
+                    QLabel(f"⚠ {label} はスムーズ接続の円です（設定不可）"))
+                return
+
+        # 既存の拘束を検索
+        existing = next(
+            (oc for oc in self.scene.offset_constraints
+             if oc.line is ln
+             and {oc.circle_a, oc.circle_b} == {ci_a, ci_b}),
+            None
+        )
+
+        grp = QGroupBox("オフセット拘束")
+        form = QFormLayout(grp)
+
+        nick_ln = self.scene.get_nickname(ln.id,   "line")
+        nick_a  = self.scene.get_nickname(ci_a.id, "circle")
+        nick_b  = self.scene.get_nickname(ci_b.id, "circle")
+        form.addRow("直線:",  QLabel(nick_ln))
+        form.addRow("円 A:", QLabel(nick_a))
+        form.addRow("円 B:", QLabel(nick_b))
+
+        off_a_init = existing.off_a if existing else 0.0
+        off_b_init = existing.off_b if existing else 0.0
+        sb_a = _make_spinbox(off_a_init, lo=-1000, hi=1000, step=0.1, decimals=3)
+        sb_b = _make_spinbox(off_b_init, lo=-1000, hi=1000, step=0.1, decimals=3)
+        form.addRow("off_a [m]:", sb_a)
+        form.addRow("off_b [m]:", sb_b)
+        self._prop_layout.addWidget(grp)
+
+        def on_off_changed():
+            if existing is not None and not self._block:
+                self._block = True
+                existing.off_a = sb_a.value()
+                existing.off_b = sb_b.value()
+                existing.solve()
+                self._block = False
+                self.scene_changed.emit()
+
+        sb_a.valueChanged.connect(on_off_changed)
+        sb_b.valueChanged.connect(on_off_changed)
+
+        if existing is None:
+            btn_set = QPushButton("オフセット拘束を設定")
+            btn_set.clicked.connect(
+                lambda: self.request_set_offset.emit(ln, ci_a, ci_b))
+            self._prop_layout.addWidget(btn_set)
+        else:
+            btn_clr = QPushButton("オフセット拘束を解除")
+            btn_clr.clicked.connect(
+                lambda: self.request_clear_offset.emit(ln))
+            self._prop_layout.addWidget(btn_clr)
+
+            da = ln.distance_to(ci_a.center)
+            db = ln.distance_to(ci_b.center)
+            self._prop_layout.addWidget(
+                QLabel(f"現在距離 A: {da:.3f} m  "
+                       f"(R+off={ci_a.radius + existing.off_a:.3f})"))
+            self._prop_layout.addWidget(
+                QLabel(f"現在距離 B: {db:.3f} m  "
+                       f"(R+off={ci_b.radius + existing.off_b:.3f})"))
+
     def _build_two_lines(self, a: Line, b: Line):
         grp = QGroupBox("2直線の接続操作")
         lay = QVBoxLayout(grp)

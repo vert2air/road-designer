@@ -934,6 +934,26 @@ class Canvas(QWidget):
                 clo.compute()
         # ArcSnap の追従
         self._propagate_arc_snaps(ci)
+        # OffsetConstraint の追従
+        self._propagate_offset_constraints(ci)
+
+    def _propagate_offset_constraints(self, ci: 'Circle'):
+        """オフセット拘束のうち ci を参照するものについて直線 S を再計算する。
+
+        ci が circle_a または circle_b として含まれる OffsetConstraint に対して
+        solve() を呼び出し、その結果を関連するクロソイドに伝播する。
+
+        Parameters
+        ----------
+        ci : Circle
+            変化した円（center または radius が変わった円）。
+        """
+        for oc in self.scene.offset_constraints:
+            if oc.circle_a is ci or oc.circle_b is ci:
+                if oc.solve():
+                    self._propagate_line(oc.line)
+                    self.scene_changed.emit()
+                    self.update()
 
     def _propagate_arc_snaps(self, ci: Circle):
         """ArcSnap で繋がれた円弧の端点を追従させる"""

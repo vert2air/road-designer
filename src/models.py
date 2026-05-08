@@ -1351,6 +1351,176 @@ class ArcSnap:
                        d["arc_b_id"], d["end_b"])
 
 
+@dataclass
+class OffsetConstraint:
+    """直線 S を 2 円 A・B に対してオフセット拘束するデータクラス。
+
+    直線 S の方向と位置を 2 円の中心からの距離で拘束する。
+    A の中心から S への垂直距離 = A.radius + off_a を保つ。
+    B の中心から S への垂直距離 = B.radius + off_b を保つ。
+    円 A・B はスムーズ接続で生成された円（bisector_dir が設定された円）は不可。
+
+    Attributes
+    ----------
+    id : int
+        グローバルユニーク ID。
+    line : Line
+        拘束される直線 S。
+    circle_a : Circle
+        円 A。
+    circle_b : Circle
+        円 B。
+    off_a : float
+        直線 S と円 A の外側オフセット量 [m]。正のとき外側、負のとき内側。
+    off_b : float
+        直線 S と円 B の外側オフセット量 [m]。
+    """
+    id:       int    = field(default_factory=new_id)
+    line:     object = None   # Line（循環参照回避のため object 型）
+    circle_a: object = None   # Circle
+    circle_b: object = None   # Circle
+    off_a:    float  = 0.0
+    off_b:    float  = 0.0
+
+    def solve(self) -> bool:
+        """off_a・off_b・circle_a・circle_b から直線 S の参照点を再計算する。
+
+        直線 S の方程式を n・x = c（n は法線単位ベクトル、c は切片）とする。
+        各円の中心から直線 S への垂直距離拘束:
+          |n・ca.center - c| = ra = ca.radius + off_a
+          |n・cb.center - c| = rb = cb.radius + off_b
+
+        c = n・ca.center ± ra の2通りに対して、cb の拘束から:
+          n・(cb.center - ca.center) = ±rb ∓ ra
+        → n・ab = ε_b * rb + ε_a * ra  (ε_a, ε_b ∈ {+1, -1})
+
+        これを満たす法線方向 n を求め（最大 4 通りの解）、現在の直線方向との
+        内積が最大のもの（法線方向を維持する解）を選ぶ。
+        4 つの解は直線が 2 円に対して外側・内側のどちらに位置するかを表す。
+
+        Returns
+        -------
+        bool
+            計算が成功し直線を更新したとき True。
+            2 円の中心が一致、または全ての距離拘束で|rhs| > 1 のとき False。
+        """
+        if self.line is None or self.circle_a is None or self.circle_b is None:
+            return False
+
+        ca_center = self.circle_a.center
+        cb_center = self.circle_b.center
+        ra = self.circle_a.radius + self.off_a
+        rb = self.circle_b.radius + self.off_b
+
+        ab = cb_center - ca_center
+        L  = ab.length()
+        if L < 1e-9:
+            return False  # 2 円の中心が一致
+
+        phi = math.atan2(ab.y, ab.x)
+        cur_dir = self.line.direction
+
+        # 4 通りの符号組み合わせ (ε_a, ε_b) で解を列挙
+        candidates = []
+        for eps_a in (+1, -1):
+            for eps_b in (+1, -1):
+                rhs = (eps_b * rb + eps_a * ra) / L
+                if abs(rhs) > 1.0:
+                    continue
+                delta = math.acos(max(-1.0, min(1.0, rhs)))
+                for sign_delta in (+1, -1):
+                    theta = phi + sign_delta * delta
+                    n = Vec2(math.cos(theta), math.sin(theta))   # 法線
+                    d = Vec2(-math.sin(theta), math.cos(theta))  # 直線方向
+                    c = n.dot(ca_center) + eps_a * ra             # 切片
+                    candidates.append((d, n, c))
+
+        if not candidates:
+            return False  # 全て |rhs| > 1 → 距離拘束が矛盾
+
+        # 現在の方向との内積が最大の候補を選ぶ
+        best = max(candidates, key=lambda t: abs(cur_dir.dot(t[0])))
+        d, n, c = best
+
+        # cur_dir との内積が負なら d を反転して向きを揃える
+        if cur_dir.dot(d) < 0:
+            d = Vec2(-d.x, -d.y)
+
+        # 各円の中心から直線 S への垂線の足
+        def foot(center):
+            # 直線: n・x = c → 垂線の足は center - n*(n・center - c)
+            t = n.dot(center) - c
+            return center - n * t
+
+        foot_a = foot(ca_center)
+        foot_b = foot(cb_center)
+
+        # ref_start に近い足を ref_start に割り当てる
+        rs = self.line.ref_start
+        if (foot_a - rs).length() <= (foot_b - rs).length():
+            self.line.ref_start = foot_a
+            self.line.ref_end   = foot_b
+        else:
+            self.line.ref_start = foot_b
+            self.line.ref_end   = foot_a
+
+        return True
+
+
+    def calc_offsets_from_current(self) -> None:
+        """現在の直線と 2 円の位置関係から off_a・off_b を算出して設定する。
+
+        オフセット拘束を設定した時点の位置に基づいて初期値を決める。
+        直線から円心への符号付き距離を使うため、直線の左側が正。
+
+        Notes
+        -----
+        off = signed_dist(center) - radius（符号付き。内側は負）
+        ただし符号なし距離で統一し、外側を正として扱う。
+        """
+        if self.line is None or self.circle_a is None or self.circle_b is None:
+            return
+        da = self.line.distance_to(self.circle_a.center)
+        db = self.line.distance_to(self.circle_b.center)
+        self.off_a = da - self.circle_a.radius
+        self.off_b = db - self.circle_b.radius
+
+    def to_dict(self) -> dict:
+        """{"id","line_id","ca_id","cb_id","off_a","off_b"} 形式の辞書に変換する。"""
+        return {
+            'id':      self.id,
+            'line_id': self.line.id     if self.line     else None,
+            'ca_id':   self.circle_a.id if self.circle_a else None,
+            'cb_id':   self.circle_b.id if self.circle_b else None,
+            'off_a':   self.off_a,
+            'off_b':   self.off_b,
+        }
+
+    @staticmethod
+    def from_dict(d: dict,
+                  lines_by_id: dict,
+                  circles_by_id: dict) -> 'OffsetConstraint':
+        """辞書から OffsetConstraint を復元する。
+
+        Parameters
+        ----------
+        d : dict
+            to_dict() が返す形式の辞書。
+        lines_by_id : dict[int, Line]
+            id をキーとする Line の辞書。
+        circles_by_id : dict[int, Circle]
+            id をキーとする Circle の辞書。
+        """
+        oc = OffsetConstraint()
+        oc.id       = d['id']
+        oc.line     = lines_by_id.get(d.get('line_id'))
+        oc.circle_a = circles_by_id.get(d.get('ca_id'))
+        oc.circle_b = circles_by_id.get(d.get('cb_id'))
+        oc.off_a    = d.get('off_a', 0.0)
+        oc.off_b    = d.get('off_b', 0.0)
+        return oc
+
+
 def plan_length_of(obj) -> float:
     """平面線形要素の平面長（道路上の長さ）を型に依らず返す。
 
@@ -1720,6 +1890,7 @@ class Scene:
         self.element_profiles: list[ElementProfile] = []         # 要素単位の縦断データ
         self.segment_snaps: list[SegmentSnap] = []
         self.arc_snaps:     list[ArcSnap]     = []
+        self.offset_constraints: list['OffsetConstraint'] = []
         self.nicknames: dict[int, str] = {}   # id → nickname
 
     def get_nickname(self, obj_id: int, prefix: str = "") -> str:

@@ -208,6 +208,8 @@ class MainWindow(QMainWindow):
         rp.request_add_clothoid.connect(self._do_add_clothoid)
         rp.request_delete_clothoid.connect(self._do_delete_clothoid)
         rp.request_flip_clothoid.connect(self._do_flip_clothoid)
+        rp.request_set_offset.connect(self._do_set_offset_constraint)
+        rp.request_clear_offset.connect(self._do_clear_offset_constraint)
         rp.request_select.connect(self._canvas.set_selection)
         rp.request_delete.connect(self._do_delete_objects)
         rp.scene_changed.connect(self._on_scene_changed)
@@ -426,6 +428,56 @@ class MainWindow(QMainWindow):
         clo.compute()
         self._canvas.scene_changed.emit()
         self._canvas.update()
+        self._right_panel.update_selection(self._canvas._selected, self.scene)
+
+    def _do_set_offset_constraint(self, ln: 'Line',
+                                  ci_a: 'Circle', ci_b: 'Circle'):
+        """request_set_offset シグナルを受けてオフセット拘束を新規設定する。
+
+        現在の直線と 2 円の位置関係から off_a・off_b を算出して
+        OffsetConstraint を生成し Scene に追加する。
+
+        Parameters
+        ----------
+        ln : Line
+            拘束する直線 S。
+        ci_a : Circle
+            円 A。
+        ci_b : Circle
+            円 B。
+        """
+        from models import OffsetConstraint
+        # 既存の拘束が同じ組み合わせであれば上書きしない
+        existing = next(
+            (oc for oc in self.scene.offset_constraints
+             if oc.line is ln and {oc.circle_a, oc.circle_b} == {ci_a, ci_b}),
+            None
+        )
+        if existing is not None:
+            return
+        self._canvas.push_undo()
+        oc = OffsetConstraint()
+        oc.line     = ln
+        oc.circle_a = ci_a
+        oc.circle_b = ci_b
+        oc.calc_offsets_from_current()
+        self.scene.offset_constraints.append(oc)
+        self._canvas.scene_changed.emit()
+        self._right_panel.update_selection(self._canvas._selected, self.scene)
+
+    def _do_clear_offset_constraint(self, ln: 'Line'):
+        """request_clear_offset シグナルを受けて直線 ln のオフセット拘束を解除する。
+
+        Parameters
+        ----------
+        ln : Line
+            オフセット拘束を解除する直線。
+        """
+        self._canvas.push_undo()
+        self.scene.offset_constraints = [
+            oc for oc in self.scene.offset_constraints if oc.line is not ln
+        ]
+        self._canvas.scene_changed.emit()
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     # ─── 縦断線形 ────────────────────────────────────────────
