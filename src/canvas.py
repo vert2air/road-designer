@@ -615,6 +615,7 @@ class Canvas(QWidget):
                 # ハンドルヒット?
                 h = self._hit_handle(sw)
                 if h:
+                    self.push_undo()          # ドラッグ前の状態を保存
                     self._drag_obj = h.owner
                     self._drag_tag = h.tag
                     return
@@ -717,6 +718,9 @@ class Canvas(QWidget):
                 self._circle_center  = None
                 self._rubber_radius  = 0.0
                 self.update()
+            if self._drag_obj is not None:
+                # ドラッグ完了 → 右パネルのプロパティを更新
+                self.selection_changed.emit(self._selected)
             self._drag_obj = None
             self._drag_tag = ""
             self._drag_start_screen = None
@@ -934,6 +938,33 @@ class Canvas(QWidget):
                 clo.compute()
         # ArcSnap の追従
         self._propagate_arc_snaps(ci)
+        # OffsetConstraint の追従
+        self._propagate_offset_constraints(ci)
+
+    def _propagate_offset_constraints(self, ci: 'Circle'):
+        """オフセット拘束のうち ci を参照するものについて直線 S を再計算する。
+
+        ci が circle_a または circle_b として含まれる OffsetConstraint に対して
+        solve() を呼び出す。
+
+        - solve=True  : 直線の参照点が更新される → 関連 Clothoid に伝播・再描画
+        - solve=False : 距離拘束が矛盾（円が近すぎる等）→ 直線は変更しない。
+                        ただし Clothoid は現在の直線位置に追従させる。
+                        oc.feasible が False になるため呼び出し元は
+                        視覚的なフィードバックを提供できる。
+
+        Parameters
+        ----------
+        ci : Circle
+            変化した円（center または radius が変わった円）。
+        """
+        for oc in self.scene.offset_constraints:
+            if oc.circle_a is ci or oc.circle_b is ci:
+                oc.solve()  # 成功/失敗を問わず呼ぶ（feasible フラグを更新）
+                # 成功・失敗どちらの場合も Clothoid は現在の直線位置に追従させる
+                self._propagate_line(oc.line)
+                self.scene_changed.emit()
+                self.update()
 
     def _propagate_arc_snaps(self, ci: Circle):
         """ArcSnap で繋がれた円弧の端点を追従させる"""

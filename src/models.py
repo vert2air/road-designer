@@ -1351,6 +1351,197 @@ class ArcSnap:
                        d["arc_b_id"], d["end_b"])
 
 
+@dataclass
+class OffsetConstraint:
+    """直線 S を 2 円 A・B に対してオフセット拘束するデータクラス。
+
+    直線 S の方向と位置を 2 円の中心からの距離で拘束する。
+    A の中心から S への垂直距離 = A.radius + off_a を保つ。
+    B の中心から S への垂直距離 = B.radius + off_b を保つ。
+    円 A・B はスムーズ接続で生成された円（bisector_dir が設定された円）は不可。
+
+    Attributes
+    ----------
+    id : int
+        グローバルユニーク ID。
+    line : Line
+        拘束される直線 S。
+    circle_a : Circle
+        円 A。
+    circle_b : Circle
+        円 B。
+    off_a : float
+        直線 S と円 A の外側オフセット量 [m]。正のとき外側、負のとき内側。
+    off_b : float
+        直線 S と円 B の外側オフセット量 [m]。
+    """
+    id:       int    = field(default_factory=new_id)
+    line:     object = None   # Line（循環参照回避のため object 型）
+    circle_a: object = None   # Circle
+    circle_b: object = None   # Circle
+    off_a:    float  = 0.0
+    off_b:    float  = 0.0
+    feasible: bool   = True   # 最後の solve() が成功した場合 True
+
+    def solve(self) -> bool:
+        """off_a・off_b・circle_a・circle_b から直線 S の参照点を再計算する。
+
+        直線 S の方程式を n・x = c（n は法線単位ベクトル、c は切片）とする。
+        各円の中心から直線 S への垂直距離拘束:
+          |n・ca.center - c| = ra = ca.radius + off_a
+          |n・cb.center - c| = rb = cb.radius + off_b
+
+        c = n・ca.center ± ra の2通りに対して、cb の拘束から:
+          n・(cb.center - ca.center) = ±rb ∓ ra
+        → n・ab = ε_b * rb + ε_a * ra  (ε_a, ε_b ∈ {+1, -1})
+
+        これを満たす法線方向 n を求め（最大 4 通りの解）、現在の直線方向との
+        内積が最大のもの（法線方向を維持する解）を選ぶ。
+        4 つの解は直線が 2 円に対して外側・内側のどちらに位置するかを表す。
+
+        Returns
+        -------
+        bool
+            計算が成功し直線を更新したとき True。
+            2 円の中心が一致、または全ての距離拘束で|rhs| > 1 のとき False。
+        """
+        if self.line is None or self.circle_a is None or self.circle_b is None:
+            return False
+
+        ca_center = self.circle_a.center
+        cb_center = self.circle_b.center
+        ra = self.circle_a.radius + self.off_a
+        rb = self.circle_b.radius + self.off_b
+
+        ab = cb_center - ca_center
+        L  = ab.length()
+        if L < 1e-9:
+            self.feasible = False
+            return False  # 2 円の中心が一致
+
+        phi = math.atan2(ab.y, ab.x)
+        cur_dir = self.line.direction
+
+        # _eps_a・_eps_b は設定時に固定された符号（calc_offsets_from_current で設定）
+        # 未設定（0）の場合は全組み合わせから現在方向で選ぶ（後方互換）
+        eps_pairs = []
+        if self._eps_a != 0 and self._eps_b != 0:
+            eps_pairs = [(self._eps_a, self._eps_b)]
+        else:
+            eps_pairs = [(ea, eb) for ea in (+1, -1) for eb in (+1, -1)]
+
+        candidates = []
+        for eps_a, eps_b in eps_pairs:
+            rhs = (eps_b * rb + eps_a * ra) / L
+            if abs(rhs) > 1.0:
+                continue
+            delta = math.acos(max(-1.0, min(1.0, rhs)))
+            for sign_delta in (+1, -1):
+                theta = phi + sign_delta * delta
+                n = Vec2(math.cos(theta), math.sin(theta))   # 法線
+                d = Vec2(-math.sin(theta), math.cos(theta))  # 直線方向
+                c = n.dot(ca_center) + eps_a * ra             # 切片
+                candidates.append((d, n, c))
+
+        if not candidates:
+            self.feasible = False
+            return False  # 距離拘束が矛盾（この eps_a, eps_b では解なし）
+
+        # sign_delta が 2 通りある場合は現在の直線方向に近い方を選ぶ
+        best = max(candidates, key=lambda t: abs(cur_dir.dot(t[0])))
+        d, n, c = best
+
+        # cur_dir との内積が負なら d を反転して向きを揃える
+        if cur_dir.dot(d) < 0:
+            d = Vec2(-d.x, -d.y)
+
+        # 各円の中心から直線 S への垂線の足
+        def foot(center):
+            # 直線: n・x = c → 垂線の足は center - n*(n・center - c)
+            t = n.dot(center) - c
+            return center - n * t
+
+        foot_a = foot(ca_center)
+        foot_b = foot(cb_center)
+
+        # ref_start に近い足を ref_start に割り当てる
+        rs = self.line.ref_start
+        if (foot_a - rs).length() <= (foot_b - rs).length():
+            self.line.ref_start = foot_a
+            self.line.ref_end   = foot_b
+        else:
+            self.line.ref_start = foot_b
+            self.line.ref_end   = foot_a
+
+        self.feasible = True
+        return True
+
+
+    def __post_init__(self):
+        """_eps_a と _eps_b を初期化する（dataclass 外フィールド）。
+
+        0 は未設定を意味し、calc_offsets_from_current() を呼ぶと設定される。
+        """
+        self._eps_a: int = 0
+        self._eps_b: int = 0
+
+    def calc_offsets_from_current(self) -> None:
+        """現在の直線と 2 円の位置関係から off_a・off_b と符号フラグを算出する。
+
+        off_a・off_b は符号なし距離から半径を引いた値（外側が正）。
+        _eps_a・_eps_b は solve() で「円がどちら側にあるか」を固定する符号。
+        設定時の signed_dist から導出する:
+          s_a_new = -_eps_a * ra  →  _eps_a = -sign(signed_dist(ca))
+          s_b_new =  _eps_b * rb  →  _eps_b =  sign(signed_dist(cb))
+        これにより直線が2円の間→外など位置関係が反転しなくなる。
+        """
+        if self.line is None or self.circle_a is None or self.circle_b is None:
+            return
+        da = self.line.distance_to(self.circle_a.center)
+        db = self.line.distance_to(self.circle_b.center)
+        self.off_a = da - self.circle_a.radius
+        self.off_b = db - self.circle_b.radius
+        sa = self.line.signed_dist(self.circle_a.center)
+        sb = self.line.signed_dist(self.circle_b.center)
+        self._eps_a = -1 if sa > 0 else +1
+        self._eps_b = +1 if sb > 0 else -1
+
+    def to_dict(self) -> dict:
+        """{"id","line_id","ca_id","cb_id","off_a","off_b"} 形式の辞書に変換する。"""
+        return {
+            'id':      self.id,
+            'line_id': self.line.id     if self.line     else None,
+            'ca_id':   self.circle_a.id if self.circle_a else None,
+            'cb_id':   self.circle_b.id if self.circle_b else None,
+            'off_a':   self.off_a,
+            'off_b':   self.off_b,
+        }
+
+    @staticmethod
+    def from_dict(d: dict,
+                  lines_by_id: dict,
+                  circles_by_id: dict) -> 'OffsetConstraint':
+        """辞書から OffsetConstraint を復元する。
+
+        Parameters
+        ----------
+        d : dict
+            to_dict() が返す形式の辞書。
+        lines_by_id : dict[int, Line]
+            id をキーとする Line の辞書。
+        circles_by_id : dict[int, Circle]
+            id をキーとする Circle の辞書。
+        """
+        oc = OffsetConstraint()
+        oc.id       = d['id']
+        oc.line     = lines_by_id.get(d.get('line_id'))
+        oc.circle_a = circles_by_id.get(d.get('ca_id'))
+        oc.circle_b = circles_by_id.get(d.get('cb_id'))
+        oc.off_a    = d.get('off_a', 0.0)
+        oc.off_b    = d.get('off_b', 0.0)
+        return oc
+
+
 def plan_length_of(obj) -> float:
     """平面線形要素の平面長（道路上の長さ）を型に依らず返す。
 
@@ -1720,6 +1911,7 @@ class Scene:
         self.element_profiles: list[ElementProfile] = []         # 要素単位の縦断データ
         self.segment_snaps: list[SegmentSnap] = []
         self.arc_snaps:     list[ArcSnap]     = []
+        self.offset_constraints: list['OffsetConstraint'] = []
         self.nicknames: dict[int, str] = {}   # id → nickname
 
     def get_nickname(self, obj_id: int, prefix: str = "") -> str:
@@ -1873,12 +2065,40 @@ class Scene:
             result.append(obj.circle)
         return result
 
+    def _fix_duplicate_ids(self) -> None:
+        """Scene 内の id 重複を検出して振り直す。
+
+        `to_dict()` を呼ぶ前に実行することで保存ファイルの整合性を保証する。
+        Line と Segment が同じ id を持つ場合など、通常の操作では起きないはずだが
+        複数のファイルをマージしたり古い形式のファイルを読み込んだ際に発生しうる。
+        """
+        seen: set[int] = set()
+
+        def _assign(obj) -> None:
+            if obj.id in seen:
+                obj.id = new_id()
+            seen.add(obj.id)
+
+        for ln in self.lines:
+            _assign(ln)
+            for seg in ln.segments:
+                _assign(seg)
+        for ci in self.circles:
+            _assign(ci)
+            for arc in ci.arcs:
+                _assign(arc)
+        for clo in self.clothoids:
+            _assign(clo)
+        for oc in self.offset_constraints:
+            _assign(oc)
+
     def to_dict(self) -> dict:
         """シーン全体を JSON シリアライズ可能な辞書に変換する。
 
         各図形の辞書の 'id' の直後に 'nickname' を挿入して返す。
         Undo スタックへの積み込みとファイル保存の両方で使う。
         """
+        self._fix_duplicate_ids()  # 保存前に id 重複を修正
         def _with_nick(d: dict) -> dict:
             """'id' の次に 'nickname' を挿入した辞書を返す（内部ヘルパー）。"""
             fid = d.get("id")
@@ -1958,23 +2178,39 @@ class Scene:
             seen_ids.add(fid)
             return fid
 
+        # id_remap: 保存時の id → _resolve_id 後の id のマッピング
+        # line/circle の id が振り直された場合でも clothoid の参照を維持する
+        id_remap: dict[int, int] = {}
+
         for ld in d.get("lines", []):
             _extract_nick(ld, sc)
+            original_id = ld.get("id")
             _resolve_id(ld)
+            if original_id is not None and ld["id"] != original_id:
+                id_remap[original_id] = ld["id"]
             for sd in ld.get("segments", []):
                 _resolve_id(sd)
             ln = Line.from_dict(ld)
             sc.lines.append(ln)
             lines_by_id[ln.id] = ln
+            # 元の id でも引けるようにする（remap前のid → ln）
+            if original_id is not None and original_id != ln.id:
+                lines_by_id[original_id] = ln
 
         for cd in d.get("circles", []):
             _extract_nick(cd, sc)
+            original_id = cd.get("id")
             _resolve_id(cd)
+            if original_id is not None and cd["id"] != original_id:
+                id_remap[original_id] = cd["id"]
             for ad in cd.get("arcs", []):
                 _resolve_id(ad)
             ci = Circle.from_dict(cd)
             sc.circles.append(ci)
             circles_by_id[ci.id] = ci
+            # 元の id でも引けるようにする
+            if original_id is not None and original_id != ci.id:
+                circles_by_id[original_id] = ci
 
         for cd in d.get("clothoids", []):
             _extract_nick(cd, sc)
