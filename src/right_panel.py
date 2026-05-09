@@ -198,20 +198,6 @@ class RightPanel(QWidget):
                     self._add_nick_combo()
                     return  # _add_nick_combo 内で _refresh_nick_combos が呼ばれる
         self._refresh_nick_combos()
-        # 1個目が変わったとき: 2個目に隣接候補があれば先頭を自動選択
-        if sender is not None and self._nick_combos:
-            changed_i = self._nick_combos.index(sender) \
-                if sender in self._nick_combos else -1
-            if changed_i >= 0 and changed_i + 1 < len(self._nick_combos):
-                next_cb = self._nick_combos[changed_i + 1]
-                # インデックス1以降に有効な図形候補があれば選択
-                for j in range(next_cb.count()):
-                    t = next_cb.itemText(j)
-                    if t and t != "(なし)" and not t.startswith(' '):
-                        obj = self._find_by_nick_label(t)
-                        if obj is not None:
-                            next_cb.setCurrentIndex(j)
-                            break
 
     def _remove_nick_combo(self):
         if len(self._nick_combos) > 1:
@@ -797,8 +783,8 @@ class RightPanel(QWidget):
     def update_selection(self, selected: list, scene: Scene):
         self.scene    = scene
         self._selected = selected
-        self._refresh_nick_combos()
-        self._sync_combos_to_selection(selected)
+        self._sync_combos_to_selection(selected)  # まず選択図形をコンボに設定
+        self._refresh_nick_combos()               # 設定後に次コンボの選択肢を更新
         self._rebuild_props()
 
     def _sync_combos_to_selection(self, selected: list):
