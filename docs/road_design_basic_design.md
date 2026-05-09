@@ -111,6 +111,9 @@ src/main.py
 | `request_flip_clothoid(Clothoid)` | `RightPanel` | `MainWindow._do_flip_clothoid` |
 | `request_select(list)` | `RightPanel` | `Canvas.set_selection` |
 | `request_delete(list)` | `RightPanel` | `MainWindow._do_delete_objects` |
+| `request_set_offset(Line, Circle, Circle)` | `RightPanel` | `MainWindow._do_set_offset_constraint` |
+| `request_clear_offset(Line)` | `RightPanel` | `MainWindow._do_clear_offset_constraint` |
+| `request_push_undo()` | `RightPanel` | `Canvas.push_undo` |
 
 ---
 
@@ -127,6 +130,7 @@ src/main.py
 | `Circle` | 平面線形 | 中心と半径で定義される円。`arcs: list[Arc]` を保持 |
 | `Arc` | 平面線形 | 円の部分区間。`angle_start` / `angle_end`（ラジアン、CCW）で管理 |
 | `Clothoid` | 平面線形 | 直線と円で定義されるクロソイド曲線。`compute()` で接点・点列を計算 |
+| `OffsetConstraint` | 平面線形 | 直線 S を 2 つの円 A・B に対してオフセット距離で拘束する。`solve()` で直線を再計算 |
 | `ElementProfile` | 縦断線形 | 平面要素1つに対応する縦断データ。`grade_lines` + `vertical_curves` を保持 |
 | `GradeLine` | 縦断線形 | 勾配直線。`dist_start` / `dist_end` ・ `elev_start` / `elev_end` で定義 |
 | `VerticalCurve` | 縦断線形 | 縦断曲線（放物線）。`pvi_dist` / `pvi_elev` ・ `g1` ・ `g2` ・ `length` で定義 |
@@ -136,22 +140,24 @@ src/main.py
 
 ```
 Scene
-  lines:             list[Line]
-    segments:        list[Segment]
-  circles:           list[Circle]
-    arcs:            list[Arc]
-  clothoids:         list[Clothoid]
-  element_profiles:  list[ElementProfile]
-    grade_lines:     list[GradeLine]
-    vertical_curves: list[VerticalCurve]
-  nicknames:         dict[int, str]    # id → nickname
+  lines:               list[Line]
+    segments:          list[Segment]
+  circles:             list[Circle]
+    arcs:              list[Arc]
+  clothoids:           list[Clothoid]
+  offset_constraints:  list[OffsetConstraint]
+  element_profiles:    list[ElementProfile]
+    grade_lines:       list[GradeLine]
+    vertical_curves:   list[VerticalCurve]
+  nicknames:           dict[int, str]    # id → nickname
 ```
 
 ### 3.3 ID 管理
 
-- 全図形（`Line`・`Segment`・`Circle`・`Arc`・`Clothoid`・`GradeLine`・`VerticalCurve`）の ID はタイプを通じてグローバルにユニーク
+- 全図形（`Line`・`Segment`・`Circle`・`Arc`・`Clothoid`・`OffsetConstraint`・`GradeLine`・`VerticalCurve`）の ID はタイプを通じてグローバルにユニーク
 - `new_id()` でスレッドセーフに採番。`_id_counter` をグローバルに管理
-- ファイル読み込み時は `_resolve_id()` で衝突を検出し、後から現れた ID を振り直す
+- **保存時**: `to_dict()` の呼び出し前に `_fix_duplicate_ids()` が走り、メモリ上の ID 重複を検出して自動修正する。これにより保存ファイルに ID 重複が混入しない
+- **読み込み時**: `_resolve_id()` で衝突を検出し、後から現れた ID を振り直す。ID が振り直された場合でも、`lines_by_id`・`circles_by_id` に「元の ID でも同じオブジェクトを引けるフォールバックエントリ」を保持し、クロソイドやオフセット拘束の参照が失われない
 - 読み込み後は全 ID の最大値 + 1 から採番を再開（`_reset_id_counter_after()`）
 
 ### 3.4 ファイル形式（.rdjson）
@@ -163,6 +169,7 @@ JSON 形式。各図形の `id` フィールドの直後に `nickname` を埋め
   "lines":    [{ "id": 1, "nickname": "my_line", "ref_start": {...}, "segments": [...] }],
   "circles":  [{ "id": 3, "nickname": "my_circle", "center": {...}, "arcs": [...] }],
   "clothoids":[{ "id": 5, "nickname": "clo_1", "line_id": 1, "circle_id": 3, ... }],
+  "offset_constraints": [{ "id": 7, "line_id": 1, "ca_id": 3, "cb_id": 4, "off_a": 10.0, "off_b": 5.0 }],
   "element_profiles": [{ "id": 10, "element_id": 5, "plan_length": 66.3, ... }]
 }
 ```
@@ -257,6 +264,47 @@ lc = proj_center + direction * (R*sin(τ) - xe)
 4. 直線 K と円 C で右カーブのクロソイド F を生成（`snap_segment=True`, `snap_arc=True`）
 
 スムーズ接続中、円の中心は `bisect` 上に束縛される。
+
+### 4.4 オフセット拘束（OffsetConstraint）
+
+#### 4.4.1 概要
+
+直線 S と円 A・円 B の 3 図形に対して設定し、直線 S の位置を 2 円からのオフセット距離で拘束する。円の移動・半径変更があるたびに `_propagate_offset_constraints()` が呼ばれ、直線 S が自動追従する。
+
+スムーズ接続で生成された円（`bisector_dir` が設定された円）は設定不可。
+
+#### 4.4.2 solve() の数式
+
+直線の方程式を `n·x = c`（`n`: 法線単位ベクトル、`c`: 切片）とする。
+
+```
+距離拘束:
+  |n · ca.center - c| = ra = ca.radius + off_a
+  |n · cb.center - c| = rb = cb.radius + off_b
+
+切片を c = n · ca.center + ε_a · ra と定義すると:
+  s_a_new = -ε_a · ra   （直線から円 A の符号付き距離）
+  s_b_new =  ε_b · rb   （直線から円 B の符号付き距離）
+
+n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
+```
+
+`ε_a`・`ε_b`（各 ±1）は設定時点の `signed_dist` から固定する:
+
+```
+ε_a = -sign(signed_dist(circle_a))
+ε_b =  sign(signed_dist(circle_b))
+```
+
+これにより「直線が 2 円の間にあるか外側にあるか」という法線方向が維持される。
+
+#### 4.4.3 feasible フラグ
+
+`solve()` が成功した場合 `feasible = True`、距離拘束が矛盾（2 円が近すぎる等）した場合 `feasible = False`。`feasible = False` のとき直線は変更せず保持し、条件が回復次第追従を再開する。
+
+#### 4.4.4 伝播（`_propagate_offset_constraints`）
+
+`Canvas._propagate_circle(ci)` の末尾から呼ばれる。`circle_a is ci` または `circle_b is ci` に該当する全 `OffsetConstraint` に対して `solve()` を実行し、直線を更新・再描画する。`solve()` の成否にかかわらず `_propagate_line(oc.line)` を呼んで関連クロソイドも追従させる。
 
 ---
 
@@ -366,6 +414,14 @@ K 値 = `L / |g2 - g1|`
 
 `push_undo()` で `Scene` 全体を JSON シリアライズしてスタックに積む。最大 500 手順。`Ctrl+Z` で `pop_undo()` を呼びリストアする。
 
+**Undo に記録される操作**:
+- 図形の追加・削除
+- ハンドルのドラッグ（`mousePressEvent` でハンドルヒット時に `push_undo()` を呼ぶ）
+- 右パネルからのプロパティ変更（X/Y 座標・半径・角度等の数値入力。同一編集セッション中の連続変更は1手順にまとめる）
+- 接続操作（折れ線接続・スムーズ接続・解除）
+- クロソイドの追加・削除・反転
+- オフセット拘束の設定・解除
+
 ### 6.2 RightPanel
 
 右パネル（`right_panel.py`）。`QWidget` を継承。
@@ -378,6 +434,8 @@ K 値 = `L / |g2 - g1|`
 - **2つ目**: 1つ目の両端点に隣接する図形を先頭に表示（`[順]`/`[逆]` 付き）
 - **3つ目以降**: 前の図形の出口端点に隣接する図形を先頭に表示
 - 最後のコンボに図形が選択されると自動で1個追加
+
+**コンボボックスの即時更新**: 1つ目のコンボに図形が設定されたとき（設計画面でのクリック選択・コンボ直接操作のいずれでも）、直ちに2つ目の高優先候補（隣接図形）が更新される。これは `update_selection` の処理順を「`_sync_combos_to_selection()` → `_refresh_nick_combos()`」とすることで実現する（先に選択図形をコンボに設定してから次のコンボの選択肢を更新する）。
 
 #### 6.2.2 `[順]`/`[逆]` の判定
 
@@ -396,6 +454,37 @@ dot < 0 → [逆]（逆方向）
 | 線分 | 共有端点からもう一方の端点への方向ベクトル |
 | 円弧 | 共有端点が始点なら `+0.1°`、終点なら `−0.1°` の円周上の点 |
 | クロソイド | 点列 `points` で共有端点の隣の点 |
+
+#### 6.2.3 プロパティ変更の Undo 対応
+
+各プロパティコールバック（`on_x` / `on_y` / `on_r` / `on_t` / `on_ang` 等）は `request_push_undo` シグナルを発行し、`MainWindow` 経由で `Canvas.push_undo()` を呼ぶ。同一編集セッション中の最初の変更のみ push する（`_undo_pushed` フラグで制御）。
+
+ハンドルドラッグ完了時（`mouseReleaseEvent` でドラッグ検出）に `selection_changed.emit()` を発行し、右パネルのプロパティを即座に更新する。
+
+#### 6.2.4 シグナル一覧
+
+| シグナル | 引数 | 用途 |
+|---|---|---|
+| `request_smooth_connect` | `Line, Line` | スムーズ接続 |
+| `request_polyline_connect` | `Line, Line` | 折れ線接続 |
+| `request_disconnect` | `Line, Line` | 接続解除 |
+| `request_add_clothoid` | `Line, Circle` | クロソイド追加 |
+| `request_delete_clothoid` | `Clothoid` | クロソイド削除 |
+| `request_flip_clothoid` | `Clothoid` | クロソイド反転 |
+| `request_select` | `list` | 選択変更 |
+| `request_delete` | `list` | 図形削除 |
+| `request_set_offset` | `Line, Circle, Circle` | オフセット拘束設定 |
+| `request_clear_offset` | `Line` | オフセット拘束解除 |
+| `request_push_undo` | — | Undo スタックへの push |
+| `scene_changed` | — | シーン変更通知 |
+
+#### 6.2.5 オフセット拘束パネル
+
+円 2 個と直線 1 本が選択されたとき `_build_offset_constraint()` が呼ばれ、以下を表示する。
+
+- スムーズ接続で生成された円が含まれる場合は警告を表示して設定不可とする
+- 拘束が未設定のとき: `off_a`・`off_b` のスピンボックス + 「オフセット拘束を設定」ボタン
+- 拘束が設定済みのとき: `off_a`・`off_b` のスピンボックス（リアルタイム編集）+ 現在距離の情報表示 + 「オフセット拘束を解除」ボタン
 
 ### 6.3 ProfileCanvas（縦断線形）
 
@@ -468,6 +557,9 @@ screen_y = -elev * scale_y + offset.y   # y 軸反転
 | `resolve_chain(elems, eps)` | 要素リストからチェーン順序と `reversed_flags` を解決して返す。`SNAP_TOL=1.0m`、貪欲法 |
 | `plan_length_of(obj)` | `Segment` / `Arc` / `Clothoid` の平面長を計算して返す |
 | `prepare_viewer_data(...)` | 3D 中心線と表示セグメントを計算して `dict` で返す（I/O なし、テスト可能） |
+| `OffsetConstraint.solve()` | `off_a`・`off_b`・`_eps_a`・`_eps_b` から直線 S の参照点を再計算する |
+| `OffsetConstraint.calc_offsets_from_current()` | 現在の直線と 2 円の位置関係から `off_a`・`off_b`・`_eps_a`・`_eps_b` を算出して設定する |
+| `Scene._fix_duplicate_ids()` | `to_dict()` の前に全図形の ID 重複を検出して振り直す |
 
 ---
 
@@ -503,10 +595,13 @@ screen_y = -elev * scale_y + offset.y   # y 軸反転
 | `Line`（各メソッド） | `project_t` / `point_at` / `signed_dist` / `intersect` の計算 |
 | `Arc`（各プロパティ） | `start` / `end` / `arc_angle` / `arc_length` の計算 |
 | `Clothoid.compute()` | 接点座標・点列の生成（既知データとの比較） |
+| `OffsetConstraint.solve()` | 距離拘束の充足・法線方向の維持・`feasible` フラグの変化 |
+| `OffsetConstraint.calc_offsets_from_current()` | `off_a`・`off_b`・`_eps_a`・`_eps_b` の正確な算出 |
 | `ElementProfile.elev_at()` | 縦断曲線優先・勾配直線補間・範囲外の返り値 |
 | `resolve_chain()` | 単一要素・複数要素・逆順要素の各ケース |
 | `tangent_at()` / `entry_tangent()` | 各図形タイプでの接線ベクトル方向 |
 | `Scene.to_dict()` / `from_dict()` | 往復シリアライズ・ID 衝突の自動修正 |
+| `Scene._fix_duplicate_ids()` | メモリ上の ID 重複を検出・修正できること |
 | `prepare_viewer_data()` | 中心線点数・標高の連続性（段差 < 0.01m） |
 | `VerticalCurve.elevation_at()` | VPC〜VPT 内の放物線値・範囲外の NaN 返却 |
 
@@ -526,3 +621,5 @@ screen_y = -elev * scale_y + offset.y   # y 軸反転
 - `resolve_chain()` は要素数 1・2・3以上・孤立端点なし（環状）の各ケースをカバーする
 - `ElementProfile.elev_at()` は縦断曲線範囲内・範囲外・`GradeLine` のみ・両方なし の 4 ケースをカバーする
 - `Scene.from_dict()` の ID 衝突ケース（`_resolve_id`）を専用テストでカバーする
+- `OffsetConstraint.solve()` は成功ケース・距離拘束矛盾（`feasible=False`）・法線方向維持（2 円の間 vs 外側）の各ケースをカバーする
+- `Scene.from_dict()` で `_resolve_id` による ID 振り直し後でも `lines_by_id` / `circles_by_id` のフォールバック参照でクロソイドが消えないことをテストする（ID 重複を含むファイルを細工したデータでロードするテスト）
