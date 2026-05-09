@@ -2065,12 +2065,40 @@ class Scene:
             result.append(obj.circle)
         return result
 
+    def _fix_duplicate_ids(self) -> None:
+        """Scene 内の id 重複を検出して振り直す。
+
+        `to_dict()` を呼ぶ前に実行することで保存ファイルの整合性を保証する。
+        Line と Segment が同じ id を持つ場合など、通常の操作では起きないはずだが
+        複数のファイルをマージしたり古い形式のファイルを読み込んだ際に発生しうる。
+        """
+        seen: set[int] = set()
+
+        def _assign(obj) -> None:
+            if obj.id in seen:
+                obj.id = new_id()
+            seen.add(obj.id)
+
+        for ln in self.lines:
+            _assign(ln)
+            for seg in ln.segments:
+                _assign(seg)
+        for ci in self.circles:
+            _assign(ci)
+            for arc in ci.arcs:
+                _assign(arc)
+        for clo in self.clothoids:
+            _assign(clo)
+        for oc in self.offset_constraints:
+            _assign(oc)
+
     def to_dict(self) -> dict:
         """シーン全体を JSON シリアライズ可能な辞書に変換する。
 
         各図形の辞書の 'id' の直後に 'nickname' を挿入して返す。
         Undo スタックへの積み込みとファイル保存の両方で使う。
         """
+        self._fix_duplicate_ids()  # 保存前に id 重複を修正
         def _with_nick(d: dict) -> dict:
             """'id' の次に 'nickname' を挿入した辞書を返す（内部ヘルパー）。"""
             fid = d.get("id")
@@ -2150,23 +2178,39 @@ class Scene:
             seen_ids.add(fid)
             return fid
 
+        # id_remap: 保存時の id → _resolve_id 後の id のマッピング
+        # line/circle の id が振り直された場合でも clothoid の参照を維持する
+        id_remap: dict[int, int] = {}
+
         for ld in d.get("lines", []):
             _extract_nick(ld, sc)
+            original_id = ld.get("id")
             _resolve_id(ld)
+            if original_id is not None and ld["id"] != original_id:
+                id_remap[original_id] = ld["id"]
             for sd in ld.get("segments", []):
                 _resolve_id(sd)
             ln = Line.from_dict(ld)
             sc.lines.append(ln)
             lines_by_id[ln.id] = ln
+            # 元の id でも引けるようにする（remap前のid → ln）
+            if original_id is not None and original_id != ln.id:
+                lines_by_id[original_id] = ln
 
         for cd in d.get("circles", []):
             _extract_nick(cd, sc)
+            original_id = cd.get("id")
             _resolve_id(cd)
+            if original_id is not None and cd["id"] != original_id:
+                id_remap[original_id] = cd["id"]
             for ad in cd.get("arcs", []):
                 _resolve_id(ad)
             ci = Circle.from_dict(cd)
             sc.circles.append(ci)
             circles_by_id[ci.id] = ci
+            # 元の id でも引けるようにする
+            if original_id is not None and original_id != ci.id:
+                circles_by_id[original_id] = ci
 
         for cd in d.get("clothoids", []):
             _extract_nick(cd, sc)
