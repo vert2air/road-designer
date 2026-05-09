@@ -941,7 +941,13 @@ class Canvas(QWidget):
         """オフセット拘束のうち ci を参照するものについて直線 S を再計算する。
 
         ci が circle_a または circle_b として含まれる OffsetConstraint に対して
-        solve() を呼び出し、その結果を関連するクロソイドに伝播する。
+        solve() を呼び出す。
+
+        - solve=True  : 直線の参照点が更新される → 関連 Clothoid に伝播・再描画
+        - solve=False : 距離拘束が矛盾（円が近すぎる等）→ 直線は変更しない。
+                        ただし Clothoid は現在の直線位置に追従させる。
+                        oc.feasible が False になるため呼び出し元は
+                        視覚的なフィードバックを提供できる。
 
         Parameters
         ----------
@@ -950,10 +956,11 @@ class Canvas(QWidget):
         """
         for oc in self.scene.offset_constraints:
             if oc.circle_a is ci or oc.circle_b is ci:
-                if oc.solve():
-                    self._propagate_line(oc.line)
-                    self.scene_changed.emit()
-                    self.update()
+                oc.solve()  # 成功/失敗を問わず呼ぶ（feasible フラグを更新）
+                # 成功・失敗どちらの場合も Clothoid は現在の直線位置に追従させる
+                self._propagate_line(oc.line)
+                self.scene_changed.emit()
+                self.update()
 
     def _propagate_arc_snaps(self, ci: Circle):
         """ArcSnap で繋がれた円弧の端点を追従させる"""

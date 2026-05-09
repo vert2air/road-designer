@@ -1381,6 +1381,7 @@ class OffsetConstraint:
     circle_b: object = None   # Circle
     off_a:    float  = 0.0
     off_b:    float  = 0.0
+    feasible: bool   = True   # 最後の solve() が成功した場合 True
 
     def solve(self) -> bool:
         """off_a・off_b・circle_a・circle_b から直線 S の参照点を再計算する。
@@ -1415,30 +1416,38 @@ class OffsetConstraint:
         ab = cb_center - ca_center
         L  = ab.length()
         if L < 1e-9:
+            self.feasible = False
             return False  # 2 円の中心が一致
 
         phi = math.atan2(ab.y, ab.x)
         cur_dir = self.line.direction
 
-        # 4 通りの符号組み合わせ (ε_a, ε_b) で解を列挙
+        # _eps_a・_eps_b は設定時に固定された符号（calc_offsets_from_current で設定）
+        # 未設定（0）の場合は全組み合わせから現在方向で選ぶ（後方互換）
+        eps_pairs = []
+        if self._eps_a != 0 and self._eps_b != 0:
+            eps_pairs = [(self._eps_a, self._eps_b)]
+        else:
+            eps_pairs = [(ea, eb) for ea in (+1, -1) for eb in (+1, -1)]
+
         candidates = []
-        for eps_a in (+1, -1):
-            for eps_b in (+1, -1):
-                rhs = (eps_b * rb + eps_a * ra) / L
-                if abs(rhs) > 1.0:
-                    continue
-                delta = math.acos(max(-1.0, min(1.0, rhs)))
-                for sign_delta in (+1, -1):
-                    theta = phi + sign_delta * delta
-                    n = Vec2(math.cos(theta), math.sin(theta))   # 法線
-                    d = Vec2(-math.sin(theta), math.cos(theta))  # 直線方向
-                    c = n.dot(ca_center) + eps_a * ra             # 切片
-                    candidates.append((d, n, c))
+        for eps_a, eps_b in eps_pairs:
+            rhs = (eps_b * rb + eps_a * ra) / L
+            if abs(rhs) > 1.0:
+                continue
+            delta = math.acos(max(-1.0, min(1.0, rhs)))
+            for sign_delta in (+1, -1):
+                theta = phi + sign_delta * delta
+                n = Vec2(math.cos(theta), math.sin(theta))   # 法線
+                d = Vec2(-math.sin(theta), math.cos(theta))  # 直線方向
+                c = n.dot(ca_center) + eps_a * ra             # 切片
+                candidates.append((d, n, c))
 
         if not candidates:
-            return False  # 全て |rhs| > 1 → 距離拘束が矛盾
+            self.feasible = False
+            return False  # 距離拘束が矛盾（この eps_a, eps_b では解なし）
 
-        # 現在の方向との内積が最大の候補を選ぶ
+        # sign_delta が 2 通りある場合は現在の直線方向に近い方を選ぶ
         best = max(candidates, key=lambda t: abs(cur_dir.dot(t[0])))
         d, n, c = best
 
@@ -1464,19 +1473,27 @@ class OffsetConstraint:
             self.line.ref_start = foot_b
             self.line.ref_end   = foot_a
 
+        self.feasible = True
         return True
 
 
+    def __post_init__(self):
+        """_eps_a と _eps_b を初期化する（dataclass 外フィールド）。
+
+        0 は未設定を意味し、calc_offsets_from_current() を呼ぶと設定される。
+        """
+        self._eps_a: int = 0
+        self._eps_b: int = 0
+
     def calc_offsets_from_current(self) -> None:
-        """現在の直線と 2 円の位置関係から off_a・off_b を算出して設定する。
+        """現在の直線と 2 円の位置関係から off_a・off_b と符号フラグを算出する。
 
-        オフセット拘束を設定した時点の位置に基づいて初期値を決める。
-        直線から円心への符号付き距離を使うため、直線の左側が正。
-
-        Notes
-        -----
-        off = signed_dist(center) - radius（符号付き。内側は負）
-        ただし符号なし距離で統一し、外側を正として扱う。
+        off_a・off_b は符号なし距離から半径を引いた値（外側が正）。
+        _eps_a・_eps_b は solve() で「円がどちら側にあるか」を固定する符号。
+        設定時の signed_dist から導出する:
+          s_a_new = -_eps_a * ra  →  _eps_a = -sign(signed_dist(ca))
+          s_b_new =  _eps_b * rb  →  _eps_b =  sign(signed_dist(cb))
+        これにより直線が2円の間→外など位置関係が反転しなくなる。
         """
         if self.line is None or self.circle_a is None or self.circle_b is None:
             return
@@ -1484,6 +1501,10 @@ class OffsetConstraint:
         db = self.line.distance_to(self.circle_b.center)
         self.off_a = da - self.circle_a.radius
         self.off_b = db - self.circle_b.radius
+        sa = self.line.signed_dist(self.circle_a.center)
+        sb = self.line.signed_dist(self.circle_b.center)
+        self._eps_a = -1 if sa > 0 else +1
+        self._eps_b = +1 if sb > 0 else -1
 
     def to_dict(self) -> dict:
         """{"id","line_id","ca_id","cb_id","off_a","off_b"} 形式の辞書に変換する。"""
