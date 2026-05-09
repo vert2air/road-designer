@@ -210,6 +210,7 @@ class MainWindow(QMainWindow):
         rp.request_flip_clothoid.connect(self._do_flip_clothoid)
         rp.request_set_offset.connect(self._do_set_offset_constraint)
         rp.request_clear_offset.connect(self._do_clear_offset_constraint)
+        rp.request_push_undo.connect(self._canvas.push_undo)
         rp.request_select.connect(self._canvas.set_selection)
         rp.request_delete.connect(self._do_delete_objects)
         rp.scene_changed.connect(self._on_scene_changed)

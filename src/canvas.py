@@ -615,6 +615,7 @@ class Canvas(QWidget):
                 # ハンドルヒット?
                 h = self._hit_handle(sw)
                 if h:
+                    self.push_undo()          # ドラッグ前の状態を保存
                     self._drag_obj = h.owner
                     self._drag_tag = h.tag
                     return
@@ -717,6 +718,9 @@ class Canvas(QWidget):
                 self._circle_center  = None
                 self._rubber_radius  = 0.0
                 self.update()
+            if self._drag_obj is not None:
+                # ドラッグ完了 → 右パネルのプロパティを更新
+                self.selection_changed.emit(self._selected)
             self._drag_obj = None
             self._drag_tag = ""
             self._drag_start_screen = None

@@ -79,6 +79,8 @@ class RightPanel(QWidget):
     request_delete           = Signal(list)   # 削除要求
     request_set_offset       = Signal(object, object, object)  # line, ci_a, ci_b
     request_clear_offset     = Signal(object)                  # line
+    request_undo             = Signal()                        # Undo 要求
+    request_push_undo        = Signal()                        # プロパティ変更前の状態保存
     scene_changed            = Signal()
 
     def __init__(self, scene: Scene, parent=None):
@@ -196,6 +198,20 @@ class RightPanel(QWidget):
                     self._add_nick_combo()
                     return  # _add_nick_combo 内で _refresh_nick_combos が呼ばれる
         self._refresh_nick_combos()
+        # 1個目が変わったとき: 2個目に隣接候補があれば先頭を自動選択
+        if sender is not None and self._nick_combos:
+            changed_i = self._nick_combos.index(sender) \
+                if sender in self._nick_combos else -1
+            if changed_i >= 0 and changed_i + 1 < len(self._nick_combos):
+                next_cb = self._nick_combos[changed_i + 1]
+                # インデックス1以降に有効な図形候補があれば選択
+                for j in range(next_cb.count()):
+                    t = next_cb.itemText(j)
+                    if t and t != "(なし)" and not t.startswith(' '):
+                        obj = self._find_by_nick_label(t)
+                        if obj is not None:
+                            next_cb.setCurrentIndex(j)
+                            break
 
     def _remove_nick_combo(self):
         if len(self._nick_combos) > 1:
@@ -1057,13 +1073,18 @@ class RightPanel(QWidget):
             row = QHBoxLayout()
             sbx = _make_spinbox(get_fn().x)
             sby = _make_spinbox(get_fn().y)
+            _undo_pushed = [False]
             def on_x(v):
                 if self._block: return
+                if not _undo_pushed[0]:
+                    self.request_push_undo.emit(); _undo_pushed[0] = True
                 old = get_fn()
                 set_fn(Vec2(v, old.y))
                 self.scene_changed.emit()
             def on_y(v):
                 if self._block: return
+                if not _undo_pushed[0]:
+                    self.request_push_undo.emit(); _undo_pushed[0] = True
                 old = get_fn()
                 set_fn(Vec2(old.x, v))
                 self.scene_changed.emit()
@@ -1091,16 +1112,23 @@ class RightPanel(QWidget):
         sb_cy = _make_spinbox(ci.center.y)
         sb_r  = _make_spinbox(ci.radius, 0.001, 1e6, 0.5)
 
+        _undo_pushed = [False]
         def on_cx(v):
             if self._block: return
+            if not _undo_pushed[0]:
+                self.request_push_undo.emit(); _undo_pushed[0] = True
             ci.center = Vec2(v, ci.center.y)
             self.scene_changed.emit()
         def on_cy(v):
             if self._block: return
+            if not _undo_pushed[0]:
+                self.request_push_undo.emit(); _undo_pushed[0] = True
             ci.center = Vec2(ci.center.x, v)
             self.scene_changed.emit()
         def on_r(v):
             if self._block: return
+            if not _undo_pushed[0]:
+                self.request_push_undo.emit(); _undo_pushed[0] = True
             ci.radius = max(0.001, v)
             self.scene_changed.emit()
 
