@@ -2310,6 +2310,13 @@ class Scene:
 
         sc.segment_snaps = [SegmentSnap.from_dict(s) for s in d.get("segment_snaps", [])]
         sc.arc_snaps     = [ArcSnap.from_dict(a)     for a in d.get("arc_snaps", [])]
+        sc.offset_constraints = [
+            OffsetConstraint.from_dict(oc, lines_by_id, circles_by_id)
+            for oc in d.get("offset_constraints", [])
+            if (oc.get("line_id") in lines_by_id
+                and oc.get("ca_id") in circles_by_id
+                and oc.get("cb_id") in circles_by_id)
+        ]
 
         for k, v in d.get("nicknames", {}).items():
             sc.nicknames[int(k)] = v
