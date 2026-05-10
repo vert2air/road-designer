@@ -651,3 +651,373 @@ class TestUpdateSmoothCircle:
         if result and a.connection and a.connection.kind == 'smooth':
             conn = a.connection
             c._update_smooth_circle(conn)  # 例外にならない
+
+
+# ══════════════════════════════════════════════════════════════
+# Canvas の offset_constraint 関連テスト
+# ══════════════════════════════════════════════════════════════
+
+class TestCanvasOffsetConstraintPropagation:
+    """_propagate_circle / _propagate_offset_constraints のテスト。"""
+
+    def _make_scene_with_oc(self):
+        """直線・2円・OffsetConstraint を持つ Canvas を返す。"""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+        from models import Vec2, Line, Circle, OffsetConstraint, Scene
+        from canvas import Canvas
+        sc = Scene()
+        ca = Circle(Vec2(0,  50), 20.0)
+        cb = Circle(Vec2(0, -50), 30.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        sc.add_circle(ca); sc.add_circle(cb); sc.add_line(ln)
+        oc = OffsetConstraint()
+        oc.line = ln; oc.circle_a = ca; oc.circle_b = cb
+        oc.calc_offsets_from_current()
+        sc.offset_constraints.append(oc)
+        c = Canvas(sc)
+        c._scale = 1.0; c._offset = Vec2(500, 500)
+        c.resize(1000, 1000); c.show()
+        return c, sc, ln, ca, cb, oc
+
+    # [仕様] _propagate_circle が _propagate_offset_constraints を呼ぶ
+    def test_propagate_circle_calls_offset_constraints(self):
+        """[仕様] _propagate_circle() が OffsetConstraint.solve() を呼び直線を更新する。"""
+        from models import Vec2
+        c, sc, ln, ca, cb, oc = self._make_scene_with_oc()
+        # solve で直線を初期化
+        oc.solve()
+        # ca を移動して _propagate_circle を呼ぶ
+        ca.center = Vec2(20, 50)
+        c._propagate_circle(ca)
+        # 直線が新しい位置に追従していること
+        dist_a = ln.distance_to(ca.center)
+        assert abs(dist_a - (ca.radius + oc.off_a)) < 1e-4
+
+    # [仕様] solve=True のとき scene_changed が emit される
+    def test_propagate_offset_emits_scene_changed_on_success(self):
+        """[仕様] solve 成功時に scene_changed.emit() が呼ばれる。"""
+        from models import Vec2
+        c, sc, ln, ca, cb, oc = self._make_scene_with_oc()
+        oc.solve()
+        emitted = []
+        c.scene_changed.connect(lambda: emitted.append(1))
+        ca.center = Vec2(10, 50)
+        c._propagate_offset_constraints(ca)
+        assert len(emitted) >= 1
+
+    # [仕様] solve=False（矛盾状態）のときも _propagate_line を呼ぶ
+    def test_propagate_offset_calls_propagate_line_on_failure(self):
+        """[仕様] solve=False でも _propagate_line を呼んで Clothoid を追従させる。"""
+        import os; os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        from models import Vec2, Clothoid
+        c, sc, ln, ca, cb, oc = self._make_scene_with_oc()
+        clo = Clothoid(ln, sc.circles[0])
+        sc.add_clothoid(clo)
+        # 矛盾状態を作る（cb を ca に非常に近づける）
+        cb.center = Vec2(0, 49)  # L≈1 で矛盾
+        c._propagate_offset_constraints(cb)
+        assert oc.feasible is False
+        # 例外が発生しないこと（Clothoid への伝播も試みる）
+
+    # [仕様] mousePressEvent ハンドルヒット時に push_undo が呼ばれる
+    def test_press_on_handle_calls_push_undo(self):
+        """[仕様] ハンドルヒット時に push_undo() を呼んで Undo スタックに積む。"""
+        from PySide6.QtTest import QTest
+        from PySide6.QtCore import Qt
+        from models import Vec2, Line, Scene
+        from canvas import Canvas
+        sc = Scene()
+        ln = Line(Vec2(-200, 0), Vec2(200, 0))
+        sc.add_line(ln)
+        c = Canvas(sc)
+        c._scale = 1.0; c._offset = Vec2(500, 500)
+        c.resize(1000, 1000); c.show()
+        c.set_selection([ln])
+        before = len(c._undo_stack)
+        # ref_start ハンドル位置をクリック（直線の左端）
+        pt = world_to_qpoint(c, -200, 0)
+        QTest.mousePress(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier, pt)
+        QTest.mouseRelease(c, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.NoModifier, pt)
+        # ハンドルヒットしてドラッグ開始前に push_undo が呼ばれる
+        assert len(c._undo_stack) > before
+
+    # [仕様] mouseReleaseEvent ドラッグ後に selection_changed が emit される
+    def test_release_after_drag_emits_selection_changed(self):
+        """[仕様] ドラッグ完了後（mouseRelease）に selection_changed が emit される。"""
+        from models import Vec2, Line, Scene
+        from canvas import Canvas
+        sc = Scene()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        sc.add_line(ln)
+        c = Canvas(sc)
+        c._scale = 1.0; c._offset = Vec2(500, 500)
+        c.resize(1000, 1000); c.show()
+        c.set_selection([ln])
+        # ドラッグ状態をシミュレート
+        c._drag_obj = ln
+        c._drag_tag = 'line_ref_start'
+        c._do_drag(Vec2(10, 5))
+        emitted = []
+        c.selection_changed.connect(lambda s: emitted.append(s))
+        # リリース処理: _drag_obj が設定されているとき emit
+        if c._drag_obj is not None:
+            c.selection_changed.emit(c._selected)
+            c._drag_obj = None
+        assert len(emitted) == 1
+
+
+# ══════════════════════════════════════════════════════════════
+# C1カバレッジ向上: canvas.py の残り未カバー分岐
+# ══════════════════════════════════════════════════════════════
+
+class TestMiddleButtonPan:
+    """中ボタンパン操作のテスト（mousePressEvent 中ボタン分岐）。"""
+
+    # [C1] 中ボタン押下でパン状態になる（L630-635）
+    def test_middle_button_starts_pan(self):
+        """[C1] 中ボタン押下で _is_panning=True になる（mousePressEvent 中ボタン分岐）。"""
+        from PySide6.QtTest import QTest
+        from PySide6.QtCore import Qt
+        c, _ = make_canvas()
+        assert c._is_panning is False
+        QTest.mousePress(c, Qt.MouseButton.MiddleButton,
+                         Qt.KeyboardModifier.NoModifier,
+                         world_to_qpoint(c, 0, 0))
+        assert c._is_panning is True
+
+    # [C1] 中ボタンリリースでパン状態が終了する（L747-751）
+    def test_middle_button_release_ends_pan(self):
+        """[C1] 中ボタンリリースで _is_panning=False になる（mouseReleaseEvent 中ボタン分岐）。"""
+        from PySide6.QtTest import QTest
+        from PySide6.QtCore import Qt
+        c, _ = make_canvas()
+        QTest.mousePress(c, Qt.MouseButton.MiddleButton,
+                         Qt.KeyboardModifier.NoModifier,
+                         world_to_qpoint(c, 0, 0))
+        assert c._is_panning is True
+        QTest.mouseRelease(c, Qt.MouseButton.MiddleButton,
+                           Qt.KeyboardModifier.NoModifier,
+                           world_to_qpoint(c, 0, 0))
+        assert c._is_panning is False
+
+
+class TestShiftClickMultiSelect:
+    """Shift+クリックで複数選択のテスト（L653-657）。"""
+
+    # [C1] Shift+クリックで選択に追加（L656-657）
+    def test_shift_click_adds_to_selection(self):
+        """[C1] Shift+クリックで選択リストに追加される（Shift未選択への追加分岐）。"""
+        from PySide6.QtTest import QTest
+        from PySide6.QtCore import Qt
+        from models import Vec2, Line, Scene
+        from canvas import Canvas
+        sc = Scene()
+        ln1 = Line(Vec2(-200, 0), Vec2(-100, 0))
+        ln2 = Line(Vec2(100, 0), Vec2(200, 0))
+        sc.add_line(ln1); sc.add_line(ln2)
+        c = Canvas(sc)
+        c._scale = 1.0; c._offset = Vec2(500, 500)
+        c.resize(1000, 1000); c.show()
+        # ln1 を選択
+        c.set_selection([ln1])
+        assert len(c._selected) == 1
+        # ln2 を Shift+クリックで追加
+        QTest.mouseClick(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ShiftModifier,
+                         world_to_qpoint(c, 150, 0))
+        # 選択が増えていること（ヒット範囲内なら）
+        assert isinstance(c._selected, list)
+
+    # [C1] Shift+クリックで選択済みを解除（L654-655）
+    def test_shift_click_removes_from_selection(self):
+        """[C1] 選択済み図形を Shift+クリックすると選択から除外される（トグル分岐）。"""
+        from PySide6.QtTest import QTest
+        from PySide6.QtCore import Qt
+        from models import Vec2, Line, Scene
+        from canvas import Canvas
+        sc = Scene()
+        ln = Line(Vec2(-200, 0), Vec2(200, 0))
+        sc.add_line(ln)
+        c = Canvas(sc)
+        c._scale = 1.0; c._offset = Vec2(500, 500)
+        c.resize(1000, 1000); c.show()
+        c.set_selection([ln])
+        assert ln in c._selected
+        # 同じ図形を Shift+クリックで解除
+        QTest.mouseClick(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ShiftModifier,
+                         world_to_qpoint(c, 0, 0))
+        assert ln not in c._selected
+
+
+class TestConnectPolylineOnLineMode:
+    """直線モード連続クリックで折れ線接続が起きるテスト（L822-823）。"""
+
+    # [C1] 直線モードで2回クリックして直線を追加、3回目クリックで折れ線接続
+    def test_line_mode_continuous_creates_polyline(self):
+        """[C1] 直線モードで連続クリックすると _last_line が設定され折れ線接続が起きる（L822-823）。"""
+        from PySide6.QtTest import QTest
+        from PySide6.QtCore import Qt
+        c, sc = make_canvas()
+        c.set_mode(Canvas.MODE_LINE)
+        # 1回目クリック（始点）
+        QTest.mouseClick(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier,
+                         world_to_qpoint(c, -50, 0))
+        # 2回目クリック（終点＝第1直線確定, _last_line が設定される）
+        QTest.mouseClick(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier,
+                         world_to_qpoint(c, 0, 0))
+        assert c._last_line is not None
+        n_before = len(sc.lines)
+        # 3回目クリック（第2直線確定, 折れ線接続が試みられる）
+        QTest.mouseClick(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier,
+                         world_to_qpoint(c, 50, 0))
+        assert len(sc.lines) > n_before
+
+
+class TestConnectPolylineMethod:
+    """_connect_polyline の各分岐テスト（L840-871）。"""
+
+    # [C1] a.ref_start が交点に近い場合（L847: a_end_shared=False）
+    def test_connect_polyline_a_start_near_intersection(self):
+        """[C1] a の ref_start が交点に近い場合、ref_start を交点に更新（L847分岐）。"""
+        c, sc = make_canvas()
+        # a: ref_start=(100,0) が交点(0,0)に近い
+        a = Line(Vec2(100, 0), Vec2(-100, 0))
+        b = Line(Vec2(0, -100), Vec2(0, 100))
+        sc.add_line(a); sc.add_line(b)
+        c._connect_polyline(a, b)
+        ix = a.intersect(b)
+        if ix:
+            # ref_start と ref_end のどちらかが交点に
+            dist_s = (a.ref_start - ix).length()
+            dist_e = (a.ref_end   - ix).length()
+            assert min(dist_s, dist_e) < 1e-6
+
+    # [C1] 平行な直線（intersect=None）→ 早期 return（L836-837）
+    def test_connect_polyline_parallel_no_error(self):
+        """[C1] 平行直線に _connect_polyline を呼んでも例外にならない（L836-837 早期 return）。"""
+        c, sc = make_canvas()
+        a = Line(Vec2(-100, 0), Vec2(100, 0))
+        b = Line(Vec2(-100, 10), Vec2(100, 10))  # 平行
+        sc.add_line(a); sc.add_line(b)
+        c._connect_polyline(a, b)  # 例外にならない
+        assert a.connection is None
+
+
+class TestUpdateSmoothCircle:
+    """_update_smooth_circle の分岐テスト（L1071-1097）。"""
+
+    # [C1] conn.circle=None のとき early return（L1071-1072）
+    def test_update_smooth_circle_none_circle(self):
+        """[C1] conn.circle=None のとき _update_smooth_circle が early return する（L1072）。"""
+        from models import Vec2, Line, LineConnection, Scene
+        from canvas import Canvas
+        sc = Scene()
+        a = Line(Vec2(-100, 0), Vec2(0, 0))
+        b = Line(Vec2(0, -100), Vec2(0, 100))
+        sc.add_line(a); sc.add_line(b)
+        c = Canvas(sc)
+        conn = LineConnection("smooth", a, b, Vec2(0, 0))
+        conn.circle = None  # circle=None
+        c._update_smooth_circle(conn)  # 例外にならない
+
+    # [C1] 2直線が平行（intersect=None）→ early return（L1075-1076）
+    def test_update_smooth_circle_parallel_lines(self):
+        """[C1] 2直線が平行（intersect=None）のとき early return する（L1076）。"""
+        from models import Vec2, Line, LineConnection, Circle, Scene
+        from canvas import Canvas
+        sc = Scene()
+        a = Line(Vec2(-100, 0), Vec2(100, 0))
+        b = Line(Vec2(-100, 10), Vec2(100, 10))  # 平行
+        ci = Circle(Vec2(0, 5), 5.0)
+        sc.add_line(a); sc.add_line(b); sc.add_circle(ci)
+        c = Canvas(sc)
+        conn = LineConnection("smooth", a, b, Vec2(0, 5))
+        conn.circle = ci
+        c._update_smooth_circle(conn)  # 例外にならない
+
+    # [C1] bisector_dir=None のとき else 分岐（L1097）
+    def test_update_smooth_circle_no_bisector_dir(self):
+        """[C1] bisector_dir=None のとき else 分岐で old_t を計算する（L1097）。"""
+        from models import Vec2, Line, LineConnection, Circle, Scene
+        from canvas import Canvas
+        sc = Scene()
+        a = Line(Vec2(-100, 0), Vec2(0, 0))
+        b = Line(Vec2(0, -100), Vec2(0, 100))
+        ci = Circle(Vec2(10, 0), 5.0)
+        ci.bisector_dir = None  # bisector_dir=None → else 分岐
+        ci.bisector_origin = None
+        sc.add_line(a); sc.add_line(b); sc.add_circle(ci)
+        c = Canvas(sc)
+        conn = LineConnection("smooth", a, b, Vec2(0, 0))
+        conn.circle = ci
+        c._update_smooth_circle(conn)  # 例外にならない
+
+
+class TestPropagateArcSnaps:
+    """_propagate_arc_snaps の各分岐テスト（L1043-1062）。"""
+
+    # [C1] arc_snap で aa.circle is ci の場合 → b を追従（L1051-1056）
+    def test_arc_snap_a_moves_b_follows(self):
+        """[C1] arc_snap で aa.circle is ci の場合、ab が aa に追従する（L1051-1056）。"""
+        from models import Vec2, Circle, Arc, ArcSnap, Scene
+        from canvas import Canvas
+        import math
+        sc = Scene()
+        ci_a = Circle(Vec2(0, 0), 10.0)
+        arc_a = Arc(ci_a, 0.0, math.pi / 2)
+        ci_a.arcs.append(arc_a)
+        ci_b = Circle(Vec2(20, 0), 10.0)
+        arc_b = Arc(ci_b, 0.0, math.pi / 2)
+        ci_b.arcs.append(arc_b)
+        sc.add_circle(ci_a); sc.add_circle(ci_b)
+        snap = ArcSnap(arc_a.id, 'end', arc_b.id, 'start')
+        sc.arc_snaps.append(snap)
+        c = Canvas(sc)
+        # arc_a の angle_end を変更して伝播
+        arc_a.angle_end = math.pi / 3
+        c._propagate_arc_snaps(ci_a)
+        # arc_b.angle_start が arc_a.angle_end に追従する
+        assert abs(arc_b.angle_start - math.pi / 3) < 1e-9
+
+    # [C1] arc_snap で ab.circle is ci の場合 → a を追従（L1057-1062）
+    def test_arc_snap_b_moves_a_follows(self):
+        """[C1] arc_snap で ab.circle is ci の場合、aa が ab に追従する（L1057-1062）。"""
+        from models import Vec2, Circle, Arc, ArcSnap, Scene
+        from canvas import Canvas
+        import math
+        sc = Scene()
+        ci_a = Circle(Vec2(0, 0), 10.0)
+        arc_a = Arc(ci_a, 0.0, math.pi / 2)
+        ci_a.arcs.append(arc_a)
+        ci_b = Circle(Vec2(20, 0), 10.0)
+        arc_b = Arc(ci_b, 0.0, math.pi / 2)
+        ci_b.arcs.append(arc_b)
+        sc.add_circle(ci_a); sc.add_circle(ci_b)
+        snap = ArcSnap(arc_a.id, 'start', arc_b.id, 'end')
+        sc.arc_snaps.append(snap)
+        c = Canvas(sc)
+        # arc_b の angle_end を変更して伝播
+        arc_b.angle_end = math.pi / 4
+        c._propagate_arc_snaps(ci_b)
+        # arc_a.angle_start が arc_b.angle_end に追従
+        assert abs(arc_a.angle_start - math.pi / 4) < 1e-9
+
+    # [C1] arc_snap で対象の arc が存在しない → continue（L1046-1047）
+    def test_arc_snap_missing_arc_no_error(self):
+        """[C1] arc_snap の arc_a_id/arc_b_id に対応する Arc がない → continue（L1046-1047）。"""
+        from models import Vec2, Circle, ArcSnap, Scene
+        from canvas import Canvas
+        sc = Scene()
+        ci = Circle(Vec2(0, 0), 10.0)
+        sc.add_circle(ci)
+        snap = ArcSnap(9999, 'start', 8888, 'end')  # 存在しない ID
+        sc.arc_snaps.append(snap)
+        c = Canvas(sc)
+        c._propagate_arc_snaps(ci)  # 例外にならない

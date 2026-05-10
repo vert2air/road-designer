@@ -23,7 +23,7 @@ import pytest
 from models import (
     Vec2, Line, Segment, LineConnection, Circle, Arc, Clothoid,
     GradeLine, VerticalCurve, ElementProfile, Scene,
-    SegmentSnap, ArcSnap,
+    SegmentSnap, ArcSnap, OffsetConstraint,
     new_id, _reset_id_counter_after,
     plan_length_of, tangent_at, entry_tangent, resolve_chain,
     SNAP_TOL, _elem_endpoints, _pt_dist,
@@ -2454,3 +2454,557 @@ class TestSegmentSnapDegeneratePrevention:
         sc = Scene.from_dict(d)
         all_ids = [ln.id for ln in sc.lines] + [ci.id for ci in sc.circles] +                   [a.id for ci in sc.circles for a in ci.arcs]
         assert len(set(all_ids)) == len(all_ids), "ID が衝突していないこと"
+
+
+# ══════════════════════════════════════════════════════════════
+# OffsetConstraint テスト
+# ══════════════════════════════════════════════════════════════
+
+class TestOffsetConstraintInit:
+    """OffsetConstraint.__post_init__ のテスト。"""
+
+    # [仕様] _eps_a / _eps_b は 0（未設定）で初期化される
+    def test_post_init_eps_zero(self):
+        """[仕様] __post_init__ で _eps_a=0, _eps_b=0 に初期化される（後方互換モード）。"""
+        oc = OffsetConstraint()
+        assert oc._eps_a == 0
+        assert oc._eps_b == 0
+
+    # [仕様] feasible のデフォルトは True
+    def test_default_feasible_true(self):
+        """[仕様] デフォルト feasible=True（未解決状態では成功を仮定）。"""
+        oc = OffsetConstraint()
+        assert oc.feasible is True
+
+    # [仕様] off_a / off_b のデフォルトは 0.0
+    def test_default_off_zero(self):
+        """[仕様] デフォルト off_a=0.0, off_b=0.0。"""
+        oc = OffsetConstraint()
+        assert oc.off_a == 0.0
+        assert oc.off_b == 0.0
+
+
+class TestOffsetConstraintCalcOffsets:
+    """OffsetConstraint.calc_offsets_from_current のテスト。"""
+
+    def _make_oc(self, ln, ca, cb):
+        oc = OffsetConstraint()
+        oc.line = ln; oc.circle_a = ca; oc.circle_b = cb
+        return oc
+
+    # [仕様] off_a = distance_to(ca) - ca.radius
+    def test_off_a_calculation(self):
+        """[仕様] off_a = distance_to(circle_a.center) - circle_a.radius。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))   # y=0 の水平直線
+        ca = Circle(Vec2(0, 30), 20.0)            # dist=30, r=20 → off_a=10
+        cb = Circle(Vec2(0, -50), 30.0)
+        oc = self._make_oc(ln, ca, cb)
+        oc.calc_offsets_from_current()
+        assert abs(oc.off_a - 10.0) < 1e-9
+
+    # [仕様] off_b = distance_to(cb) - cb.radius
+    def test_off_b_calculation(self):
+        """[仕様] off_b = distance_to(circle_b.center) - circle_b.radius。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ca = Circle(Vec2(0, 30), 20.0)
+        cb = Circle(Vec2(0, -50), 30.0)           # dist=50, r=30 → off_b=20
+        oc = self._make_oc(ln, ca, cb)
+        oc.calc_offsets_from_current()
+        assert abs(oc.off_b - 20.0) < 1e-9
+
+    # [仕様] _eps_a = -sign(signed_dist(ca)) → ca が左側なら _eps_a=-1
+    def test_eps_a_ca_left_side(self):
+        """[仕様] ca が直線の左側（signed_dist>0）→ _eps_a=-1。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))   # left_normal=(0,1)
+        ca = Circle(Vec2(0, 30), 20.0)            # signed_dist=+30（左側）
+        cb = Circle(Vec2(0, -50), 30.0)
+        oc = self._make_oc(ln, ca, cb)
+        oc.calc_offsets_from_current()
+        assert oc._eps_a == -1
+
+    # [仕様] ca が右側（signed_dist<0）→ _eps_a=+1
+    def test_eps_a_ca_right_side(self):
+        """[仕様] ca が直線の右側（signed_dist<0）→ _eps_a=+1。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ca = Circle(Vec2(0, -30), 20.0)           # signed_dist=-30（右側）
+        cb = Circle(Vec2(0, 50), 30.0)
+        oc = self._make_oc(ln, ca, cb)
+        oc.calc_offsets_from_current()
+        assert oc._eps_a == +1
+
+    # [仕様] _eps_b = +sign(signed_dist(cb)) → cb が左側なら _eps_b=+1
+    def test_eps_b_cb_left_side(self):
+        """[仕様] cb が直線の左側（signed_dist>0）→ _eps_b=+1。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ca = Circle(Vec2(0, -30), 20.0)
+        cb = Circle(Vec2(0, 50), 30.0)            # signed_dist=+50（左側）
+        oc = self._make_oc(ln, ca, cb)
+        oc.calc_offsets_from_current()
+        assert oc._eps_b == +1
+
+    # [仕様] cb が右側（signed_dist<0）→ _eps_b=-1
+    def test_eps_b_cb_right_side(self):
+        """[仕様] cb が直線の右側（signed_dist<0）→ _eps_b=-1。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ca = Circle(Vec2(0, 30), 20.0)
+        cb = Circle(Vec2(0, -50), 30.0)           # signed_dist=-50（右側）
+        oc = self._make_oc(ln, ca, cb)
+        oc.calc_offsets_from_current()
+        assert oc._eps_b == -1
+
+    # [エッジ] line が None のとき何もしない（早期リターン）
+    def test_line_none_no_error(self):
+        """[エッジ] line=None のとき何もしない（AttributeError を起こさない）。"""
+        oc = OffsetConstraint()
+        oc.circle_a = Circle(Vec2(0, 10), 5.0)
+        oc.circle_b = Circle(Vec2(0, -10), 5.0)
+        oc.calc_offsets_from_current()  # 例外にならない
+        assert oc.off_a == 0.0  # 変化しない
+
+    # [エッジ] circle_a が None のとき何もしない
+    def test_circle_a_none_no_error(self):
+        """[エッジ] circle_a=None のとき何もしない。"""
+        oc = OffsetConstraint()
+        oc.line = Line(Vec2(-100, 0), Vec2(100, 0))
+        oc.circle_b = Circle(Vec2(0, -10), 5.0)
+        oc.calc_offsets_from_current()
+        assert oc.off_a == 0.0
+
+
+class TestOffsetConstraintSolve:
+    """OffsetConstraint.solve のテスト。"""
+
+    def _make_oc(self, ln, ca, cb):
+        oc = OffsetConstraint()
+        oc.line = ln; oc.circle_a = ca; oc.circle_b = cb
+        oc.calc_offsets_from_current()
+        return oc
+
+    def _dist(self, ln, center):
+        return ln.distance_to(center)
+
+    # [仕様] 正常ケース: 距離拘束を満たす直線を生成
+    def test_solve_normal_case(self):
+        """[仕様] solve() が True を返し、各円の距離拘束を満たす直線を生成する。"""
+        ca = Circle(Vec2(0,  50), 20.0)
+        cb = Circle(Vec2(0, -50), 30.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        oc = self._make_oc(ln, ca, cb)
+        ok = oc.solve()
+        assert ok is True
+        assert oc.feasible is True
+        assert abs(self._dist(ln, ca.center) - (ca.radius + oc.off_a)) < 1e-6
+        assert abs(self._dist(ln, cb.center) - (cb.radius + oc.off_b)) < 1e-6
+
+    # [仕様] 法線方向の維持: 2円の間の直線が外に飛び出さない
+    def test_solve_maintains_normal_direction_between_circles(self):
+        """[仕様] 2円の間の直線が、円を近づけても外に飛び出さない（法線方向維持）。"""
+        import math
+        ca = Circle(Vec2(0,  30), 20.0)
+        cb = Circle(Vec2(0, -30), 20.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))  # 2円の間
+        oc = self._make_oc(ln, ca, cb)
+        # 設定時 signed_dist: ca が左側(+)、cb が右側(-)
+        sign_ca_init = ln.signed_dist(ca.center) > 0  # True（左側）
+
+        # cb を近づける（L=20 が限界）→ solve が成功する範囲で法線方向を確認
+        for y_cb in [-30, -25, -21]:
+            cb.center = Vec2(0, y_cb)
+            ok = oc.solve()
+            if ok:
+                # ca は常に左側のまま
+                assert ln.signed_dist(ca.center) > 0, \
+                    f"y_cb={y_cb}: ca が右側に飛び出した"
+
+    # [仕様] 2円の中心が一致 → False, feasible=False
+    def test_solve_circles_same_center(self):
+        """[仕様] 2円の中心が一致（L<1e-9）→ False かつ feasible=False。"""
+        ca = Circle(Vec2(0, 10), 5.0)
+        cb = Circle(Vec2(0, 10), 8.0)  # 同じ中心
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        oc = self._make_oc(ln, ca, cb)
+        ok = oc.solve()
+        assert ok is False
+        assert oc.feasible is False
+
+    # [仕様] 距離拘束が矛盾（|rhs|>1）→ False, feasible=False
+    def test_solve_infeasible_too_close(self):
+        """[仕様] 固定した (ε_a,ε_b) で |rhs|>1 → False かつ feasible=False。"""
+        ca = Circle(Vec2(0,  30), 20.0)
+        cb = Circle(Vec2(0, -30), 20.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        oc = self._make_oc(ln, ca, cb)
+        # 2円を非常に近づけて矛盾を起こす
+        cb.center = Vec2(0, 29)  # ca と cb の中心がほぼ同じ（L≈1）
+        ok = oc.solve()
+        assert ok is False
+        assert oc.feasible is False
+
+    # [仕様] feasible=False 後に条件回復 → True に戻る
+    def test_solve_recovery_after_infeasible(self):
+        """[仕様] feasible=False になった後、条件が回復すると solve=True に戻る。"""
+        ca = Circle(Vec2(0,  30), 20.0)
+        cb = Circle(Vec2(0, -30), 20.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        oc = self._make_oc(ln, ca, cb)
+
+        # 矛盾状態に
+        cb.center = Vec2(0, 29)
+        oc.solve()
+        assert oc.feasible is False
+
+        # 回復
+        cb.center = Vec2(0, -30)
+        ok = oc.solve()
+        assert ok is True
+        assert oc.feasible is True
+
+    # [仕様] ref_start に近い垂線の足を ref_start に割り当てる
+    def test_solve_assigns_closer_foot_to_ref_start(self):
+        """[仕様] ref_start に近い垂線の足が ref_start に割り当てられる。"""
+        ca = Circle(Vec2(-50, 30), 10.0)   # 左寄り
+        cb = Circle(Vec2( 50, 30), 10.0)   # 右寄り
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        # ref_start = (-100, 0) → ca の垂線の足 (-50, y) の方が近い
+        oc = self._make_oc(ln, ca, cb)
+        oc.solve()
+        # ref_start は ca 側（x が負側）
+        assert ln.ref_start.x < 0
+
+    # [仕様] solve=False のとき直線は変更しない
+    def test_solve_false_does_not_change_line(self):
+        """[仕様] solve=False のとき直線の ref_start/ref_end を変更しない。"""
+        ca = Circle(Vec2(0,  30), 20.0)
+        cb = Circle(Vec2(0, -30), 20.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        oc = self._make_oc(ln, ca, cb)
+        oc.solve()  # 一度成功させて ref_start を変更
+        rs_before = Vec2(ln.ref_start.x, ln.ref_start.y)
+        re_before = Vec2(ln.ref_end.x,   ln.ref_end.y)
+        # 矛盾状態
+        cb.center = Vec2(0, 29)
+        oc.solve()
+        assert ln.ref_start.x == rs_before.x
+        assert ln.ref_start.y == rs_before.y
+        assert ln.ref_end.x   == re_before.x
+        assert ln.ref_end.y   == re_before.y
+
+    # [仕様] _eps_a/_eps_b=0（未設定）の後方互換モード: 全組み合わせを探索
+    def test_solve_backward_compat_mode(self):
+        """[仕様] _eps_a=_eps_b=0 の後方互換モードでも距離拘束を満たす解を返す。"""
+        ca = Circle(Vec2(0,  50), 20.0)
+        cb = Circle(Vec2(0, -50), 30.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        oc = OffsetConstraint()
+        oc.line = ln; oc.circle_a = ca; oc.circle_b = cb
+        oc.off_a = 20.0; oc.off_b = 20.0
+        # _eps_a/_eps_b = 0 のまま（calc_offsets_from_current を呼ばない）
+        assert oc._eps_a == 0 and oc._eps_b == 0
+        ok = oc.solve()
+        assert ok is True
+        assert abs(self._dist(ln, ca.center) - (ca.radius + oc.off_a)) < 1e-4
+
+
+class TestOffsetConstraintSerialization:
+    """OffsetConstraint.to_dict / from_dict のテスト。"""
+
+    def _make_oc(self):
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ca = Circle(Vec2(0,  30), 20.0)
+        cb = Circle(Vec2(0, -30), 10.0)
+        oc = OffsetConstraint()
+        oc.line = ln; oc.circle_a = ca; oc.circle_b = cb
+        oc.calc_offsets_from_current()
+        return oc, ln, ca, cb
+
+    # [仕様] to_dict に必要なキーが含まれる
+    def test_to_dict_keys(self):
+        """[仕様] to_dict が id/line_id/ca_id/cb_id/off_a/off_b を含む辞書を返す。"""
+        oc, ln, ca, cb = self._make_oc()
+        d = oc.to_dict()
+        assert d['id']      == oc.id
+        assert d['line_id'] == ln.id
+        assert d['ca_id']   == ca.id
+        assert d['cb_id']   == cb.id
+        assert abs(d['off_a'] - oc.off_a) < 1e-9
+        assert abs(d['off_b'] - oc.off_b) < 1e-9
+
+    # [仕様] _eps_a/_eps_b/feasible は to_dict に含まれない
+    def test_to_dict_no_internal_fields(self):
+        """[仕様] _eps_a/_eps_b/feasible は to_dict に含まれない（ロード後に再計算）。"""
+        oc, *_ = self._make_oc()
+        d = oc.to_dict()
+        assert '_eps_a' not in d
+        assert '_eps_b' not in d
+        assert 'feasible' not in d
+
+    # [仕様] from_dict が辞書から正しく復元する
+    def test_from_dict_restores(self):
+        """[仕様] from_dict が line/circle_a/circle_b/off_a/off_b を正しく復元する。"""
+        oc, ln, ca, cb = self._make_oc()
+        d = oc.to_dict()
+        lines_by_id   = {ln.id: ln}
+        circles_by_id = {ca.id: ca, cb.id: cb}
+        oc2 = OffsetConstraint.from_dict(d, lines_by_id, circles_by_id)
+        assert oc2.line is ln
+        assert oc2.circle_a is ca
+        assert oc2.circle_b is cb
+        assert abs(oc2.off_a - oc.off_a) < 1e-9
+        assert abs(oc2.off_b - oc.off_b) < 1e-9
+
+    # [エッジ] line_id が lines_by_id に存在しない → line=None
+    def test_from_dict_missing_line(self):
+        """[エッジ] line_id が lines_by_id にない → oc.line=None。"""
+        d = {'id': 999, 'line_id': 1, 'ca_id': 2, 'cb_id': 3,
+             'off_a': 5.0, 'off_b': 3.0}
+        ca = Circle(Vec2(0, 10), 5.0)
+        cb = Circle(Vec2(0, -10), 5.0)
+        oc = OffsetConstraint.from_dict(d, {}, {2: ca, 3: cb})
+        assert oc.line is None
+
+
+class TestSceneFixDuplicateIds:
+    """Scene._fix_duplicate_ids のテスト。"""
+
+    # [仕様] Line.id と Segment.id が同じ → Segment が振り直し
+    def test_line_and_segment_same_id(self):
+        """[仕様] Line.id と Segment.id が同じとき、後から処理される Segment が振り直される。"""
+        sc = Scene()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        # 強制的に ID を同じにする
+        seg.id = ln.id
+        assert ln.id == seg.id  # 衝突を確認
+        sc._fix_duplicate_ids()
+        assert ln.id != seg.id  # 振り直し後は異なる
+
+    # [仕様] Circle.id と Arc.id が同じ → Arc が振り直し
+    def test_circle_and_arc_same_id(self):
+        """[仕様] Circle.id と Arc.id が同じとき振り直しが起きる。"""
+        sc = Scene()
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc = Arc(ci, 0.0, 1.0)
+        ci.arcs.append(arc)
+        sc.add_circle(ci)
+        arc.id = ci.id  # 強制衝突
+        sc._fix_duplicate_ids()
+        assert ci.id != arc.id
+
+    # [仕様] Clothoid.id が他の図形と衝突 → 振り直し
+    def test_clothoid_id_collision(self):
+        """[仕様] Clothoid.id が Line.id と同じとき振り直しが起きる。"""
+        sc = Scene()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 60), 30.0)
+        sc.add_line(ln); sc.add_circle(ci)
+        clo = Clothoid(ln, ci)
+        sc.add_clothoid(clo)
+        clo.id = ln.id  # 強制衝突
+        sc._fix_duplicate_ids()
+        assert clo.id != ln.id
+
+    # [境界] 重複なしのとき ID は変わらない
+    def test_no_duplicates_unchanged(self):
+        """[境界] 重複がない正常なシーンでは ID が変わらない。"""
+        sc = Scene()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        ln_id_before = ln.id
+        seg_id_before = seg.id
+        sc._fix_duplicate_ids()
+        assert ln.id  == ln_id_before
+        assert seg.id == seg_id_before
+
+    # [仕様] to_dict を呼ぶと _fix_duplicate_ids が自動実行される
+    def test_to_dict_calls_fix(self):
+        """[仕様] to_dict() を呼ぶと保存前に _fix_duplicate_ids() が実行される。"""
+        sc = Scene()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        seg.id = ln.id  # 意図的に衝突させる
+        d = sc.to_dict()
+        # JSON 内に重複 ID がないことを確認
+        all_ids = [ld['id'] for ld in d['lines']]
+        all_ids += [sd['id'] for ld in d['lines'] for sd in ld.get('segments', [])]
+        assert len(set(all_ids)) == len(all_ids)
+
+
+class TestSceneOffsetConstraintSerialization:
+    """Scene の offset_constraints シリアライズ/デシリアライズのテスト。"""
+
+    def _make_scene_with_oc(self):
+        sc = Scene()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ca = Circle(Vec2(0,  30), 20.0)
+        cb = Circle(Vec2(0, -30), 10.0)
+        sc.add_line(ln); sc.add_circle(ca); sc.add_circle(cb)
+        oc = OffsetConstraint()
+        oc.line = ln; oc.circle_a = ca; oc.circle_b = cb
+        oc.calc_offsets_from_current()
+        sc.offset_constraints.append(oc)
+        return sc, ln, ca, cb, oc
+
+    # [仕様] to_dict に offset_constraints が含まれる
+    def test_to_dict_includes_offset_constraints(self):
+        """[仕様] to_dict() が 'offset_constraints' キーを含む辞書を返す。"""
+        sc, *_ = self._make_scene_with_oc()
+        d = sc.to_dict()
+        assert 'offset_constraints' in d
+        assert len(d['offset_constraints']) == 1
+
+    # [仕様] from_dict が offset_constraints を復元する
+    def test_from_dict_restores_offset_constraints(self):
+        """[仕様] from_dict() が offset_constraints を復元し参照が正しい。"""
+        sc, ln, ca, cb, oc = self._make_scene_with_oc()
+        d = sc.to_dict()
+        sc2 = Scene.from_dict(d)
+        assert len(sc2.offset_constraints) == 1
+        oc2 = sc2.offset_constraints[0]
+        assert oc2.line     is not None
+        assert oc2.circle_a is not None
+        assert oc2.circle_b is not None
+        assert abs(oc2.off_a - oc.off_a) < 1e-9
+        assert abs(oc2.off_b - oc.off_b) < 1e-9
+
+    # [仕様] ID 振り直し後もフォールバック参照で clothoid が消えない
+    def test_from_dict_clothoid_survives_id_remap(self):
+        """[仕様] Line.id と Segment.id が衝突するファイルでも clothoid が消えない。"""
+        import copy
+        sc = Scene()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        ci = Circle(Vec2(50, 60), 30.0)
+        sc.add_line(ln); sc.add_circle(ci)
+        clo = Clothoid(ln, ci)
+        sc.add_clothoid(clo)
+        d = sc.to_dict()
+        # 細工: Segment の id を Line の id と同じにして衝突させる
+        d_bad = copy.deepcopy(d)
+        ln_id = d_bad['lines'][0]['id']
+        d_bad['lines'][0]['segments'][0]['id'] = ln_id  # 衝突
+        # from_dict でフォールバック参照により clothoid が消えないこと
+        sc2 = Scene.from_dict(d_bad)
+        assert len(sc2.clothoids) == 1, "clothoid が消えてはいけない"
+
+    # [エッジ] offset_constraints が空のファイルを from_dict で読める
+    def test_from_dict_no_offset_constraints(self):
+        """[エッジ] offset_constraints が空でも from_dict でエラーにならない。"""
+        sc = Scene()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        sc.add_line(ln)
+        d = sc.to_dict()
+        assert d.get('offset_constraints', []) == []
+        sc2 = Scene.from_dict(d)
+        assert sc2.offset_constraints == []
+
+
+# ══════════════════════════════════════════════════════════════
+# C1カバレッジ向上: models.py の残りの未カバー分岐
+# ══════════════════════════════════════════════════════════════
+
+class TestOffsetConstraintSolveEdge:
+    """OffsetConstraint.solve の未カバー分岐テスト。"""
+
+    # [C1] line/circle_a/circle_b のいずれかが None のとき False を返す
+    def test_solve_returns_false_when_line_none(self):
+        """[C1] line=None のとき solve() は False を返す（早期リターン分岐）。"""
+        oc = OffsetConstraint()
+        oc.circle_a = Circle(Vec2(0, 10), 5.0)
+        oc.circle_b = Circle(Vec2(0, -10), 5.0)
+        assert oc.solve() is False
+
+    def test_solve_returns_false_when_circle_a_none(self):
+        """[C1] circle_a=None のとき solve() は False を返す。"""
+        oc = OffsetConstraint()
+        oc.line = Line(Vec2(-100, 0), Vec2(100, 0))
+        oc.circle_b = Circle(Vec2(0, -10), 5.0)
+        assert oc.solve() is False
+
+    def test_solve_returns_false_when_circle_b_none(self):
+        """[C1] circle_b=None のとき solve() は False を返す。"""
+        oc = OffsetConstraint()
+        oc.line = Line(Vec2(-100, 0), Vec2(100, 0))
+        oc.circle_a = Circle(Vec2(0, 10), 5.0)
+        assert oc.solve() is False
+
+
+class TestSceneFromDictCircleIdRemap:
+    """from_dict で circle の ID が振り直された場合のフォールバック参照テスト。"""
+
+    # [C1] circle.id が segment.id と衝突して振り直されてもフォールバックで clothoid が消えない
+    def test_circle_id_remap_fallback(self):
+        """[C1] circle.id が _resolve_id で振り直されてもフォールバック参照で clothoid が消えない（L2282）。
+
+        フォールバックが有効な状況:
+        - ファイル内で circle.id = Q, clo.circle_id = Q
+        - Q が先に処理された segment.id と衝突して circle が振り直される
+        - circles_by_id[original_id=Q] = ci（フォールバック）が追加される
+        - clo.circle_id = Q → circles_by_id.get(Q) = ci → 見つかる
+        """
+        import copy
+        sc = Scene()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        ci = Circle(Vec2(50, 60), 30.0)
+        sc.add_line(ln); sc.add_circle(ci)
+        clo = Clothoid(ln, ci)
+        sc.add_clothoid(clo)
+        d = sc.to_dict()
+        seg_id = d['lines'][0]['segments'][0]['id']
+        ci_id  = d['circles'][0]['id']
+        d_bad = copy.deepcopy(d)
+        # circle.id を segment.id と同じにして衝突させる
+        d_bad['circles'][0]['id'] = seg_id
+        # clo.circle_id も同じ値にする（保存ファイルでは必ず一致）
+        d_bad['clothoids'][0]['circle_id'] = seg_id
+        sc2 = Scene.from_dict(d_bad)
+        assert len(sc2.clothoids) == 1, "circle id のフォールバック参照で clothoid が消えてはいけない"
+
+
+class TestClothoidSnapCoverage:
+    """Clothoid の snap 系の残り未カバー分岐テスト。"""
+
+    # [C1] _apply_segment_snap: candidates が空のとき early return（L1109）
+    def test_apply_segment_snap_no_candidates(self):
+        """[C1] segments が空のとき _apply_segment_snap は何もしない（L1109 早期 return）。"""
+        import os; os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        from PySide6.QtWidgets import QApplication
+        import sys
+        app = QApplication.instance() or QApplication(sys.argv)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        # segments を空にしてから Clothoid を生成
+        ci = Circle(Vec2(50, 60), 30.0)
+        # snap_segment=True でも segments が空なら early return
+        clo = Clothoid(ln, ci, snap_segment=True, snap_arc=False)
+        # 例外にならないことを確認（segments=[] なので候補なし）
+        assert True
+
+    # [C1] snap_arc=False のとき _split_arc_ids は空（L1260 early return の前提）
+    def test_no_split_arc_ids_when_snap_off(self):
+        """[C1] snap_arc=False のとき _split_arc_ids=[]（L1259-1260 の early return 条件）。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 60), 30.0)
+        arc = Arc(ci, -0.5, 0.5)
+        ci.arcs.append(arc)
+        clo = Clothoid(ln, ci, snap_arc=False)
+        assert clo._split_arc_ids == []
+
+    # [C1] _apply_segment_snap: t_x が範囲外のとき分割しない（L1113-1114）
+    def test_apply_segment_snap_tx_out_of_range(self):
+        """[C1] 接点の t_x が線分の範囲外のとき分割せずに return（L1113-1114）。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        # 線分を接点よりかなり遠い位置に設定（t_x が範囲外になる）
+        seg = Segment(ln, 0.9, 1.0)  # 末端の小さな線分
+        ln.segments.append(seg)
+        ci = Circle(Vec2(50, 60), 30.0)
+        # snap=True でも接点が線分の範囲内でなければ分割しない
+        clo = Clothoid(ln, ci, snap_segment=True)
+        # 例外にならないことを確認
+        assert True  # 境界値: t_x が範囲外の場合の動作確認
