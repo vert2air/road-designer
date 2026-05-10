@@ -31,6 +31,7 @@ class MainWindow(QMainWindow):
     3D ビューアの両方で使われる共通ヘルパーとして MainWindow に集約している。
     """
     def __init__(self):
+        """MainWindow を初期化する。UI・メニュー・ツールバー・シグナルを構築する。"""
         super().__init__()
         self.setWindowTitle("道路設計アプリ")
         self.resize(1400, 800)
@@ -60,6 +61,7 @@ class MainWindow(QMainWindow):
 
     @scene.setter
     def scene(self, s: Scene):
+        """Scene を差し替える（Canvas の scene に委譲する）。"""
         self._canvas.scene = s
 
     def _build_ui(self):
@@ -266,10 +268,18 @@ class MainWindow(QMainWindow):
 
     # ─── ツールバー/メニュー操作 ─────────────────────────────
     def _toggle_right_panel(self):
+        """メニューのチェック状態に合わせて右パネルの表示を切り替える。"""
         visible = self._act_right_panel.isChecked()
         self._set_right_panel_visible(visible)
 
     def _set_right_panel_visible(self, visible: bool):
+        """右パネル・チェックボックス・メニュー項目の表示状態を一括で設定する。
+
+        Parameters
+        ----------
+        visible : bool
+            ``True`` のとき表示、``False`` のとき非表示にする。
+        """
         self._right_panel.setVisible(visible)
         self._chk_right.setChecked(visible)
         self._act_right_panel.setChecked(visible)
@@ -330,6 +340,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "読み込みエラー", str(e))
 
     def _clear_all(self):
+        """全データを削除する。確認ダイアログを表示し、承認時に Undo に記録する。"""
         r = QMessageBox.question(self, "確認", "全データを削除しますか？",
                                   QMessageBox.StandardButton.Yes |
                                   QMessageBox.StandardButton.No)
