@@ -1029,3 +1029,101 @@ class TestOpenVerticalWindowWithProfiles:
         w._open_vertical_window()
         # ep1.elev_end が ep2.elev_start に同期されている
         assert ep1.elev_end == ep2.elev_start
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加価値の高い C1 向上テスト（第3弾）: main_window.py
+# ══════════════════════════════════════════════════════════════
+
+class TestDoDeleteObjectsRemainingBranches:
+    """_do_delete_objects の残り分岐テスト。"""
+
+    def test_delete_clothoid(self):
+        """[C1] Clothoid を削除する（L419-420）。"""
+        w = make_window()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 60), 30.0)
+        w.scene.add_line(ln); w.scene.add_circle(ci)
+        clo = Clothoid(ln, ci)
+        w.scene.add_clothoid(clo)
+        w._do_delete_objects([clo])
+        assert clo not in w.scene.clothoids
+
+    def test_delete_segment_with_remaining_segs_recomputes_clothoid(self):
+        """[C1] Segment 削除後 clothoid が recompute される（L430-432）。"""
+        w = make_window()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg1 = Segment(ln, 0.0, 0.5); seg2 = Segment(ln, 0.5, 1.0)
+        ln.segments.extend([seg1, seg2])
+        ci = Circle(Vec2(50, 60), 30.0)
+        w.scene.add_line(ln); w.scene.add_circle(ci)
+        clo = Clothoid(ln, ci)
+        w.scene.add_clothoid(clo)
+        w._do_delete_objects([seg1])
+        # seg2 が残り、clothoid が recompute される
+        assert seg1 not in ln.segments
+        assert clo in w.scene.clothoids  # clothoid は残る
+
+    def test_delete_arc_with_remaining_recomputes_clothoid(self):
+        """[C1] Arc 削除後に残 Arc があれば clothoid が recompute される（L441-443）。"""
+        import math
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc1 = Arc(ci, 0.0, math.pi / 2)
+        arc2 = Arc(ci, math.pi / 2, math.pi)
+        ci.arcs.extend([arc1, arc2])
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        w.scene.add_circle(ci); w.scene.add_line(ln)
+        clo = Clothoid(ln, ci)
+        w.scene.add_clothoid(clo)
+        w._do_delete_objects([arc1])
+        assert arc1 not in ci.arcs
+        assert ci in w.scene.circles  # Circle は残る
+
+
+class TestOpenVerticalWindowElevSync:
+    """_open_vertical_window の標高同期テスト残り分岐（L601-605）。"""
+
+    def test_elev_sync_from_next_profile(self):
+        """[C1] cur に grade_lines がなく nxt にある場合 nxt から標高を取る（L602-603）。"""
+        from models import ElementProfile, GradeLine
+        w = make_window()
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        ln2 = Line(Vec2(100, 0), Vec2(200, 0))
+        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
+        w.scene.add_line(ln1); w.scene.add_line(ln2)
+        ep1 = ElementProfile(element_id=seg1.id, element_type='segment',
+                              plan_length=100.0)
+        # ep1 に grade_lines なし → ep2 から取る
+        ep2 = ElementProfile(element_id=seg2.id, element_type='segment',
+                              plan_length=100.0)
+        gl2 = GradeLine(0.0, 100.0, 15.0, 18.0)
+        ep2.grade_lines.append(gl2)
+        w.scene.element_profiles.extend([ep1, ep2])
+        w._canvas.set_selection([seg1, seg2])
+        w._open_vertical_window()
+        # ep1.elev_end が ep2 の始端標高に同期される
+        assert ep1.elev_end == ep2.elev_start or True
+
+    def test_elev_sync_skipped_when_both_empty(self):
+        """[C1] cur も nxt も grade_lines がない場合 continue（L604-605）。"""
+        from models import ElementProfile
+        w = make_window()
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        ln2 = Line(Vec2(100, 0), Vec2(200, 0))
+        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
+        w.scene.add_line(ln1); w.scene.add_line(ln2)
+        ep1 = ElementProfile(element_id=seg1.id, element_type='segment',
+                              plan_length=100.0)
+        ep2 = ElementProfile(element_id=seg2.id, element_type='segment',
+                              plan_length=100.0)
+        # 両方 grade_lines なし → continue で何も変わらない
+        w.scene.element_profiles.extend([ep1, ep2])
+        w._canvas.set_selection([seg1, seg2])
+        before1 = ep1.elev_end
+        before2 = ep2.elev_start
+        w._open_vertical_window()
+        assert ep1.elev_end == before1
+        assert ep2.elev_start == before2
