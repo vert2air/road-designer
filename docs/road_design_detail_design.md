@@ -546,6 +546,7 @@ Undo 機能は `Canvas.push_undo()` が `scene.to_dict()` で Scene 全体を JS
 | `lines` | `list[Line]` | 全直線 |
 | `circles` | `list[Circle]` | 全円 |
 | `clothoids` | `list[Clothoid]` | 全クロソイド |
+| `offset_constraints` | `list[OffsetConstraint]` | オフセット拘束 |
 | `element_profiles` | `list[ElementProfile]` | 縦断線形データ（要素単位） |
 | `vertical_alignments` | `list[VerticalAlignment]` | 旧フォーマット互換用 |
 | `segment_snaps` | `list[SegmentSnap]` | 線分端点の接続情報 |
@@ -590,19 +591,104 @@ Undo 機能は `Canvas.push_undo()` が `scene.to_dict()` で Scene 全体を JS
 | `Circle` | 参照するクロソイド |
 | `Clothoid` | 参照する直線と円 |
 
+#### `_fix_duplicate_ids()`
+
+`to_dict()` の呼び出し前に実行され、Scene 内の ID 重複を検出して自動修正する。全図形（`Line`→`Segment`→`Circle`→`Arc`→`Clothoid`→`OffsetConstraint`）を順に走査し、`seen` セットで衝突を検出したら `new_id()` で振り直す。
+
+- **目的**: 保存ファイルに ID 重複が混入することを防ぎ、次回 open 時にクロソイドが消える問題を根本防止する
+- **エッジケース**: 通常の操作では ID 重複は発生しないが、古いファイルのロード後やバグによる不整合が蓄積した場合に機能する
+
 #### `to_dict() / from_dict(d)`
 
-**to_dict**: 全図形を JSON シリアライズ可能な dict に変換する。各図形の `id` の直後に `nickname` を挿入する。
+**to_dict**: `_fix_duplicate_ids()` を呼び ID 重複を修正してから全図形を JSON シリアライズ可能な dict に変換する。各図形の `id` の直後に `nickname` を挿入する。`offset_constraints` も含む。
 
 **from_dict**: 以下の順序で復元する:
-1. `lines`（`segments` を含む）→ `lines_by_id` に格納
-2. `circles`（`arcs` を含む）→ `circles_by_id` に格納
+1. `lines`（`segments` を含む）→ `lines_by_id` に格納。**元の id（振り直し前）でもフォールバック参照を保持**する
+2. `circles`（`arcs` を含む）→ `circles_by_id` に格納。**同様にフォールバック参照を保持**する
 3. `clothoids`（`line_id`, `circle_id` で参照解決）
-4. `element_profiles`, `vertical_alignments`
-5. 旧フォーマット互換（トップレベルの `grade_lines`/`vertical_curves`）
-6. 全 ID の最大値 + 1 でカウンタを再設定
+4. `offset_constraints`（`line_id`, `ca_id`, `cb_id` で参照解決）
+5. `element_profiles`, `vertical_alignments`
+6. 旧フォーマット互換（トップレベルの `grade_lines`/`vertical_curves`）
+7. 全 ID の最大値 + 1 でカウンタを再設定
 
-**ID 衝突検出（`_resolve_id`）**: `seen_ids` セットで衝突を検出し、衝突した ID は `new_id()` で振り直す。
+**ID 衝突検出（`_resolve_id`）**: `seen_ids` セットで衝突を検出し、衝突した ID は `new_id()` で振り直す。振り直し後も `lines_by_id[original_id] = ln` / `circles_by_id[original_id] = ci` のフォールバックエントリを追加することで、clothoid の `line_id` / `circle_id` が振り直し前の値でも参照を解決できる。これにより ID 重複を持つファイル（`Line#6` と `Segment#6` が同じ id を持つ等）を開いたときもクロソイドが消えない。
+
+---
+
+### 1.14b `OffsetConstraint` データクラス
+
+直線 S を 2 つの円 A・B に対してオフセット距離で拘束するデータクラス。`@dataclass` で実装する。
+
+#### フィールド
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `id` | `int` | グローバルユニーク ID（`new_id()` で採番） |
+| `line` | `object` | 拘束される直線 S（循環参照回避のため `object` 型） |
+| `circle_a` | `object` | 円 A |
+| `circle_b` | `object` | 円 B |
+| `off_a` | `float` | 直線 S と円 A のオフセット量 [m]（正=外側、負=内側） |
+| `off_b` | `float` | 直線 S と円 B のオフセット量 [m] |
+| `feasible` | `bool` | 最後の `solve()` が成功したとき `True`（デフォルト `True`） |
+
+内部フィールド（`__post_init__` で初期化、`to_dict` に含まれない）:
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `_eps_a` | `int` | 円 A の法線方向符号（`+1` / `-1` / `0` = 未設定） |
+| `_eps_b` | `int` | 円 B の法線方向符号 |
+
+#### `__post_init__()`
+
+`_eps_a = 0`, `_eps_b = 0` に初期化する（0 は未設定を意味し、後方互換モードで動作する）。
+
+#### `calc_offsets_from_current()`
+
+現在の直線と 2 円の位置関係から `off_a`・`off_b`・`_eps_a`・`_eps_b` を算出して設定する。
+
+- `off_a = distance_to(circle_a.center) - circle_a.radius`
+- `off_b = distance_to(circle_b.center) - circle_b.radius`
+- `_eps_a = -sign(signed_dist(circle_a.center))`（ca が直線の左側なら `_eps_a = -1`）
+- `_eps_b =  sign(signed_dist(circle_b.center))`（cb が直線の左側なら `_eps_b = +1`）
+
+これにより設定時点の「直線が各円のどちら側にあるか」が `_eps_a`・`_eps_b` に固定される。
+
+#### `solve() -> bool`
+
+`off_a`・`off_b`・`_eps_a`・`_eps_b` から直線 S の参照点を再計算する。
+
+**数式**:
+
+直線の方程式 `n·x = c`（`n`: 法線単位ベクトル、`c`: 切片）とする。
+
+```
+c = n · ca.center + ε_a · ra  （ra = ca.radius + off_a）
+s_a_new = -ε_a · ra
+s_b_new =  ε_b · rb
+n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
+```
+
+**アルゴリズム**:
+1. `_eps_a`・`_eps_b` が設定済み（非零）なら 1 通りの `(ε_a, ε_b)` のみで解を求める。未設定なら 4 通りの全組み合わせを列挙する
+2. `rhs = (ε_b·rb + ε_a·ra) / L` を計算（`L`: 2 円の中心間距離）
+3. `|rhs| > 1.0` なら解なし（この組み合わせをスキップ）
+4. `θ = φ ± acos(rhs)`（`φ = atan2(ab.y, ab.x)`）から法線 `n` と切片 `c` を決定
+5. `sign_delta` が 2 通りある場合は現在の直線方向との内積が最大のものを選ぶ
+6. 直線方向と内積が負なら `d` を反転して向きを揃える
+7. 各円の垂線の足を `ref_start`・`ref_end` に割り当てる（`ref_start` に近い方を優先）
+8. `feasible = True` を設定して `True` を返す
+
+**失敗条件**（`feasible = False` を設定して `False` を返す）:
+- 2 円の中心が一致（`L < 1e-9`）
+- 全ての `(ε_a, ε_b)` 組み合わせで `|rhs| > 1.0`（距離拘束が矛盾）
+
+- **エッジケース**: `feasible=False` のとき直線は変更せず保持する。2 円が再び適切な位置に移動すると次の `solve()` が成功して追従を再開する
+
+#### `to_dict() / from_dict(d, lines_by_id, circles_by_id)`
+
+**to_dict**: `{"id", "line_id", "ca_id", "cb_id", "off_a", "off_b"}` 形式の辞書を返す。`_eps_a`・`_eps_b`・`feasible` は含まれない（ロード後に再計算）。
+
+**from_dict**: 辞書から `OffsetConstraint` を復元する。`lines_by_id`・`circles_by_id` で参照を解決する。
 
 ---
 
@@ -895,7 +981,7 @@ screen_y = -p.y * scale + offset.y   # y 反転
 #### `mousePressEvent(event)`
 
 左ボタン + **選択モード**:
-1. `_hit_handle(sw)` でハンドルヒット判定 → ヒットすれば `_drag_handle` に設定し `push_undo()` を呼ぶ
+1. `_hit_handle(sw)` でハンドルヒット判定 → ヒットすれば `push_undo()` を呼んでから `_drag_obj` に設定（ドラッグ前の状態を Undo スタックに保存）
 2. ハンドルなし → `_hit_object(sw)` で図形ヒット判定
    - `Shift` なし: ヒットした図形のみ選択（`_selected = [obj]`）
    - `Shift` あり: `_selected` に追加または除去（トグル）
@@ -927,9 +1013,10 @@ screen_y = -p.y * scale + offset.y   # y 反転
 
 #### `mouseReleaseEvent(event)`
 
-**ドラッグ終了**（`_drag_handle` が設定済み）:
+**ドラッグ終了**（`_drag_obj` が設定済み）:
 - `_mouse_moved_px > 2` のとき（実際に移動した場合）: `scene_changed.emit()` でコミット
-- `_drag_handle = None` でドラッグ状態をリセット
+- ドラッグが完了したとき `selection_changed.emit(self._selected)` を発行し、右パネルのプロパティを即座に更新する
+- `_drag_obj = None` でドラッグ状態をリセット
 
 **円モード左ボタンリリース**:
 - `_circle_center` が設定済みの場合: `radius = (w - _circle_center).length()` を計算
@@ -1012,9 +1099,21 @@ screen_y = -p.y * scale + offset.y   # y 反転
 
 #### `_propagate_circle(ci)`
 
-円 `ci` の中心・半径が変更されたあとに呼ばれる。円に接続しているクロソイドの接点・点列を再計算し、ArcSnap で接続された円弧端点を追従させる。`_propagate_line()` と対になる存在。
+円 `ci` の中心・半径が変更されたあとに呼ばれる。円に接続しているクロソイドの接点・点列を再計算し、ArcSnap で接続された円弧端点を追従させ、オフセット拘束（`OffsetConstraint`）で直線を追従させる。`_propagate_line()` と対になる存在。
 
-円変更をクロソイドと ArcSnap に伝播する。
+円変更をクロソイドと ArcSnap とオフセット拘束に伝播する。
+
+1. `ci` を参照するクロソイドに `compute()` を呼ぶ
+2. `_propagate_arc_snaps(ci)` で ArcSnap 追従
+3. `_propagate_offset_constraints(ci)` でオフセット拘束追従
+
+#### `_propagate_offset_constraints(ci)`
+
+`ci` が `circle_a` または `circle_b` として含まれる全 `OffsetConstraint` に対して `solve()` を実行する。
+
+- `solve()` の成否にかかわらず `_propagate_line(oc.line)` を呼んで関連クロソイドも追従させる
+- `scene_changed.emit()` と `update()` を呼んで再描画する
+- **設計意図**: `feasible=False`（矛盾状態）でも `_propagate_line` を呼ぶのは、Clothoid が直線の現在位置（変更されていない正しい位置）に追従し続けるため
 
 #### `_propagate_arc_snaps(ci)`
 
@@ -1752,6 +1851,9 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 - `Canvas.scene_changed` → `_on_scene_changed`
 - `Canvas.mouse_world_pos` → `RightPanel.update_mouse_pos`
 - `RightPanel` の各 `request_*` → 対応する `_do_*` メソッド
+- `RightPanel.request_set_offset` → `_do_set_offset_constraint`
+- `RightPanel.request_clear_offset` → `_do_clear_offset_constraint`
+- `RightPanel.request_push_undo` → `Canvas.push_undo`
 
 #### `_on_scene_changed()`
 
@@ -1825,6 +1927,25 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 #### `_do_flip_clothoid(clo)`
 
 `push_undo()` 後に `clo.reversed_flag = not clo.reversed_flag` を設定し `clo.compute()` を呼ぶ。
+
+#### `_do_set_offset_constraint(ln, ci_a, ci_b)`
+
+`RightPanel.request_set_offset` シグナルを受けてオフセット拘束を新規設定する。
+
+1. 同じ組み合わせの既存拘束がある場合は何もしない（重複防止）
+2. `push_undo()` を呼ぶ
+3. `OffsetConstraint(line=ln, circle_a=ci_a, circle_b=ci_b)` を生成
+4. `oc.calc_offsets_from_current()` で初期 `off_a`・`off_b`・`_eps_a`・`_eps_b` を算出
+5. `scene.offset_constraints.append(oc)`
+6. `scene_changed.emit()` → `RightPanel.update_selection()` で右パネルを更新
+
+#### `_do_clear_offset_constraint(ln)`
+
+`RightPanel.request_clear_offset` シグナルを受けて直線 `ln` に関連するオフセット拘束を解除する。
+
+1. `push_undo()` を呼ぶ
+2. `scene.offset_constraints = [oc for oc in ... if oc.line is not ln]` でフィルタリング
+3. `scene_changed.emit()` → `RightPanel.update_selection()` で右パネルを更新
 
 #### `scene` プロパティ
 
@@ -1945,7 +2066,9 @@ Scene 内の全図形のコンボラベルリストを返す。タイプ別に�
 
 #### `update_selection(selected, scene)`
 
-外部から選択変更を受け取る。`_refresh_nick_combos()` → `_sync_combos_to_selection()` → `_rebuild_props()` の順に呼ぶ。
+外部から選択変更を受け取る。`_sync_combos_to_selection()` → `_refresh_nick_combos()` → `_rebuild_props()` の順に呼ぶ。
+
+**処理順の設計意図**: `_sync_combos_to_selection()` を先に呼んで 1 個目のコンボに選択図形を設定してから `_refresh_nick_combos()` を呼ぶことで、「手段を問わずコンボが設定されたら次のコンボの高優先候補を更新する」要件を満たす。逆順（先に refresh）だと `prev_obj` が未設定の状態で隣接候補を計算してしまう。
 
 #### `_sync_combos_to_selection(selected)`
 
@@ -1970,6 +2093,7 @@ Canvas での選択をコンボボックスに反映する。コンボの数が�
 | 2 | Line + Line（または Segment 経由） | `_build_two_lines()` |
 | 2 | Line + Circle（または Segment 経由） | `_build_line_circle()` |
 | 2 | その他 | 各図形に `_build_single()` を呼ぶ |
+| 3 | Circle + Circle + Line | `_build_offset_constraint()` |
 | 3以上 | — | 図形数とニックネーム一覧を表示 |
 
 #### `_build_single(obj)`
@@ -2008,6 +2132,7 @@ Canvas での選択をコンボボックスに反映する。コンボの数が�
 `add_vec2` のコールバック:
 - `on_x(v)`: X 入力 → `set_fn(Vec2(v, get_fn().y))`
 - `on_y(v)`: Y 入力 → `set_fn(Vec2(get_fn().x, v))`
+- 各コールバックの初回呼び出し時に `request_push_undo.emit()` を発行してから変更を適用する（`_undo_pushed` フラグで同一編集セッション中は1回のみ）
 - 変更後: `_propagate_line()` → `scene_changed.emit()`
 
 方向角（読み取り専用ラベル）を `math.degrees(ln.angle)` で表示する。
@@ -2020,6 +2145,7 @@ Canvas での選択をコンボボックスに反映する。コンボの数が�
 - `on_cx(v)`: `ci.center.x = v` → `_propagate_circle()`
 - `on_cy(v)`: `ci.center.y = v` → `_propagate_circle()`
 - `on_r(v)`: `ci.radius = max(0.01, v)` → `_propagate_circle()`（半径の最小値 `0.01m`）
+- 各コールバックの初回呼び出し時に `request_push_undo.emit()` を発行する（`_undo_pushed` フラグで制御）
 
 #### `_build_clothoid_props(clo)`
 
@@ -2125,6 +2251,25 @@ X/Y 入力後の表示更新は `_refresh_seg_display()` で行う。
 - 折れ線接続: `request_polyline_connect.emit(a, b)`
 - スムーズ接続: `request_smooth_connect.emit(a, b)`
 - 接続解除: `request_disconnect.emit(a, b)`
+
+#### `_build_offset_constraint(ln, ci_a, ci_b)`
+
+円 2 個と直線 1 本が選択されたときのオフセット拘束パネルを構築する。
+
+**スムーズ接続の円チェック**: `ci_a` または `ci_b` に `bisector_dir` が設定されている（スムーズ接続で生成された円）場合は警告ラベルを表示して設定不可とする。
+
+**既存拘束の検索**: `scene.offset_constraints` から `oc.line is ln and {oc.circle_a, oc.circle_b} == {ci_a, ci_b}` を満たす拘束を検索する。
+
+**未設定時のパネル構成**:
+- 直線・円 A・円 B のニックネームを `QLabel` で表示
+- `off_a`・`off_b` のスピンボックス（初期値 0）を `QFormLayout` で配置
+- 「オフセット拘束を設定」ボタン → `request_set_offset.emit(ln, ci_a, ci_b)`
+
+**設定済み時のパネル構成**:
+- `off_a`・`off_b` のスピンボックス（現在値で初期化）
+  - `valueChanged` → `existing.off_a/off_b` を更新して `existing.solve()` → `scene_changed.emit()`（リアルタイム反映）
+- 現在距離の情報ラベル（`distance_to(center)` vs `radius + off`）
+- 「オフセット拘束を解除」ボタン → `request_clear_offset.emit(ln)`
 
 #### `_build_line_circle(ln, ci)`
 

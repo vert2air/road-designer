@@ -65,7 +65,7 @@ road_designer/
 | ファイル | 役割 |
 |---|---|
 | `main.py` | エントリーポイント |
-| `models.py` | データモデル（`Line`・`Segment`・`Circle`・`Arc`・`Clothoid`・`ElementProfile` 等）、`resolve_chain`・`tangent_at` などのユーティリティ関数 |
+| `models.py` | データモデル（`Line`・`Segment`・`Circle`・`Arc`・`Clothoid`・`ElementProfile`・`OffsetConstraint` 等）、`resolve_chain`・`tangent_at` などのユーティリティ関数 |
 | `canvas.py` | メイン編集キャンバス（描画・マウス操作・ハンドル） |
 | `right_panel.py` | 右パネル（図形選択コンボ・プロパティ表示・操作ボタン） |
 | `vertical_window.py` | 縦断線形設計ウィンドウ |
@@ -207,13 +207,16 @@ GitHub Actions により push / PR のたびに自動テストを実行します
   - デフォルト snap off。スムーズ接続で自動生成した場合のみ on
   - 反転フラグ（同一直線・円に 2 本作成可能）
 - **接続操作**: 折れ線接続・スムーズ接続（クロソイドを自動生成）・接続解除
-- **ハンドル編集**: 参照点・端点・半径・共有点をドラッグで変形
-- **Undo**: 最大 500 手順
+- **オフセット拘束**: 直線を 2 つの円に対してオフセット量で拘束する。円の移動・変形に直線が自動追従（詳細は後述）
+- **ハンドル編集**: 参照点・端点・半径・共有点をドラッグで変形。ドラッグ操作は Undo に記録される
+- **Undo**: 最大 500 手順。ハンドルドラッグ・右パネルからのプロパティ変更も対象
 
 ### 右パネル
 
 - 図形選択コンボボックス（隣接図形を優先表示、`[順]`/`[逆]` で接続方向を表示）
-- プロパティの数値入力による精密編集
+  - 1個目を選択すると直ちに2個目の高優先候補が更新される（手段を問わず）
+- プロパティの数値入力による精密編集（変更は Undo に記録）
+- ドラッグ完了後にプロパティが即座に更新される
 - 縦断設計情報の表示（勾配直線・縦断曲線の一覧）
 - 図形の削除・再描画ボタン
 
@@ -234,8 +237,21 @@ GitHub Actions により push / PR のたびに自動テストを実行します
 ### ファイル
 
 - `.rdjson` 形式（JSON）で保存・読み込み
-- ID 衝突を自動検出・修正（`_resolve_id()`）
+- 保存前に ID 重複を自動検出・修正（`_fix_duplicate_ids()`）
+- ロード時の ID 衝突を自動検出・振り直し（`_resolve_id()`）。振り直しが起きてもクロソイドの参照が失われない
 - 旧フォーマット（トップレベル `nicknames`）との後方互換
+
+### オフセット拘束
+
+円 A・円 B・直線 S の 3 図形を選択した状態で右パネルから設定する。
+
+- 直線 S から円 A の中心への垂直距離 = `A.radius + off_a` を常に維持
+- 直線 S から円 B の中心への垂直距離 = `B.radius + off_b` を常に維持
+- 円の移動・半径変更に合わせて直線が自動追従
+- `off_a`・`off_b` は右パネルのスピンボックスでリアルタイム編集可能
+- スムーズ接続で生成された円（`bisector_dir` が設定された円）は設定不可
+- 法線方向（直線が 2 円の間・外側のどちら側にあるか）を設定時点から維持する
+- 距離拘束が成立しない状態（2 円が近すぎる等）では直線を変更せず、条件が回復次第追従を再開する
 
 ## データモデル概要
 
@@ -245,7 +261,8 @@ Scene
 │   └── segments: list[Segment]
 ├── circles: list[Circle]
 │   └── arcs: list[Arc]
-├── clothoids: list[Clothoid]       # line + circle で定義
+├── clothoids: list[Clothoid]              # line + circle で定義
+├── offset_constraints: list[OffsetConstraint]  # 直線-2円のオフセット拘束
 └── element_profiles: list[ElementProfile]  # 縦断線形データ
     ├── grade_lines: list[GradeLine]
     └── vertical_curves: list[VerticalCurve]

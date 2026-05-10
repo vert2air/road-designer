@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 from typing import Optional, Callable
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
     QDoubleSpinBox, QGroupBox, QScrollArea, QFrame, QLineEdit,
     QCheckBox, QComboBox, QSizePolicy
 )
@@ -69,17 +69,67 @@ def _style_disabled(btn: QPushButton, disabled: bool):
 
 
 class RightPanel(QWidget):
-    request_smooth_connect  = Signal(object, object)   # line_a, line_b
+    """右パネル。図形選択コンボ・プロパティ表示・操作ボタンを提供する。
+
+    ``Canvas`` と直接参照し合わず、``request_*`` シグナルを ``MainWindow``
+    に送ることで疎結合を保つ。
+
+    Signals
+    -------
+    request_smooth_connect : Signal(object, object)
+        スムーズ接続を要求する。引数: ``(line_a, line_b)``。
+    request_polyline_connect : Signal(object, object)
+        折れ線接続を要求する。引数: ``(line_a, line_b)``。
+    request_disconnect : Signal(object, object)
+        接続解除を要求する。引数: ``(line_a, line_b)``。
+    request_add_clothoid : Signal(object, object)
+        クロソイド追加を要求する。引数: ``(line, circle)``。
+    request_delete_clothoid : Signal(object)
+        クロソイド削除を要求する。引数: ``clothoid``。
+    request_flip_clothoid : Signal(object)
+        クロソイド反転を要求する。引数: ``clothoid``。
+    request_select : Signal(list)
+        選択変更を要求する。引数: 選択図形のリスト。
+    request_delete : Signal(list)
+        図形削除を要求する。引数: 削除する図形のリスト。
+    request_set_offset : Signal(object, object, object)
+        オフセット拘束設定を要求する。引数: ``(line, ci_a, ci_b)``。
+    request_clear_offset : Signal(object)
+        オフセット拘束解除を要求する。引数: ``line``。
+    request_push_undo : Signal()
+        プロパティ変更前の Undo スタックへの push を要求する。
+        プロパティ編集コールバックの初回呼び出し時に1回だけ発行する。
+    scene_changed : Signal()
+        シーン変更を通知する。
+    """
+    request_smooth_connect   = Signal(object, object)   # line_a, line_b
     request_polyline_connect = Signal(object, object)
-    request_disconnect      = Signal(object, object)
-    request_add_clothoid    = Signal(object, object)   # line, circle
-    request_delete_clothoid = Signal(object)
-    request_flip_clothoid   = Signal(object)
-    request_select          = Signal(list)
-    request_delete          = Signal(list)   # 削除要求
-    scene_changed           = Signal()
+    request_disconnect       = Signal(object, object)
+    request_add_clothoid     = Signal(object, object)   # line, circle
+    request_delete_clothoid  = Signal(object)
+    request_flip_clothoid    = Signal(object)
+    request_select           = Signal(list)
+    request_delete           = Signal(list)   # 削除要求
+    request_set_offset       = Signal(object, object, object)  # line, ci_a, ci_b
+    request_clear_offset     = Signal(object)                  # line
+    request_undo             = Signal()                        # Undo 要求
+    request_push_undo        = Signal()                        # プロパティ変更前の状態保存
+    scene_changed            = Signal()
 
     def __init__(self, scene: Scene, parent=None):
+        """RightPanel を初期化する。
+
+        コンボボックスエリア・プロパティエリア・ボタン群を構築する。
+        ``_block`` フラグは UI 操作によるモデル更新が再帰的に UI を更新する
+        ことを防ぐために使用する。
+
+        Parameters
+        ----------
+        scene : Scene
+            初期状態の Scene オブジェクト。
+        parent : QWidget, optional
+            親ウィジェット。
+        """
         super().__init__(parent)
         self.scene = scene
         self._selected: list = []
@@ -777,10 +827,25 @@ class RightPanel(QWidget):
 
     # ─── 選択変更時 ──────────────────────────────────────────
     def update_selection(self, selected: list, scene: Scene):
+        """外部（Canvas）から選択変更を受け取り、パネル全体を更新する。
+
+        処理順は ``_sync_combos_to_selection`` → ``_refresh_nick_combos``
+        → ``_rebuild_props`` の順で行う。先にコンボへ選択図形を設定してから
+        ``_refresh_nick_combos`` を呼ぶことで、設計画面でのクリック選択でも
+        右パネルのコンボ操作でも「手段を問わず 1 個目のコンボが設定された
+        直後に 2 個目の高優先候補が更新される」要件を満たす。
+
+        Parameters
+        ----------
+        selected : list
+            新しく選択された図形オブジェクトのリスト。
+        scene : Scene
+            現在の Scene オブジェクト。
+        """
         self.scene    = scene
         self._selected = selected
-        self._refresh_nick_combos()
-        self._sync_combos_to_selection(selected)
+        self._sync_combos_to_selection(selected)  # まず選択図形をコンボに設定
+        self._refresh_nick_combos()               # 設定後に次コンボの選択肢を更新
         self._rebuild_props()
 
     def _sync_combos_to_selection(self, selected: list):
@@ -856,6 +921,23 @@ class RightPanel(QWidget):
                 item.widget().deleteLater()
 
     def _rebuild_props(self):
+        """プロパティパネルの内容を選択状態に合わせて一から再構築する。
+
+        :meth:`_clear_props` で既存ウィジェットをすべて削除してから再生成する。
+        差分更新は行わない（状態管理の複雑さを避けるためのトレードオフ）。
+
+        選択図形の組み合わせに応じて呼ぶメソッドを切り替える:
+
+        * 0 個: 「図形を選択してください」ラベルを表示
+        * 1 個: :meth:`_build_single`
+        * 2 個 (Segment + Segment 同一直線): :meth:`_build_two_segments`
+        * 2 個 (Arc + Arc 同一円): :meth:`_build_two_arcs`
+        * 2 個 (Line + Line): :meth:`_build_two_lines`
+        * 2 個 (Line + Circle): :meth:`_build_line_circle`
+        * 2 個 その他: 各図形に :meth:`_build_single` を呼ぶ
+        * 3 個 (Circle + Circle + Line): :meth:`_build_offset_constraint`
+        * 3 個以上その他: 図形数とニックネーム一覧を表示
+        """
         self._clear_props()
         sel = self._selected
         n   = len(sel)
@@ -910,6 +992,13 @@ class RightPanel(QWidget):
             return
 
         # ── 3図形以上 ─────────────────────────────────────────
+        # 2円 + 1直線 → オフセット拘束
+        circles = [o for o in sel if isinstance(o, Circle)]
+        lines   = [o for o in sel if isinstance(o, Line)]
+        if len(circles) == 2 and len(lines) == 1 and n == 3:
+            self._build_offset_constraint(lines[0], circles[0], circles[1])
+            return
+
         self._prop_layout.addWidget(QLabel(f"{n} 個の図形が選択されています"))
         # それでも各図形のニックネームだけ表示
         for obj in sel:
@@ -1029,6 +1118,17 @@ class RightPanel(QWidget):
         self._prop_layout.addWidget(grp)
 
     def _build_line_props(self, ln: Line):
+        """直線プロパティパネルを構築して ``_prop_layout`` に追加する。
+
+        参照始点・参照終点の X/Y スピンボックスと方向角（読み取り専用）を表示する。
+        各スピンボックスの初回変更時に ``request_push_undo`` を発行し、
+        同一編集セッション中の連続変更は 1 手順として Undo に記録される。
+
+        Parameters
+        ----------
+        ln : Line
+            プロパティを表示・編集する直線。
+        """
         grp = QGroupBox("直線プロパティ")
         lay = QVBoxLayout(grp)
 
@@ -1048,13 +1148,18 @@ class RightPanel(QWidget):
             row = QHBoxLayout()
             sbx = _make_spinbox(get_fn().x)
             sby = _make_spinbox(get_fn().y)
+            _undo_pushed = [False]
             def on_x(v):
                 if self._block: return
+                if not _undo_pushed[0]:
+                    self.request_push_undo.emit(); _undo_pushed[0] = True
                 old = get_fn()
                 set_fn(Vec2(v, old.y))
                 self.scene_changed.emit()
             def on_y(v):
                 if self._block: return
+                if not _undo_pushed[0]:
+                    self.request_push_undo.emit(); _undo_pushed[0] = True
                 old = get_fn()
                 set_fn(Vec2(old.x, v))
                 self.scene_changed.emit()
@@ -1074,6 +1179,19 @@ class RightPanel(QWidget):
         self._prop_layout.addWidget(grp)
 
     def _build_circle_props(self, ci: Circle):
+        """円プロパティパネルを構築して ``_prop_layout`` に追加する。
+
+        中心 X/Y・半径のスピンボックスを表示する。
+        各スピンボックスの初回変更時に ``request_push_undo`` を発行し、
+        同一編集セッション中の連続変更は 1 手順として Undo に記録される。
+        変更後は ``Canvas._propagate_circle`` を経由してクロソイドや
+        オフセット拘束への伝播が行われる。
+
+        Parameters
+        ----------
+        ci : Circle
+            プロパティを表示・編集する円。
+        """
         grp = QGroupBox("円プロパティ")
         lay = QVBoxLayout(grp)
 
@@ -1082,16 +1200,23 @@ class RightPanel(QWidget):
         sb_cy = _make_spinbox(ci.center.y)
         sb_r  = _make_spinbox(ci.radius, 0.001, 1e6, 0.5)
 
+        _undo_pushed = [False]
         def on_cx(v):
             if self._block: return
+            if not _undo_pushed[0]:
+                self.request_push_undo.emit(); _undo_pushed[0] = True
             ci.center = Vec2(v, ci.center.y)
             self.scene_changed.emit()
         def on_cy(v):
             if self._block: return
+            if not _undo_pushed[0]:
+                self.request_push_undo.emit(); _undo_pushed[0] = True
             ci.center = Vec2(ci.center.x, v)
             self.scene_changed.emit()
         def on_r(v):
             if self._block: return
+            if not _undo_pushed[0]:
+                self.request_push_undo.emit(); _undo_pushed[0] = True
             ci.radius = max(0.001, v)
             self.scene_changed.emit()
 
@@ -1198,6 +1323,17 @@ class RightPanel(QWidget):
         self._prop_layout.addWidget(grp)
 
     def _build_segment_props(self, seg: Segment):
+        """線分プロパティパネルを構築して ``_prop_layout`` に追加する。
+
+        始点・終点の X/Y 座標と割合 t のスピンボックスを表示する。
+        X/Y 入力は直線上に束縛され ``Line.project_t`` で t 値に変換される。
+        各スピンボックスの初回変更時に ``request_push_undo`` を発行する。
+
+        Parameters
+        ----------
+        seg : Segment
+            プロパティを表示・編集する線分。
+        """
         grp = QGroupBox("線分プロパティ")
         lay = QVBoxLayout(grp)
         ln  = seg.line
@@ -1296,6 +1432,17 @@ class RightPanel(QWidget):
         self._block = False
 
     def _build_arc_props(self, arc: Arc):
+        """円弧プロパティパネルを構築して ``_prop_layout`` に追加する。
+
+        始点・終点の角度（度数）と X/Y 座標のスピンボックスを表示する。
+        X/Y 入力は円上に束縛され ``atan2`` で角度に変換される。
+        各スピンボックスの初回変更時に ``request_push_undo`` を発行する。
+
+        Parameters
+        ----------
+        arc : Arc
+            プロパティを表示・編集する円弧。
+        """
         grp = QGroupBox("円弧プロパティ")
         lay = QVBoxLayout(grp)
         ci  = arc.circle
@@ -1633,6 +1780,102 @@ class RightPanel(QWidget):
             ci.arcs.remove(arc_b)
 
     # ─── 2直線 ───────────────────────────────────────────────
+    def _build_offset_constraint(self, ln: 'Line',
+                                  ci_a: 'Circle', ci_b: 'Circle'):
+        """2 円 + 1 直線が選択されたときのオフセット拘束パネルを構築する。
+
+        スムーズ接続で生成された円（``bisector_dir`` が設定された円）は
+        設定不可として警告ラベルを表示して早期リターンする。
+
+        既存の ``OffsetConstraint`` がある場合（設定済み）:
+
+        * ``off_a``・``off_b`` のスピンボックス（``valueChanged`` でリアルタイム反映）
+        * 直線から各円の中心への現在距離と期待値（``R + off``）の情報ラベル
+        * 「オフセット拘束を解除」ボタン → ``request_clear_offset.emit(ln)``
+
+        既存の拘束がない場合（未設定）:
+
+        * ``off_a``・``off_b`` のスピンボックス（初期値 0）
+        * 「オフセット拘束を設定」ボタン → ``request_set_offset.emit(ln, ci_a, ci_b)``
+
+        Parameters
+        ----------
+        ln : Line
+            拘束する直線 S。
+        ci_a : Circle
+            円 A（スムーズ接続の円は不可）。
+        ci_b : Circle
+            円 B（スムーズ接続の円は不可）。
+        """
+        from models import OffsetConstraint
+
+        self._prop_layout.addWidget(QLabel("─ オフセット拘束 ─"))
+
+        # スムーズ接続の円は不可
+        for ci, label in ((ci_a, "円 A"), (ci_b, "円 B")):
+            if ci.bisector_dir is not None:
+                self._prop_layout.addWidget(
+                    QLabel(f"⚠ {label} はスムーズ接続の円です（設定不可）"))
+                return
+
+        # 既存の拘束を検索
+        existing = next(
+            (oc for oc in self.scene.offset_constraints
+             if oc.line is ln
+             and {oc.circle_a, oc.circle_b} == {ci_a, ci_b}),
+            None
+        )
+
+        grp = QGroupBox("オフセット拘束")
+        form = QFormLayout(grp)
+
+        nick_ln = self.scene.get_nickname(ln.id,   "line")
+        nick_a  = self.scene.get_nickname(ci_a.id, "circle")
+        nick_b  = self.scene.get_nickname(ci_b.id, "circle")
+        form.addRow("直線:",  QLabel(nick_ln))
+        form.addRow("円 A:", QLabel(nick_a))
+        form.addRow("円 B:", QLabel(nick_b))
+
+        off_a_init = existing.off_a if existing else 0.0
+        off_b_init = existing.off_b if existing else 0.0
+        sb_a = _make_spinbox(off_a_init, lo=-1000, hi=1000, step=0.1, decimals=3)
+        sb_b = _make_spinbox(off_b_init, lo=-1000, hi=1000, step=0.1, decimals=3)
+        form.addRow("off_a [m]:", sb_a)
+        form.addRow("off_b [m]:", sb_b)
+        self._prop_layout.addWidget(grp)
+
+        def on_off_changed():
+            if existing is not None and not self._block:
+                self._block = True
+                existing.off_a = sb_a.value()
+                existing.off_b = sb_b.value()
+                existing.solve()
+                self._block = False
+                self.scene_changed.emit()
+
+        sb_a.valueChanged.connect(on_off_changed)
+        sb_b.valueChanged.connect(on_off_changed)
+
+        if existing is None:
+            btn_set = QPushButton("オフセット拘束を設定")
+            btn_set.clicked.connect(
+                lambda: self.request_set_offset.emit(ln, ci_a, ci_b))
+            self._prop_layout.addWidget(btn_set)
+        else:
+            btn_clr = QPushButton("オフセット拘束を解除")
+            btn_clr.clicked.connect(
+                lambda: self.request_clear_offset.emit(ln))
+            self._prop_layout.addWidget(btn_clr)
+
+            da = ln.distance_to(ci_a.center)
+            db = ln.distance_to(ci_b.center)
+            self._prop_layout.addWidget(
+                QLabel(f"現在距離 A: {da:.3f} m  "
+                       f"(R+off={ci_a.radius + existing.off_a:.3f})"))
+            self._prop_layout.addWidget(
+                QLabel(f"現在距離 B: {db:.3f} m  "
+                       f"(R+off={ci_b.radius + existing.off_b:.3f})"))
+
     def _build_two_lines(self, a: Line, b: Line):
         grp = QGroupBox("2直線の接続操作")
         lay = QVBoxLayout(grp)

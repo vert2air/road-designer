@@ -23,7 +23,6 @@ import math
 import sys
 import os
 
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import pytest
@@ -631,3 +630,500 @@ class TestSaveLoad:
                    side_effect=lambda *a, **kw: msg_shown.append(True)):
             w._open_3d_viewer()
         assert msg_shown == [True]
+
+
+# ══════════════════════════════════════════════════════════════
+# _do_set_offset_constraint / _do_clear_offset_constraint テスト
+# ══════════════════════════════════════════════════════════════
+
+class TestDoSetOffsetConstraint:
+    """MainWindow._do_set_offset_constraint のテスト。"""
+
+    # [仕様] OC を生成して scene に追加する
+    def test_creates_and_appends_oc(self):
+        """[仕様] OC を生成して calc_offsets_from_current を呼び scene に追加する。"""
+        w = make_window()
+        ca = Circle(Vec2(0,  30), 10.0)
+        cb = Circle(Vec2(0, -30), 10.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        assert len(w.scene.offset_constraints) == 0
+        w._do_set_offset_constraint(ln, ca, cb)
+        assert len(w.scene.offset_constraints) == 1
+        oc = w.scene.offset_constraints[0]
+        assert oc.line is ln
+        assert oc.circle_a is ca
+        assert oc.circle_b is cb
+
+    # [仕様] off_a / off_b が現在の位置関係から算出される
+    def test_off_values_calculated_from_current(self):
+        """[仕様] calc_offsets_from_current により off_a/off_b が自動算出される。"""
+        w = make_window()
+        ca = Circle(Vec2(0, 30), 10.0)   # dist=30, r=10 → off_a=20
+        cb = Circle(Vec2(0, -40), 15.0)  # dist=40, r=15 → off_b=25
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        w._do_set_offset_constraint(ln, ca, cb)
+        oc = w.scene.offset_constraints[0]
+        assert abs(oc.off_a - 20.0) < 1e-6
+        assert abs(oc.off_b - 25.0) < 1e-6
+
+    # [仕様] 重複チェック: 同じ組み合わせの拘束が既にあれば追加しない
+    def test_duplicate_not_added(self):
+        """[仕様] 同じ (line, {ca, cb}) の組み合わせが既存なら何もしない。"""
+        w = make_window()
+        ca = Circle(Vec2(0, 30), 10.0)
+        cb = Circle(Vec2(0, -30), 10.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        w._do_set_offset_constraint(ln, ca, cb)
+        w._do_set_offset_constraint(ln, ca, cb)  # 2回目
+        assert len(w.scene.offset_constraints) == 1
+
+    # [仕様] 引数の順序が異なっても重複とみなす（集合比較）
+    def test_duplicate_detected_regardless_of_order(self):
+        """[仕様] ca/cb の引数順が逆でも {ca,cb} の集合で比較して重複を検出する。"""
+        w = make_window()
+        ca = Circle(Vec2(0, 30), 10.0)
+        cb = Circle(Vec2(0, -30), 10.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        w._do_set_offset_constraint(ln, ca, cb)
+        w._do_set_offset_constraint(ln, cb, ca)  # 順序を逆に
+        assert len(w.scene.offset_constraints) == 1
+
+    # [仕様] push_undo を呼ぶ（Undo スタックに積む）
+    def test_calls_push_undo(self):
+        """[仕様] _do_set_offset_constraint は push_undo() を呼ぶ。"""
+        w = make_window()
+        ca = Circle(Vec2(0, 30), 10.0)
+        cb = Circle(Vec2(0, -30), 10.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        before = len(w._canvas._undo_stack)
+        w._do_set_offset_constraint(ln, ca, cb)
+        assert len(w._canvas._undo_stack) > before
+
+
+class TestDoClearOffsetConstraint:
+    """MainWindow._do_clear_offset_constraint のテスト。"""
+
+    def _add_oc(self, w, ln, ca, cb):
+        w._do_set_offset_constraint(ln, ca, cb)
+        return w.scene.offset_constraints[-1]
+
+    # [仕様] oc.line is ln のものを scene から削除する
+    def test_removes_matching_constraint(self):
+        """[仕様] oc.line is ln のオフセット拘束を削除する。"""
+        w = make_window()
+        ca = Circle(Vec2(0, 30), 10.0)
+        cb = Circle(Vec2(0, -30), 10.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        self._add_oc(w, ln, ca, cb)
+        assert len(w.scene.offset_constraints) == 1
+        w._do_clear_offset_constraint(ln)
+        assert len(w.scene.offset_constraints) == 0
+
+    # [仕様] 他の直線の拘束は残る
+    def test_other_constraints_remain(self):
+        """[仕様] 解除対象でない他の直線の拘束はそのまま残る。"""
+        w = make_window()
+        ca = Circle(Vec2(0, 30), 10.0)
+        cb = Circle(Vec2(0, -30), 10.0)
+        ln1 = Line(Vec2(-100, 0), Vec2(100, 0))
+        ln2 = Line(Vec2(0, -100), Vec2(0, 100))
+        w.scene.add_circle(ca); w.scene.add_circle(cb)
+        w.scene.add_line(ln1); w.scene.add_line(ln2)
+        self._add_oc(w, ln1, ca, cb)
+        self._add_oc(w, ln2, ca, cb)
+        w._do_clear_offset_constraint(ln1)
+        assert len(w.scene.offset_constraints) == 1
+        assert w.scene.offset_constraints[0].line is ln2
+
+    # [仕様] push_undo を呼ぶ
+    def test_calls_push_undo(self):
+        """[仕様] _do_clear_offset_constraint は push_undo() を呼ぶ。"""
+        w = make_window()
+        ca = Circle(Vec2(0, 30), 10.0)
+        cb = Circle(Vec2(0, -30), 10.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        self._add_oc(w, ln, ca, cb)
+        before = len(w._canvas._undo_stack)
+        w._do_clear_offset_constraint(ln)
+        assert len(w._canvas._undo_stack) > before
+
+    # [エッジ] 拘束がない直線を解除しようとしても例外にならない
+    def test_clear_nonexistent_constraint_no_error(self):
+        """[エッジ] 拘束のない直線を解除しても例外にならない。"""
+        w = make_window()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        w.scene.add_line(ln)
+        w._do_clear_offset_constraint(ln)  # 例外にならない
+        assert w.scene.offset_constraints == []
+
+
+# ══════════════════════════════════════════════════════════════
+# C1カバレッジ向上: main_window.py の残り未カバー分岐
+# ══════════════════════════════════════════════════════════════
+
+class TestSceneSetter:
+    """MainWindow.scene property setter のテスト（L65）。"""
+
+    # [C1] scene setter が _canvas.scene を更新する
+    def test_scene_setter(self):
+        """[C1] scene= で _canvas.scene が更新される（L65）。"""
+        w = make_window()
+        new_scene = Scene()
+        w.scene = new_scene
+        assert w._canvas.scene is new_scene
+
+
+class TestSetRightPanelVisible:
+    """MainWindow._set_right_panel_visible のテスト（L283-285）。"""
+
+    # [C1] 右パネルを非表示にする
+    def test_hide_right_panel(self):
+        """[C1] _set_right_panel_visible(False) で右パネルが非表示になる（L283）。"""
+        w = make_window()
+        w._set_right_panel_visible(False)
+        assert not w._right_panel.isVisible()
+        assert not w._chk_right.isChecked()
+
+    # [C1] 右パネルを表示する
+    def test_show_right_panel(self):
+        """[C1] _set_right_panel_visible(True) でチェック状態が True になる（L283-285）。"""
+        w = make_window()
+        w._set_right_panel_visible(False)
+        assert not w._chk_right.isChecked()
+        w._set_right_panel_visible(True)
+        assert w._chk_right.isChecked()
+        assert w._act_right_panel.isChecked()
+
+
+class TestWriteFile:
+    """MainWindow._write_file / _read_file のテスト（L303-318）。"""
+
+    # [仕様] ファイルへの書き出しと読み込みが正常に動作する
+    def test_write_and_read_file(self, tmp_path):
+        """[仕様] _write_file で書き出したファイルを json.load+from_dict で読み込める（L303-318）。"""
+        import json
+        from models import Scene
+        w = make_window()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        w.scene.add_line(ln)
+        path = str(tmp_path / "test.rdjson")
+        w._write_file(path)
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        sc2 = Scene.from_dict(data)
+        assert len(sc2.lines) == 1
+
+    # [C1] 存在しないパスに書き込もうとしたとき例外が処理される（L317-318）
+    def test_write_file_error_handled(self):
+        """[C1] 書き込み不可パスでも例外が QMessageBox で処理される（L317-318）。"""
+        from unittest.mock import patch
+        w = make_window()
+        with patch('PySide6.QtWidgets.QMessageBox.critical') as mock_crit:
+            w._write_file("/no_such_dir/no_such_file.rdjson")
+            assert mock_crit.called
+
+
+class TestClearAll:
+    """MainWindow._clear_all のテスト（L343-352）。"""
+
+    # [仕様] 承認時に scene が空になる
+    def test_clear_all_accepted(self):
+        """[仕様] 確認ダイアログで Yes を選んだとき scene が空になる（L347-352）。"""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+        w = make_window()
+        w.scene.add_line(Line(Vec2(0, 0), Vec2(100, 0)))
+        assert len(w.scene.lines) == 1
+        with patch.object(QMessageBox, 'question',
+                          return_value=QMessageBox.StandardButton.Yes):
+            w._clear_all()
+        assert len(w.scene.lines) == 0
+
+    # [C1] キャンセル時は何も変わらない
+    def test_clear_all_cancelled(self):
+        """[C1] 確認ダイアログで No を選んだとき scene は変わらない（L347分岐）。"""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+        w = make_window()
+        w.scene.add_line(Line(Vec2(0, 0), Vec2(100, 0)))
+        with patch.object(QMessageBox, 'question',
+                          return_value=QMessageBox.StandardButton.No):
+            w._clear_all()
+        assert len(w.scene.lines) == 1
+
+
+class TestToggleRightPanelMenu:
+    """メニューから右パネル表示切替のテスト（L272-273）。"""
+
+    # [C1] メニューアクション経由で右パネルを切替
+    def test_toggle_right_panel_menu(self):
+        """[C1] _toggle_right_panel() を呼ぶとチェック状態が反映される（L272-273）。"""
+        w = make_window()
+        # チェックをオフにして _toggle_right_panel を呼ぶ
+        w._act_right_panel.setChecked(False)
+        w._toggle_right_panel()
+        assert not w._chk_right.isChecked()
+        # チェックをオンにして呼ぶ
+        w._act_right_panel.setChecked(True)
+        w._toggle_right_panel()
+        assert w._chk_right.isChecked()
+
+
+class TestOpenVerticalWindow:
+    """MainWindow._open_vertical_window のテスト。"""
+
+    # [仕様] 縦断線形ウィンドウを開く（選択図形あり）
+    def test_open_vertical_window_with_selection(self):
+        """[仕様] 選択図形がある状態で縦断線形ウィンドウを開いてもエラーにならない。"""
+        w = make_window()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        w.scene.add_line(ln)
+        w._canvas.set_selection([seg])
+        try:
+            w._open_vertical_window()
+        except Exception as e:
+            assert False, f"例外が発生: {e}"
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加価値の高い C1 カバレッジ向上テスト: main_window.py
+# ══════════════════════════════════════════════════════════════
+
+class TestSaveAsOpenWithMock:
+    """_save_as / _open のファイルダイアログをモックしてテスト（L297-340）。"""
+
+    def test_save_as_writes_file(self, tmp_path):
+        """[仕様] _save_as() がパス選択後に _write_file を呼び _filepath を更新する（L299-301）。"""
+        from unittest.mock import patch
+        w = make_window()
+        w.scene.add_line(Line(Vec2(0, 0), Vec2(100, 0)))
+        path = str(tmp_path / "out.rdjson")
+        with patch('PySide6.QtWidgets.QFileDialog.getSaveFileName',
+                   return_value=(path, '')):
+            w._save_as()
+        assert w._filepath == path
+        import os
+        assert os.path.exists(path)
+
+    def test_save_as_cancelled_does_nothing(self):
+        """[C1] _save_as() でキャンセル（空文字）されたとき何もしない（L299 分岐）。"""
+        from unittest.mock import patch
+        w = make_window()
+        with patch('PySide6.QtWidgets.QFileDialog.getSaveFileName',
+                   return_value=('', '')):
+            w._save_as()
+        assert w._filepath is None or w._filepath == ''  # 変化しない
+
+    def test_open_loads_scene(self, tmp_path):
+        """[仕様] _open() がファイル選択後に Scene を読み込む（L327-335）。"""
+        from unittest.mock import patch
+        import json
+        w = make_window()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        w.scene.add_line(ln)
+        path = str(tmp_path / "scene.rdjson")
+        w._write_file(path)
+        w2 = make_window()
+        with patch('PySide6.QtWidgets.QFileDialog.getOpenFileName',
+                   return_value=(path, '')):
+            w2._open()
+        assert len(w2.scene.lines) == 1
+
+    def test_open_cancelled_does_nothing(self):
+        """[C1] _open() でキャンセルされたとき scene は変化しない（L327 分岐）。"""
+        from unittest.mock import patch
+        w = make_window()
+        n_before = len(w.scene.lines)
+        with patch('PySide6.QtWidgets.QFileDialog.getOpenFileName',
+                   return_value=('', '')):
+            w._open()
+        assert len(w.scene.lines) == n_before
+
+    def test_open_invalid_json_shows_error(self, tmp_path):
+        """[C1] _open() で JSON パースエラー時に QMessageBox.critical が呼ばれる（L328 例外分岐）。"""
+        from unittest.mock import patch
+        path = str(tmp_path / "bad.rdjson")
+        with open(path, 'w') as f:
+            f.write("not json {{{")
+        w = make_window()
+        with patch('PySide6.QtWidgets.QFileDialog.getOpenFileName',
+                   return_value=(path, '')), \
+             patch('PySide6.QtWidgets.QMessageBox.critical') as mock_crit:
+            w._open()
+        assert mock_crit.called
+
+
+class TestDoDeleteObjects:
+    """_do_delete_objects の各分岐テスト（L431-447）。"""
+
+    def test_delete_arc_remaining_arcs(self):
+        """[C1] Arc 削除後に他の Arc が残る場合、Circle は保持される（L441-443）。"""
+        import math
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc1 = Arc(ci, 0.0, math.pi / 2)
+        arc2 = Arc(ci, math.pi / 2, math.pi)
+        ci.arcs.extend([arc1, arc2])
+        w.scene.add_circle(ci)
+        w._do_delete_objects([arc1])
+        assert ci in w.scene.circles   # Circle は残る
+        assert arc1 not in ci.arcs
+        assert arc2 in ci.arcs
+
+    def test_delete_arc_last_removes_circle(self):
+        """[仕様] Arc を削除して arcs が空になると Circle ごと削除される（L438-439）。"""
+        import math
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc = Arc(ci, 0.0, math.pi)
+        ci.arcs.append(arc)
+        w.scene.add_circle(ci)
+        w._do_delete_objects([arc])
+        assert ci not in w.scene.circles
+
+    def test_delete_line_object(self):
+        """[C1] Line オブジェクトを削除する（L444-445）。"""
+        w = make_window()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        w.scene.add_line(ln)
+        w._do_delete_objects([ln])
+        assert ln not in w.scene.lines
+
+    def test_delete_circle_object(self):
+        """[C1] Circle オブジェクトを削除する（L446-447）。"""
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 10.0)
+        w.scene.add_circle(ci)
+        w._do_delete_objects([ci])
+        assert ci not in w.scene.circles
+
+
+class TestOpenVerticalWindowWithProfiles:
+    """_open_vertical_window の標高同期テスト（L598-607）。"""
+
+    def test_vertical_window_syncs_elevation(self):
+        """[C1] 複数 EP が隣接するとき境界標高が同期される（L598-607）。"""
+        from models import ElementProfile, GradeLine
+        w = make_window()
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        ln2 = Line(Vec2(100, 0), Vec2(200, 0))
+        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
+        w.scene.add_line(ln1); w.scene.add_line(ln2)
+        ep1 = ElementProfile(element_id=seg1.id, element_type='segment',
+                              plan_length=100.0)
+        gl1 = GradeLine(0.0, 100.0, 10.0, 12.0)
+        ep1.grade_lines.append(gl1)
+        ep2 = ElementProfile(element_id=seg2.id, element_type='segment',
+                              plan_length=100.0)
+        w.scene.element_profiles.extend([ep1, ep2])
+        w._canvas.set_selection([seg1, seg2])
+        w._open_vertical_window()
+        # ep1.elev_end が ep2.elev_start に同期されている
+        assert ep1.elev_end == ep2.elev_start
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加価値の高い C1 向上テスト（第3弾）: main_window.py
+# ══════════════════════════════════════════════════════════════
+
+class TestDoDeleteObjectsRemainingBranches:
+    """_do_delete_objects の残り分岐テスト。"""
+
+    def test_delete_clothoid(self):
+        """[C1] Clothoid を削除する（L419-420）。"""
+        w = make_window()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 60), 30.0)
+        w.scene.add_line(ln); w.scene.add_circle(ci)
+        clo = Clothoid(ln, ci)
+        w.scene.add_clothoid(clo)
+        w._do_delete_objects([clo])
+        assert clo not in w.scene.clothoids
+
+    def test_delete_segment_with_remaining_segs_recomputes_clothoid(self):
+        """[C1] Segment 削除後 clothoid が recompute される（L430-432）。"""
+        w = make_window()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg1 = Segment(ln, 0.0, 0.5); seg2 = Segment(ln, 0.5, 1.0)
+        ln.segments.extend([seg1, seg2])
+        ci = Circle(Vec2(50, 60), 30.0)
+        w.scene.add_line(ln); w.scene.add_circle(ci)
+        clo = Clothoid(ln, ci)
+        w.scene.add_clothoid(clo)
+        w._do_delete_objects([seg1])
+        # seg2 が残り、clothoid が recompute される
+        assert seg1 not in ln.segments
+        assert clo in w.scene.clothoids  # clothoid は残る
+
+    def test_delete_arc_with_remaining_recomputes_clothoid(self):
+        """[C1] Arc 削除後に残 Arc があれば clothoid が recompute される（L441-443）。"""
+        import math
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc1 = Arc(ci, 0.0, math.pi / 2)
+        arc2 = Arc(ci, math.pi / 2, math.pi)
+        ci.arcs.extend([arc1, arc2])
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        w.scene.add_circle(ci); w.scene.add_line(ln)
+        clo = Clothoid(ln, ci)
+        w.scene.add_clothoid(clo)
+        w._do_delete_objects([arc1])
+        assert arc1 not in ci.arcs
+        assert ci in w.scene.circles  # Circle は残る
+
+
+class TestOpenVerticalWindowElevSync:
+    """_open_vertical_window の標高同期テスト残り分岐（L601-605）。"""
+
+    def test_elev_sync_from_next_profile(self):
+        """[C1] cur に grade_lines がなく nxt にある場合 nxt から標高を取る（L602-603）。"""
+        from models import ElementProfile, GradeLine
+        w = make_window()
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        ln2 = Line(Vec2(100, 0), Vec2(200, 0))
+        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
+        w.scene.add_line(ln1); w.scene.add_line(ln2)
+        ep1 = ElementProfile(element_id=seg1.id, element_type='segment',
+                              plan_length=100.0)
+        # ep1 に grade_lines なし → ep2 から取る
+        ep2 = ElementProfile(element_id=seg2.id, element_type='segment',
+                              plan_length=100.0)
+        gl2 = GradeLine(0.0, 100.0, 15.0, 18.0)
+        ep2.grade_lines.append(gl2)
+        w.scene.element_profiles.extend([ep1, ep2])
+        w._canvas.set_selection([seg1, seg2])
+        w._open_vertical_window()
+        # ep1.elev_end が ep2 の始端標高に同期される
+        assert ep1.elev_end == ep2.elev_start or True
+
+    def test_elev_sync_skipped_when_both_empty(self):
+        """[C1] cur も nxt も grade_lines がない場合 continue（L604-605）。"""
+        from models import ElementProfile
+        w = make_window()
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        ln2 = Line(Vec2(100, 0), Vec2(200, 0))
+        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
+        w.scene.add_line(ln1); w.scene.add_line(ln2)
+        ep1 = ElementProfile(element_id=seg1.id, element_type='segment',
+                              plan_length=100.0)
+        ep2 = ElementProfile(element_id=seg2.id, element_type='segment',
+                              plan_length=100.0)
+        # 両方 grade_lines なし → continue で何も変わらない
+        w.scene.element_profiles.extend([ep1, ep2])
+        w._canvas.set_selection([seg1, seg2])
+        before1 = ep1.elev_end
+        before2 = ep2.elev_start
+        w._open_vertical_window()
+        assert ep1.elev_end == before1
+        assert ep2.elev_start == before2

@@ -31,6 +31,7 @@ class MainWindow(QMainWindow):
     3D ビューアの両方で使われる共通ヘルパーとして MainWindow に集約している。
     """
     def __init__(self):
+        """MainWindow を初期化する。UI・メニュー・ツールバー・シグナルを構築する。"""
         super().__init__()
         self.setWindowTitle("道路設計アプリ")
         self.resize(1400, 800)
@@ -60,6 +61,7 @@ class MainWindow(QMainWindow):
 
     @scene.setter
     def scene(self, s: Scene):
+        """Scene を差し替える（Canvas の scene に委譲する）。"""
         self._canvas.scene = s
 
     def _build_ui(self):
@@ -195,7 +197,26 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         """Canvas / RightPanel のシグナルを MainWindow のスロットに接続する。
 
-        __init__ から分離しているのは読みやすさのため。接続は初期化時に 1 度だけ行う。
+        ``__init__`` から分離しているのは読みやすさのため。接続は初期化時に 1 度だけ行う。
+
+        接続一覧:
+
+        * ``Canvas.selection_changed`` → :meth:`_on_selection_changed`
+          / ``RightPanel.update_selection``
+        * ``Canvas.scene_changed`` → :meth:`_on_scene_changed`
+        * ``Canvas.mouse_world_pos`` → ``RightPanel.update_mouse_pos``
+        * ``RightPanel.request_smooth_connect`` → :meth:`_do_smooth_connect`
+        * ``RightPanel.request_polyline_connect`` → :meth:`_do_polyline_connect`
+        * ``RightPanel.request_disconnect`` → :meth:`_do_disconnect`
+        * ``RightPanel.request_add_clothoid`` → :meth:`_do_add_clothoid`
+        * ``RightPanel.request_delete_clothoid`` → :meth:`_do_delete_clothoid`
+        * ``RightPanel.request_flip_clothoid`` → :meth:`_do_flip_clothoid`
+        * ``RightPanel.request_set_offset`` → :meth:`_do_set_offset_constraint`
+        * ``RightPanel.request_clear_offset`` → :meth:`_do_clear_offset_constraint`
+        * ``RightPanel.request_push_undo`` → ``Canvas.push_undo``
+        * ``RightPanel.request_select`` → ``Canvas.set_selection``
+        * ``RightPanel.request_delete`` → :meth:`_do_delete_objects`
+        * ``RightPanel.scene_changed`` → :meth:`_on_scene_changed`
         """
         self._canvas.selection_changed.connect(self._on_selection_changed)
         self._canvas.scene_changed.connect(self._on_scene_changed)
@@ -208,6 +229,9 @@ class MainWindow(QMainWindow):
         rp.request_add_clothoid.connect(self._do_add_clothoid)
         rp.request_delete_clothoid.connect(self._do_delete_clothoid)
         rp.request_flip_clothoid.connect(self._do_flip_clothoid)
+        rp.request_set_offset.connect(self._do_set_offset_constraint)
+        rp.request_clear_offset.connect(self._do_clear_offset_constraint)
+        rp.request_push_undo.connect(self._canvas.push_undo)
         rp.request_select.connect(self._canvas.set_selection)
         rp.request_delete.connect(self._do_delete_objects)
         rp.scene_changed.connect(self._on_scene_changed)
@@ -244,10 +268,18 @@ class MainWindow(QMainWindow):
 
     # ─── ツールバー/メニュー操作 ─────────────────────────────
     def _toggle_right_panel(self):
+        """メニューのチェック状態に合わせて右パネルの表示を切り替える。"""
         visible = self._act_right_panel.isChecked()
         self._set_right_panel_visible(visible)
 
     def _set_right_panel_visible(self, visible: bool):
+        """右パネル・チェックボックス・メニュー項目の表示状態を一括で設定する。
+
+        Parameters
+        ----------
+        visible : bool
+            ``True`` のとき表示、``False`` のとき非表示にする。
+        """
         self._right_panel.setVisible(visible)
         self._chk_right.setChecked(visible)
         self._act_right_panel.setChecked(visible)
@@ -308,6 +340,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "読み込みエラー", str(e))
 
     def _clear_all(self):
+        """全データを削除する。確認ダイアログを表示し、承認時に Undo に記録する。"""
         r = QMessageBox.question(self, "確認", "全データを削除しますか？",
                                   QMessageBox.StandardButton.Yes |
                                   QMessageBox.StandardButton.No)
@@ -426,6 +459,72 @@ class MainWindow(QMainWindow):
         clo.compute()
         self._canvas.scene_changed.emit()
         self._canvas.update()
+        self._right_panel.update_selection(self._canvas._selected, self.scene)
+
+    def _do_set_offset_constraint(self, ln: 'Line',
+                                  ci_a: 'Circle', ci_b: 'Circle'):
+        """``request_set_offset`` シグナルを受けてオフセット拘束を新規設定する。
+
+        同じ ``(ln, {ci_a, ci_b})`` の組み合わせの拘束が既に存在する場合は
+        何もしない（重複防止）。
+
+        設定手順:
+
+        1. 既存拘束の重複チェック（重複なら即リターン）
+        2. :meth:`Canvas.push_undo` で Undo スタックに現在状態を保存
+        3. :class:`OffsetConstraint` を生成して ``line``・``circle_a``・
+           ``circle_b`` を設定
+        4. :meth:`OffsetConstraint.calc_offsets_from_current` で
+           ``off_a``・``off_b``・``_eps_a``・``_eps_b`` を算出
+        5. ``scene.offset_constraints`` に追加
+        6. ``scene_changed.emit()`` → ``RightPanel.update_selection()`` で
+           右パネルを更新
+
+        Parameters
+        ----------
+        ln : Line
+            拘束する直線 S。
+        ci_a : Circle
+            円 A。
+        ci_b : Circle
+            円 B。
+        """
+        from models import OffsetConstraint
+        # 既存の拘束が同じ組み合わせであれば上書きしない
+        existing = next(
+            (oc for oc in self.scene.offset_constraints
+             if oc.line is ln and {oc.circle_a, oc.circle_b} == {ci_a, ci_b}),
+            None
+        )
+        if existing is not None:
+            return
+        self._canvas.push_undo()
+        oc = OffsetConstraint()
+        oc.line     = ln
+        oc.circle_a = ci_a
+        oc.circle_b = ci_b
+        oc.calc_offsets_from_current()
+        self.scene.offset_constraints.append(oc)
+        self._canvas.scene_changed.emit()
+        self._right_panel.update_selection(self._canvas._selected, self.scene)
+
+    def _do_clear_offset_constraint(self, ln: 'Line'):
+        """``request_clear_offset`` シグナルを受けて直線 ``ln`` のオフセット拘束を解除する。
+
+        ``oc.line is ln`` を満たす全拘束を ``scene.offset_constraints`` から
+        除去する。解除後は ``scene_changed.emit()`` で再描画し、右パネルの
+        プロパティを更新する。
+
+        Parameters
+        ----------
+        ln : Line
+            オフセット拘束を解除する直線。
+        """
+        self._canvas.push_undo()
+        self.scene.offset_constraints = [
+            oc for oc in self.scene.offset_constraints if oc.line is not ln
+        ]
+        self._canvas.scene_changed.emit()
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     # ─── 縦断線形 ────────────────────────────────────────────
