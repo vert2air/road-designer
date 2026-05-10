@@ -9,12 +9,190 @@ from typing import Optional, Callable
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
     QDoubleSpinBox, QGroupBox, QScrollArea, QFrame, QLineEdit,
-    QCheckBox, QComboBox, QSizePolicy
+    QCheckBox, QComboBox, QSizePolicy, QMenu, QApplication, QSplitter,
+    QSpinBox,
 )
 from PySide6.QtCore import Qt, Signal
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
                     SegmentSnap, ArcSnap, tangent_at, entry_tangent, SNAP_TOL)
 
+
+
+# ── クリップボード: 始点/終点ペア ─────────────────────────────────────────
+import json as _json
+
+_CLIPBOARD_MIME = "application/x-road-designer-point-pair"
+
+
+def _encode_point_pair(start, end) -> str:
+    """始点・終点ペアを JSON 文字列にエンコードする。"""
+    return _json.dumps({"sx": start.x, "sy": start.y,
+                        "ex": end.x,   "ey": end.y})
+
+
+def _decode_point_pair(text: str):
+    """JSON 文字列から (start_Vec2, end_Vec2) を返す。None: 解析失敗。"""
+    try:
+        d = _json.loads(text)
+        from models import Vec2
+        return Vec2(d["sx"], d["sy"]), Vec2(d["ex"], d["ey"])
+    except Exception:
+        return None
+
+
+def _clipboard_has_point_pair() -> bool:
+    """クリップボードに始点/終点ペアが設定されているか判定する。"""
+    cb = QApplication.clipboard()
+    return _decode_point_pair(cb.text()) is not None
+
+
+def _copy_point_pair(start, end) -> None:
+    """始点・終点ペアをクリップボードにコピーする。"""
+    QApplication.clipboard().setText(_encode_point_pair(start, end))
+
+
+def _paste_point_pair():
+    """クリップボードから (start_Vec2, end_Vec2) を取り出す。None: 失敗。"""
+    return _decode_point_pair(QApplication.clipboard().text())
+
+
+def _transform_pair(start, end, mode: str):
+    """始点・終点ペアを変換して返す。
+
+    Parameters
+    ----------
+    mode : str
+        "rot90" / "rot180" / "rot270" / "flip_y" / "flip_x" /
+        "flip_yx" / "flip_y_neg_x"
+    """
+    from models import Vec2
+    import math
+
+    def tr(v):
+        x, y = v.x, v.y
+        if mode == "rot90":
+            return Vec2(-y, x)
+        if mode == "rot180":
+            return Vec2(-x, -y)
+        if mode == "rot270":
+            return Vec2(y, -x)
+        if mode == "flip_y":     # y=0 で線対称
+            return Vec2(x, -y)
+        if mode == "flip_x":     # x=0 で線対称
+            return Vec2(-x, y)
+        if mode == "flip_yx":    # y=x で線対称
+            return Vec2(y, x)
+        if mode == "flip_y_neg_x":  # y=-x で線対称
+            return Vec2(-y, -x)
+        return Vec2(x, y)
+
+    return tr(start), tr(end)
+
+
+def _add_copy_paste_buttons(lay, get_start, get_end,
+                             set_start, set_end,
+                             on_change, push_undo):
+    """Copy / Paste ボタン行を lay に追加するヘルパー。
+
+    Parameters
+    ----------
+    lay : QVBoxLayout
+        ボタンを追加するレイアウト。
+    get_start : callable
+        始点の Vec2 を返す。
+    get_end : callable
+        終点の Vec2 を返す。
+    set_start : callable
+        始点 Vec2 を設定する。
+    set_end : callable
+        終点 Vec2 を設定する。
+    on_change : callable
+        座標変更後に呼ぶコールバック（scene_changed 等）。
+    push_undo : callable
+        Undo スタックへの push を要求するコールバック。
+    """
+    from PySide6.QtCore import Qt
+
+    row = QHBoxLayout()
+
+    # ── Copy ─────────────────────────────────────────────────────
+    btn_copy = QPushButton("⧉ Copy")
+    btn_copy.setToolTip("始点・終点ペアをクリップボードにコピー")
+    btn_copy.setMaximumWidth(80)
+
+    def do_copy():
+        _copy_point_pair(get_start(), get_end())
+
+    btn_copy.clicked.connect(do_copy)
+
+    # ── Paste ────────────────────────────────────────────────────
+    btn_paste = QPushButton("⧈ Paste")
+    btn_paste.setToolTip(
+        "左クリック: そのままペースト\n"
+        "右クリック: 回転・対称変換してペースト"
+    )
+    btn_paste.setMaximumWidth(80)
+
+    _PASTE_MODES = [
+        ("rot90",        "原点で 90° 回転してペースト"),
+        ("rot180",       "原点で 180° 回転してペースト"),
+        ("rot270",       "原点で -90° 回転してペースト"),
+        ("flip_y",       "y=0 で線対称してペースト"),
+        ("flip_x",       "x=0 で線対称してペースト"),
+        ("flip_yx",      "y=x で線対称してペースト"),
+        ("flip_y_neg_x", "y=-x で線対称してペースト"),
+    ]
+
+    def do_paste(mode=None):
+        pair = _paste_point_pair()
+        if pair is None:
+            return
+        s, e = pair
+        if mode is not None:
+            s, e = _transform_pair(s, e, mode)
+        push_undo()
+        set_start(s)
+        set_end(e)
+        on_change()
+
+    def on_paste_left_click():
+        do_paste(None)
+
+    def on_paste_right_click(pos):
+        menu = QMenu()
+        for mode, label in _PASTE_MODES:
+            act = menu.addAction(label)
+            act.setData(mode)
+        menu.addSeparator()
+        menu.addAction("キャンセル")
+        chosen = menu.exec(btn_paste.mapToGlobal(pos))
+        if chosen and chosen.data() in [m for m, _ in _PASTE_MODES]:
+            do_paste(chosen.data())
+
+    btn_paste.clicked.connect(on_paste_left_click)
+    btn_paste.setContextMenuPolicy(
+        Qt.ContextMenuPolicy.CustomContextMenu)
+    btn_paste.customContextMenuRequested.connect(on_paste_right_click)
+
+    def refresh_paste_enabled():
+        # btn_paste が既に C++ 側で破棄されていれば何もしない
+        try:
+            btn_paste.setEnabled(_clipboard_has_point_pair())
+        except RuntimeError:
+            pass
+
+    cb = QApplication.clipboard()
+    cb.dataChanged.connect(refresh_paste_enabled)
+
+    # ウィジェット破棄時にシグナル接続を切断（RuntimeError の根本対策）
+    btn_paste.destroyed.connect(lambda: cb.dataChanged.disconnect(refresh_paste_enabled))
+
+    refresh_paste_enabled()
+
+    row.addStretch()
+    row.addWidget(btn_copy)
+    row.addWidget(btn_paste)
+    lay.addLayout(row)
 
 def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
                   step: float = 0.1, decimals: int = 3) -> QDoubleSpinBox:
@@ -192,6 +370,9 @@ class RightPanel(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # 水平スクロールを常に非表示にしてコンテンツを幅に収める
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._prop_widget = QWidget()
         self._prop_layout = QVBoxLayout(self._prop_widget)
         self._prop_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -1174,6 +1355,17 @@ class RightPanel(QWidget):
         add_vec2("参照終点", lambda: ln.ref_end,
                  lambda v: setattr(ln, 'ref_end', v))
 
+        # ── Copy / Paste ボタン ────────────────────────────────────
+        _add_copy_paste_buttons(
+            lay,
+            get_start=lambda: ln.ref_start,
+            get_end=lambda: ln.ref_end,
+            set_start=lambda v: setattr(ln, 'ref_start', v),
+            set_end=lambda v: setattr(ln, 'ref_end', v),
+            on_change=lambda: self.scene_changed.emit(),
+            push_undo=lambda: self.request_push_undo.emit(),
+        )
+
         ang = math.degrees(ln.angle)
         lay.addWidget(QLabel(f"方向角: {ang:.2f}°"))
         self._prop_layout.addWidget(grp)
@@ -1418,6 +1610,17 @@ class RightPanel(QWidget):
         def set_t_end(v):   seg.t_end   = v
         add_endpoint("始点", lambda: seg.t_start, set_t_start, lambda: seg.t_end)
         add_endpoint("終点", lambda: seg.t_end,   set_t_end,   lambda: seg.t_start)
+
+        # ── Copy / Paste ボタン ────────────────────────────────────
+        _add_copy_paste_buttons(
+            lay,
+            get_start=lambda: seg.start,
+            get_end=lambda: seg.end,
+            set_start=lambda v: setattr(seg, 't_start', seg.line.project_t(v)),
+            set_end=lambda v: setattr(seg, 't_end',   seg.line.project_t(v)),
+            on_change=lambda: self.scene_changed.emit(),
+            push_undo=lambda: self.request_push_undo.emit(),
+        )
 
         self._prop_layout.addWidget(grp)
 
