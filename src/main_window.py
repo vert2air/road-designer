@@ -195,7 +195,26 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         """Canvas / RightPanel のシグナルを MainWindow のスロットに接続する。
 
-        __init__ から分離しているのは読みやすさのため。接続は初期化時に 1 度だけ行う。
+        ``__init__`` から分離しているのは読みやすさのため。接続は初期化時に 1 度だけ行う。
+
+        接続一覧:
+
+        * ``Canvas.selection_changed`` → :meth:`_on_selection_changed`
+          / ``RightPanel.update_selection``
+        * ``Canvas.scene_changed`` → :meth:`_on_scene_changed`
+        * ``Canvas.mouse_world_pos`` → ``RightPanel.update_mouse_pos``
+        * ``RightPanel.request_smooth_connect`` → :meth:`_do_smooth_connect`
+        * ``RightPanel.request_polyline_connect`` → :meth:`_do_polyline_connect`
+        * ``RightPanel.request_disconnect`` → :meth:`_do_disconnect`
+        * ``RightPanel.request_add_clothoid`` → :meth:`_do_add_clothoid`
+        * ``RightPanel.request_delete_clothoid`` → :meth:`_do_delete_clothoid`
+        * ``RightPanel.request_flip_clothoid`` → :meth:`_do_flip_clothoid`
+        * ``RightPanel.request_set_offset`` → :meth:`_do_set_offset_constraint`
+        * ``RightPanel.request_clear_offset`` → :meth:`_do_clear_offset_constraint`
+        * ``RightPanel.request_push_undo`` → ``Canvas.push_undo``
+        * ``RightPanel.request_select`` → ``Canvas.set_selection``
+        * ``RightPanel.request_delete`` → :meth:`_do_delete_objects`
+        * ``RightPanel.scene_changed`` → :meth:`_on_scene_changed`
         """
         self._canvas.selection_changed.connect(self._on_selection_changed)
         self._canvas.scene_changed.connect(self._on_scene_changed)
@@ -433,10 +452,22 @@ class MainWindow(QMainWindow):
 
     def _do_set_offset_constraint(self, ln: 'Line',
                                   ci_a: 'Circle', ci_b: 'Circle'):
-        """request_set_offset シグナルを受けてオフセット拘束を新規設定する。
+        """``request_set_offset`` シグナルを受けてオフセット拘束を新規設定する。
 
-        現在の直線と 2 円の位置関係から off_a・off_b を算出して
-        OffsetConstraint を生成し Scene に追加する。
+        同じ ``(ln, {ci_a, ci_b})`` の組み合わせの拘束が既に存在する場合は
+        何もしない（重複防止）。
+
+        設定手順:
+
+        1. 既存拘束の重複チェック（重複なら即リターン）
+        2. :meth:`Canvas.push_undo` で Undo スタックに現在状態を保存
+        3. :class:`OffsetConstraint` を生成して ``line``・``circle_a``・
+           ``circle_b`` を設定
+        4. :meth:`OffsetConstraint.calc_offsets_from_current` で
+           ``off_a``・``off_b``・``_eps_a``・``_eps_b`` を算出
+        5. ``scene.offset_constraints`` に追加
+        6. ``scene_changed.emit()`` → ``RightPanel.update_selection()`` で
+           右パネルを更新
 
         Parameters
         ----------
@@ -467,7 +498,11 @@ class MainWindow(QMainWindow):
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     def _do_clear_offset_constraint(self, ln: 'Line'):
-        """request_clear_offset シグナルを受けて直線 ln のオフセット拘束を解除する。
+        """``request_clear_offset`` シグナルを受けて直線 ``ln`` のオフセット拘束を解除する。
+
+        ``oc.line is ln`` を満たす全拘束を ``scene.offset_constraints`` から
+        除去する。解除後は ``scene_changed.emit()`` で再描画し、右パネルの
+        プロパティを更新する。
 
         Parameters
         ----------

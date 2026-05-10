@@ -595,6 +595,33 @@ class Canvas(QWidget):
 
     # ─── マウスイベント ──────────────────────────────────────
     def mousePressEvent(self, event):
+        """マウスボタン押下イベントを処理する。
+
+        **左ボタン + 選択モード**:
+
+        1. :meth:`_hit_handle` でハンドルヒット判定。ヒットすれば
+           :meth:`push_undo` を呼んでからドラッグ対象として ``_drag_obj``
+           に設定する（ドラッグ前の状態を Undo スタックに保存）。
+        2. ハンドルなし → :meth:`_hit_object` で図形ヒット判定。
+           ``Shift`` なしでヒット: その図形のみ選択。
+           ``Shift`` + ヒット: 選択のトグル。
+           ヒットなし: 選択解除。
+        3. :meth:`_rebuild_handles` → ``selection_changed.emit()``
+        4. パン開始のための ``_pan_start_screen``・``_pan_offset_start`` を記録。
+
+        **左ボタン + 直線モード**: :meth:`_line_click` を呼ぶ。
+
+        **左ボタン + 円モード**: ``_circle_center = w`` に中心点を記憶する。
+        リリース時に半径を確定する。
+
+        **中ボタン**: ``_pan_start_screen`` / ``_pan_offset_start`` を記録して
+        パンを開始する。
+
+        Parameters
+        ----------
+        event : QMouseEvent
+            PySide6 マウスイベント。
+        """
         pos = event.position()
         sw = Vec2(pos.x(), pos.y())
         w  = self.s2w(sw.x, sw.y)
@@ -687,6 +714,31 @@ class Canvas(QWidget):
         self.mouse_world_pos.emit(w.x, w.y)
 
     def mouseReleaseEvent(self, event):
+        """マウスボタンリリースイベントを処理する。
+
+        **左ボタン（ドラッグ終了）**:
+
+        * ``_drag_obj`` が設定されている場合、``selection_changed.emit()``
+          を発行して右パネルのプロパティを即座に更新してから
+          ``_drag_obj``・``_drag_tag`` をリセットする。
+
+        **左ボタン（パン終了）**:
+
+        * ``_mouse_moved_px < 4`` のとき、クリックとみなして選択解除する。
+
+        **左ボタン（円モード）**:
+
+        * ``_circle_center`` が設定されていれば ``radius = (w - center).length()``
+          を計算し、``radius > 1e-3`` のとき :meth:`push_undo` 後に
+          :class:`Circle` を生成して Scene に追加する。
+
+        **中ボタン**: ``_is_panning = False`` でパンを終了する。
+
+        Parameters
+        ----------
+        event : QMouseEvent
+            PySide6 マウスイベント。
+        """
         btn = event.button()
         pos = event.position()
         sw  = Vec2(pos.x(), pos.y())
@@ -933,6 +985,22 @@ class Canvas(QWidget):
                         sa.t_end = t_new
 
     def _propagate_circle(self, ci: Circle):
+        """円 ``ci`` の変形をクロソイド・ArcSnap・オフセット拘束に伝播する。
+
+        円の中心または半径が変更されたあとに呼ばれる。
+        :meth:`_propagate_line` と対になる存在。
+
+        伝播の順序:
+
+        1. ``ci`` を参照する全クロソイドに :meth:`Clothoid.compute` を呼ぶ
+        2. :meth:`_propagate_arc_snaps` で ArcSnap 追従
+        3. :meth:`_propagate_offset_constraints` でオフセット拘束追従
+
+        Parameters
+        ----------
+        ci : Circle
+            変形した円。
+        """
         for clo in self.scene.clothoids:
             if clo.circle is ci:
                 clo.compute()

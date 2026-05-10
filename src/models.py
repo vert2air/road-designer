@@ -1365,7 +1365,7 @@ class OffsetConstraint:
     id : int
         グローバルユニーク ID。
     line : Line
-        拘束される直線 S。
+        拘束される直線 S（循環参照回避のため object 型で保持）。
     circle_a : Circle
         円 A。
     circle_b : Circle
@@ -1374,6 +1374,22 @@ class OffsetConstraint:
         直線 S と円 A の外側オフセット量 [m]。正のとき外側、負のとき内側。
     off_b : float
         直線 S と円 B の外側オフセット量 [m]。
+    feasible : bool
+        最後の :meth:`solve` が成功した場合 ``True``。距離拘束が矛盾する
+        （2 円が近すぎる等）と ``False`` になる。``False`` のとき直線は
+        変更されず、次に ``solve`` が成功した時点で追従を再開する。
+
+    Notes
+    -----
+    内部フィールド ``_eps_a``・``_eps_b`` は :meth:`__post_init__` で 0 に
+    初期化され、:meth:`calc_offsets_from_current` で設定時点の符号が固定される。
+
+    * ``_eps_a = -sign(signed_dist(circle_a))``
+    * ``_eps_b =  sign(signed_dist(circle_b))``
+
+    これにより「直線が 2 円の間にあるか外側にあるか」という法線方向が
+    :meth:`solve` を通じて常に維持される。0 は未設定を表し、後方互換
+    モード（全組み合わせを探索）で動作する。
     """
     id:       int    = field(default_factory=new_id)
     line:     object = None   # Line（循環参照回避のため object 型）
@@ -1384,26 +1400,38 @@ class OffsetConstraint:
     feasible: bool   = True   # 最後の solve() が成功した場合 True
 
     def solve(self) -> bool:
-        """off_a・off_b・circle_a・circle_b から直線 S の参照点を再計算する。
+        """off_a・off_b・_eps_a・_eps_b から直線 S の参照点を再計算する。
 
-        直線 S の方程式を n・x = c（n は法線単位ベクトル、c は切片）とする。
-        各円の中心から直線 S への垂直距離拘束:
-          |n・ca.center - c| = ra = ca.radius + off_a
-          |n・cb.center - c| = rb = cb.radius + off_b
+        直線 S の方程式を ``n·x = c``（``n``: 法線単位ベクトル、``c``: 切片）
+        とする。各円の距離拘束:
 
-        c = n・ca.center ± ra の2通りに対して、cb の拘束から:
-          n・(cb.center - ca.center) = ±rb ∓ ra
-        → n・ab = ε_b * rb + ε_a * ra  (ε_a, ε_b ∈ {+1, -1})
+        .. code-block:: text
 
-        これを満たす法線方向 n を求め（最大 4 通りの解）、現在の直線方向との
-        内積が最大のもの（法線方向を維持する解）を選ぶ。
-        4 つの解は直線が 2 円に対して外側・内側のどちらに位置するかを表す。
+            c = n · ca.center + ε_a · ra   （ra = ca.radius + off_a）
+            s_a_new = -ε_a · ra
+            s_b_new =  ε_b · rb
+            n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
+
+        **解の選択**:
+
+        * ``_eps_a``・``_eps_b`` が設定済み（非零）の場合はその 1 通りの
+          ``(ε_a, ε_b)`` のみで解を求める（法線方向を設定時から維持）。
+        * 未設定（0）の場合は 4 通りの全組み合わせを列挙して現在の直線方向
+          との内積が最大のものを選ぶ（後方互換モード）。
+        * ``sign_delta`` が 2 通り残る場合は現在の直線方向との内積で絞る。
+        * ``cur_dir`` との内積が負なら ``d`` を反転して向きを揃える。
+
+        成功時は各円の垂線の足を ``ref_start``・``ref_end`` に割り当て
+        ``feasible = True`` を設定する。``ref_start`` に近い方の垂線の足を
+        ``ref_start`` に割り当てる。
 
         Returns
         -------
         bool
-            計算が成功し直線を更新したとき True。
-            2 円の中心が一致、または全ての距離拘束で|rhs| > 1 のとき False。
+            計算が成功し直線を更新したとき ``True``。
+            2 円の中心が一致（``L < 1e-9``）または設定された ``(ε_a, ε_b)``
+            で ``|rhs| > 1.0``（距離拘束が矛盾）のとき ``False``。
+            ``False`` のとき ``feasible = False`` を設定し直線は変更しない。
         """
         if self.line is None or self.circle_a is None or self.circle_b is None:
             return False
@@ -1478,9 +1506,13 @@ class OffsetConstraint:
 
 
     def __post_init__(self):
-        """_eps_a と _eps_b を初期化する（dataclass 外フィールド）。
+        """内部フィールド ``_eps_a``・``_eps_b`` を初期化する。
 
-        0 は未設定を意味し、calc_offsets_from_current() を呼ぶと設定される。
+        ``@dataclass`` のフィールドとして宣言できない可変デフォルト値を
+        ここで設定する。``0`` は未設定を意味し、
+        :meth:`calc_offsets_from_current` を呼ぶと実際の符号が設定される。
+        未設定のまま :meth:`solve` を呼ぶと後方互換モード（4 通りの
+        符号組み合わせを全探索）で動作する。
         """
         self._eps_a: int = 0
         self._eps_b: int = 0
@@ -1488,12 +1520,23 @@ class OffsetConstraint:
     def calc_offsets_from_current(self) -> None:
         """現在の直線と 2 円の位置関係から off_a・off_b と符号フラグを算出する。
 
-        off_a・off_b は符号なし距離から半径を引いた値（外側が正）。
-        _eps_a・_eps_b は solve() で「円がどちら側にあるか」を固定する符号。
-        設定時の signed_dist から導出する:
-          s_a_new = -_eps_a * ra  →  _eps_a = -sign(signed_dist(ca))
-          s_b_new =  _eps_b * rb  →  _eps_b =  sign(signed_dist(cb))
-        これにより直線が2円の間→外など位置関係が反転しなくなる。
+        オフセット拘束を設定した時点の位置に基づいて初期値と法線方向を決定する。
+
+        * ``off_a = distance_to(circle_a.center) - circle_a.radius``
+        * ``off_b = distance_to(circle_b.center) - circle_b.radius``
+
+        法線方向符号の導出:
+
+        * ``_eps_a = -sign(signed_dist(circle_a.center))``
+          （circle_a が直線の左側なら ``_eps_a = -1``）
+        * ``_eps_b =  sign(signed_dist(circle_b.center))``
+          （circle_b が直線の左側なら ``_eps_b = +1``）
+
+        これにより :meth:`solve` が「直線が 2 円の間にあるか外側にあるか」
+        という位置関係を維持して解を選択できるようになる。
+
+        ``line``・``circle_a``・``circle_b`` のいずれかが ``None`` の場合は
+        何もしない。
         """
         if self.line is None or self.circle_a is None or self.circle_b is None:
             return
@@ -1892,6 +1935,8 @@ class Scene:
         全円。
     clothoids : list[Clothoid]
         全クロソイド。
+    offset_constraints : list[OffsetConstraint]
+        直線-2円のオフセット拘束。円の変形に合わせて直線が自動追従する。
     element_profiles : list[ElementProfile]
         縦断線形データ（要素単位）。
     vertical_alignments : list[VerticalAlignment]
@@ -2095,8 +2140,17 @@ class Scene:
     def to_dict(self) -> dict:
         """シーン全体を JSON シリアライズ可能な辞書に変換する。
 
-        各図形の辞書の 'id' の直後に 'nickname' を挿入して返す。
+        呼び出し前に :meth:`_fix_duplicate_ids` を実行して ID 重複を修正する。
+        各図形の辞書の ``'id'`` の直後に ``'nickname'`` を挿入して返す。
+        ``offset_constraints`` も含む。
         Undo スタックへの積み込みとファイル保存の両方で使う。
+
+        Returns
+        -------
+        dict
+            JSON にシリアライズ可能な辞書。キー:
+            ``lines``, ``circles``, ``clothoids``, ``offset_constraints``,
+            ``element_profiles``, ``nicknames``。
         """
         self._fix_duplicate_ids()  # 保存前に id 重複を修正
         def _with_nick(d: dict) -> dict:
@@ -2136,17 +2190,30 @@ class Scene:
     def from_dict(d: dict) -> 'Scene':
         """辞書から Scene を復元する。
 
-        復元順序: lines → circles → clothoids → element_profiles →
-        vertical_alignments → 旧フォーマット互換 → ID カウンタリセット。
+        復元順序:
 
-        ID 衝突（`_resolve_id`）: seen_ids セットで衝突を検出し、衝突した ID は
-        `new_id()` で振り直す。読み込み後は全 ID の最大値 + 1 からカウンタを再開する。
+        1. ``lines``（``segments`` を含む）→ ``lines_by_id`` に格納。
+           ``_resolve_id`` で ID が振り直された場合は元の ID でも同じ
+           オブジェクトを引けるフォールバックエントリを追加する。
+        2. ``circles``（``arcs`` を含む）→ ``circles_by_id`` に格納。同様に
+           フォールバックエントリを追加する。
+        3. ``clothoids``（``line_id``・``circle_id`` で参照解決）
+        4. ``offset_constraints``（``line_id``・``ca_id``・``cb_id`` で参照解決）
+        5. ``element_profiles``、``vertical_alignments``
+        6. 旧フォーマット互換（トップレベルの ``grade_lines``/``vertical_curves``）
+        7. 全 ID の最大値 + 1 でカウンタを再設定
+
+        フォールバック参照の設計意図: ``_resolve_id`` によって line の ID が
+        振り直された場合（保存ファイルに ``Line#6`` と ``Segment#6`` が同じ
+        ID を持つ等）、振り直し後の ID だけでなく元の ID でも ``lines_by_id``
+        を引けるようにすることで、clothoid の ``line_id`` が振り直し前の値を
+        指していても参照を解決できクロソイドが消えなくなる。
 
         Parameters
         ----------
         d : dict
-            `to_dict()` が返す形式の辞書。旧フォーマット（トップレベル
-            nicknames フィールド）との後方互換も維持する。
+            :meth:`to_dict` が返す形式の辞書。旧フォーマット（トップレベル
+            ``nicknames`` フィールド）との後方互換も維持する。
 
         Returns
         -------
