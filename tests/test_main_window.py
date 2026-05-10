@@ -891,3 +891,141 @@ class TestOpenVerticalWindow:
             w._open_vertical_window()
         except Exception as e:
             assert False, f"例外が発生: {e}"
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加価値の高い C1 カバレッジ向上テスト: main_window.py
+# ══════════════════════════════════════════════════════════════
+
+class TestSaveAsOpenWithMock:
+    """_save_as / _open のファイルダイアログをモックしてテスト（L297-340）。"""
+
+    def test_save_as_writes_file(self, tmp_path):
+        """[仕様] _save_as() がパス選択後に _write_file を呼び _filepath を更新する（L299-301）。"""
+        from unittest.mock import patch
+        w = make_window()
+        w.scene.add_line(Line(Vec2(0, 0), Vec2(100, 0)))
+        path = str(tmp_path / "out.rdjson")
+        with patch('PySide6.QtWidgets.QFileDialog.getSaveFileName',
+                   return_value=(path, '')):
+            w._save_as()
+        assert w._filepath == path
+        import os
+        assert os.path.exists(path)
+
+    def test_save_as_cancelled_does_nothing(self):
+        """[C1] _save_as() でキャンセル（空文字）されたとき何もしない（L299 分岐）。"""
+        from unittest.mock import patch
+        w = make_window()
+        with patch('PySide6.QtWidgets.QFileDialog.getSaveFileName',
+                   return_value=('', '')):
+            w._save_as()
+        assert w._filepath is None or w._filepath == ''  # 変化しない
+
+    def test_open_loads_scene(self, tmp_path):
+        """[仕様] _open() がファイル選択後に Scene を読み込む（L327-335）。"""
+        from unittest.mock import patch
+        import json
+        w = make_window()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        w.scene.add_line(ln)
+        path = str(tmp_path / "scene.rdjson")
+        w._write_file(path)
+        w2 = make_window()
+        with patch('PySide6.QtWidgets.QFileDialog.getOpenFileName',
+                   return_value=(path, '')):
+            w2._open()
+        assert len(w2.scene.lines) == 1
+
+    def test_open_cancelled_does_nothing(self):
+        """[C1] _open() でキャンセルされたとき scene は変化しない（L327 分岐）。"""
+        from unittest.mock import patch
+        w = make_window()
+        n_before = len(w.scene.lines)
+        with patch('PySide6.QtWidgets.QFileDialog.getOpenFileName',
+                   return_value=('', '')):
+            w._open()
+        assert len(w.scene.lines) == n_before
+
+    def test_open_invalid_json_shows_error(self, tmp_path):
+        """[C1] _open() で JSON パースエラー時に QMessageBox.critical が呼ばれる（L328 例外分岐）。"""
+        from unittest.mock import patch
+        path = str(tmp_path / "bad.rdjson")
+        with open(path, 'w') as f:
+            f.write("not json {{{")
+        w = make_window()
+        with patch('PySide6.QtWidgets.QFileDialog.getOpenFileName',
+                   return_value=(path, '')), \
+             patch('PySide6.QtWidgets.QMessageBox.critical') as mock_crit:
+            w._open()
+        assert mock_crit.called
+
+
+class TestDoDeleteObjects:
+    """_do_delete_objects の各分岐テスト（L431-447）。"""
+
+    def test_delete_arc_remaining_arcs(self):
+        """[C1] Arc 削除後に他の Arc が残る場合、Circle は保持される（L441-443）。"""
+        import math
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc1 = Arc(ci, 0.0, math.pi / 2)
+        arc2 = Arc(ci, math.pi / 2, math.pi)
+        ci.arcs.extend([arc1, arc2])
+        w.scene.add_circle(ci)
+        w._do_delete_objects([arc1])
+        assert ci in w.scene.circles   # Circle は残る
+        assert arc1 not in ci.arcs
+        assert arc2 in ci.arcs
+
+    def test_delete_arc_last_removes_circle(self):
+        """[仕様] Arc を削除して arcs が空になると Circle ごと削除される（L438-439）。"""
+        import math
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc = Arc(ci, 0.0, math.pi)
+        ci.arcs.append(arc)
+        w.scene.add_circle(ci)
+        w._do_delete_objects([arc])
+        assert ci not in w.scene.circles
+
+    def test_delete_line_object(self):
+        """[C1] Line オブジェクトを削除する（L444-445）。"""
+        w = make_window()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        w.scene.add_line(ln)
+        w._do_delete_objects([ln])
+        assert ln not in w.scene.lines
+
+    def test_delete_circle_object(self):
+        """[C1] Circle オブジェクトを削除する（L446-447）。"""
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 10.0)
+        w.scene.add_circle(ci)
+        w._do_delete_objects([ci])
+        assert ci not in w.scene.circles
+
+
+class TestOpenVerticalWindowWithProfiles:
+    """_open_vertical_window の標高同期テスト（L598-607）。"""
+
+    def test_vertical_window_syncs_elevation(self):
+        """[C1] 複数 EP が隣接するとき境界標高が同期される（L598-607）。"""
+        from models import ElementProfile, GradeLine
+        w = make_window()
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        ln2 = Line(Vec2(100, 0), Vec2(200, 0))
+        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
+        w.scene.add_line(ln1); w.scene.add_line(ln2)
+        ep1 = ElementProfile(element_id=seg1.id, element_type='segment',
+                              plan_length=100.0)
+        gl1 = GradeLine(0.0, 100.0, 10.0, 12.0)
+        ep1.grade_lines.append(gl1)
+        ep2 = ElementProfile(element_id=seg2.id, element_type='segment',
+                              plan_length=100.0)
+        w.scene.element_profiles.extend([ep1, ep2])
+        w._canvas.set_selection([seg1, seg2])
+        w._open_vertical_window()
+        # ep1.elev_end が ep2.elev_start に同期されている
+        assert ep1.elev_end == ep2.elev_start

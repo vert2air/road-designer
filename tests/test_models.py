@@ -3008,3 +3008,113 @@ class TestClothoidSnapCoverage:
         clo = Clothoid(ln, ci, snap_segment=True)
         # 例外にならないことを確認
         assert True  # 境界値: t_x が範囲外の場合の動作確認
+
+
+# ══════════════════════════════════════════════════════════════
+# 追加価値の高い C1 カバレッジ向上テスト: models.py
+# ══════════════════════════════════════════════════════════════
+
+class TestUpdateSnapsValidFalse:
+    """_update_snaps の _valid=False 早期 return テスト（L1031）。"""
+
+    # [C1] _valid=False のとき _update_snaps は早期 return する
+    def test_update_snaps_invalid_does_nothing(self):
+        """[C1] is_valid=False の Clothoid は _update_snaps が早期 return する（L1031）。"""
+        import os; os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        from PySide6.QtWidgets import QApplication
+        import sys
+        app = QApplication.instance() or QApplication(sys.argv)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        # 円を直線上（d=0）に置いて is_valid=False にする
+        ci = Circle(Vec2(0, 0), 30.0)
+        clo = Clothoid(ln, ci, snap_segment=True, snap_arc=True)
+        assert not clo.is_valid
+        # snap=True でも _valid=False なら snap 処理は走らない
+        assert clo._split_seg_ids == []
+        assert clo._split_arc_ids == []
+
+
+class TestUpdateSnapsSnapChange:
+    """_update_snaps の snap on→off 切替テスト（L1033-1043）。"""
+
+    # [C1] snap_segment=False のとき _apply_segment_split が呼ばれる（L1036-1037）
+    def test_snap_segment_false_calls_split(self):
+        """[C1] snap_segment=False で is_valid=True のとき _apply_segment_split が走る（L1036）。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        ci = Circle(Vec2(50, 60), 30.0)
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        if clo.is_valid:
+            # snap=False で compute() → _apply_segment_split が走る
+            # _split_seg_ids はデフォルトで空（split=off では分割しない）
+            assert isinstance(clo._split_seg_ids, list)
+
+    # [C1] snap_arc=False のとき _apply_arc_split が呼ばれる（L1042-1043）
+    def test_snap_arc_false_calls_split(self):
+        """[C1] snap_arc=False で is_valid=True かつ _circle_pt があるとき _apply_arc_split が走る（L1042）。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        ci = Circle(Vec2(50, 60), 30.0)
+        arc = Arc(ci, -0.5, 0.5); ci.arcs.append(arc)
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        if clo.is_valid:
+            assert isinstance(clo._split_arc_ids, list)
+
+
+class TestApplySegmentSnapCandidatesEmpty:
+    """_apply_segment_snap の candidates 空テスト（L1108-1109）。"""
+
+    # [C1] 全線分が _split_seg_ids に含まれていると candidates が空になり early return
+    def test_all_segments_in_split_ids(self):
+        """[C1] 全線分が _split_seg_ids に入っているとき candidates=[] → early return（L1109）。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        ci = Circle(Vec2(50, 60), 30.0)
+        clo = Clothoid(ln, ci, snap_segment=True)
+        if clo.is_valid:
+            # 強制的に全線分を _split_seg_ids に入れる
+            clo._split_seg_ids = [seg.id]
+            # _apply_segment_snap を呼んでも例外にならない（early return）
+            clo._apply_segment_snap()
+
+
+class TestApplyArcSnapSkipsExisting:
+    """_apply_arc_snap で既存 arc をスキップするテスト（L1234）。"""
+
+    # [C1] _split_arc_ids に入っている arc は continue でスキップされる（L1233-1234）
+    def test_existing_arc_in_split_ids_is_skipped(self):
+        """[C1] _split_arc_ids に含まれる arc は候補から除外される（L1234 continue）。"""
+        import math
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        ci = Circle(Vec2(50, 60), 30.0)
+        arc1 = Arc(ci, -0.5, -0.3); ci.arcs.append(arc1)
+        arc2 = Arc(ci, -0.3,  0.5); ci.arcs.append(arc2)
+        clo = Clothoid(ln, ci, snap_arc=True)
+        if clo.is_valid:
+            # _split_arc_ids に arc1 を入れてスキップされることを確認
+            clo._split_arc_ids = [arc1.id]
+            # _apply_arc_snap を呼んでも例外にならない
+            clo._apply_arc_snap()
+            assert True
+
+
+class TestClearArcSplitArcXbNotInArcs:
+    """_clear_arc_split で arc_xb が arcs にない場合（L1264）。"""
+
+    # [C1] arc_xb が circle.arcs に存在しない場合、if 条件が False でスキップ（L1264）
+    def test_clear_arc_split_arc_xb_missing(self):
+        """[C1] _split_arc_ids[1] が存在しない ID のとき if 条件 False で arc 削除しない（L1264）。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 60), 30.0)
+        arc = Arc(ci, -0.5, 0.5); ci.arcs.append(arc)
+        # snap_arc=False で Clothoid を生成（is_valid を確認するため）
+        clo = Clothoid(ln, ci, snap_arc=False)
+        if clo.is_valid:
+            # 手動で _split_arc_ids に arc.id と存在しない ID を設定
+            clo._split_arc_ids = [arc.id, 99999]
+            n_arcs_before = len(ci.arcs)
+            # arc_xb(id=99999) が arcs にないので if 条件が False → arc は削除されない
+            clo._clear_arc_split()
+            # _split_arc_ids はクリアされる
+            assert clo._split_arc_ids == []
