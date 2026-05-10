@@ -32,7 +32,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton, QLabel, QGroupBox, QDoubleSpinBox
 _app = QApplication.instance() or QApplication(sys.argv)
 
 from models import (
@@ -2064,3 +2064,238 @@ class TestFindByNickLabelWithPrefix:
         label = p._label_for_obj(seg)
         result = p._find_by_nick_label('[逆] ' + label)
         assert result is seg
+
+
+# ══════════════════════════════════════════════════════════════
+# 始点/終点ペア Copy/Paste 機能テスト
+# ══════════════════════════════════════════════════════════════
+
+from right_panel import (
+    _encode_point_pair, _decode_point_pair,
+    _clipboard_has_point_pair, _copy_point_pair, _paste_point_pair,
+    _transform_pair,
+)
+
+
+class TestPointPairEncoding:
+    """_encode_point_pair / _decode_point_pair のテスト。"""
+
+    def test_encode_decode_roundtrip(self):
+        """[仕様] エンコードしてデコードすると元の値が復元される。"""
+        s = Vec2(1.5, -2.3)
+        e = Vec2(100.0, 50.0)
+        text = _encode_point_pair(s, e)
+        pair = _decode_point_pair(text)
+        assert pair is not None
+        rs, re = pair
+        assert abs(rs.x - s.x) < 1e-9
+        assert abs(rs.y - s.y) < 1e-9
+        assert abs(re.x - e.x) < 1e-9
+        assert abs(re.y - e.y) < 1e-9
+
+    def test_decode_invalid_returns_none(self):
+        """[エッジ] 不正な JSON は None を返す。"""
+        assert _decode_point_pair("not json") is None
+        assert _decode_point_pair("{}") is None
+        assert _decode_point_pair("") is None
+
+
+class TestTransformPair:
+    """_transform_pair の各変換モードテスト。"""
+
+    def setup_method(self):
+        self.s = Vec2(1.0, 0.0)
+        self.e = Vec2(0.0, 1.0)
+
+    def test_rot90(self):
+        """[仕様] 90° 回転: (x,y) → (-y, x)。"""
+        ts, te = _transform_pair(self.s, self.e, "rot90")
+        assert abs(ts.x - 0.0) < 1e-9 and abs(ts.y - 1.0) < 1e-9
+        assert abs(te.x - (-1.0)) < 1e-9 and abs(te.y - 0.0) < 1e-9
+
+    def test_rot180(self):
+        """[仕様] 180° 回転: (x,y) → (-x, -y)。"""
+        ts, te = _transform_pair(self.s, self.e, "rot180")
+        assert abs(ts.x - (-1.0)) < 1e-9 and abs(ts.y - 0.0) < 1e-9
+        assert abs(te.x - 0.0) < 1e-9 and abs(te.y - (-1.0)) < 1e-9
+
+    def test_rot270(self):
+        """[仕様] -90° 回転: (x,y) → (y, -x)。"""
+        ts, te = _transform_pair(self.s, self.e, "rot270")
+        assert abs(ts.x - 0.0) < 1e-9 and abs(ts.y - (-1.0)) < 1e-9
+        assert abs(te.x - 1.0) < 1e-9 and abs(te.y - 0.0) < 1e-9
+
+    def test_flip_y(self):
+        """[仕様] y=0 線対称: (x,y) → (x, -y)。"""
+        ts, te = _transform_pair(self.s, self.e, "flip_y")
+        assert abs(ts.x - 1.0) < 1e-9 and abs(ts.y - 0.0) < 1e-9
+        assert abs(te.x - 0.0) < 1e-9 and abs(te.y - (-1.0)) < 1e-9
+
+    def test_flip_x(self):
+        """[仕様] x=0 線対称: (x,y) → (-x, y)。"""
+        ts, te = _transform_pair(self.s, self.e, "flip_x")
+        assert abs(ts.x - (-1.0)) < 1e-9 and abs(ts.y - 0.0) < 1e-9
+        assert abs(te.x - 0.0) < 1e-9 and abs(te.y - 1.0) < 1e-9
+
+    def test_flip_yx(self):
+        """[仕様] y=x 線対称: (x,y) → (y, x)。"""
+        ts, te = _transform_pair(self.s, self.e, "flip_yx")
+        assert abs(ts.x - 0.0) < 1e-9 and abs(ts.y - 1.0) < 1e-9
+        assert abs(te.x - 1.0) < 1e-9 and abs(te.y - 0.0) < 1e-9
+
+    def test_flip_y_neg_x(self):
+        """[仕様] y=-x 線対称: (x,y) → (-y, -x)。"""
+        ts, te = _transform_pair(self.s, self.e, "flip_y_neg_x")
+        assert abs(ts.x - 0.0) < 1e-9 and abs(ts.y - (-1.0)) < 1e-9
+        assert abs(te.x - (-1.0)) < 1e-9 and abs(te.y - 0.0) < 1e-9
+
+    def test_rot90_rot90_rot90_rot90_is_identity(self):
+        """[境界] 90° 回転を4回繰り返すと元に戻る。"""
+        s, e = Vec2(3.0, 7.0), Vec2(-5.0, 2.0)
+        rs, re = s, e
+        for _ in range(4):
+            rs, re = _transform_pair(rs, re, "rot90")
+        assert abs(rs.x - s.x) < 1e-6 and abs(rs.y - s.y) < 1e-6
+        assert abs(re.x - e.x) < 1e-6 and abs(re.y - e.y) < 1e-6
+
+    def test_flip_y_twice_is_identity(self):
+        """[境界] y=0 反転を2回繰り返すと元に戻る。"""
+        s, e = Vec2(3.0, 7.0), Vec2(-5.0, 2.0)
+        rs, re = _transform_pair(s, e, "flip_y")
+        rs, re = _transform_pair(rs, re, "flip_y")
+        assert abs(rs.x - s.x) < 1e-6 and abs(rs.y - s.y) < 1e-6
+
+
+class TestCopyPasteClipboard:
+    """クリップボードへの Copy / Paste テスト。"""
+
+    def test_copy_sets_clipboard(self):
+        """[仕様] _copy_point_pair でクリップボードに有効なペアが設定される。"""
+        s, e = Vec2(10.0, 20.0), Vec2(30.0, 40.0)
+        _copy_point_pair(s, e)
+        assert _clipboard_has_point_pair()
+
+    def test_paste_restores_values(self):
+        """[仕様] _paste_point_pair でコピーした値が復元される。"""
+        s, e = Vec2(10.0, 20.0), Vec2(30.0, 40.0)
+        _copy_point_pair(s, e)
+        pair = _paste_point_pair()
+        assert pair is not None
+        rs, re = pair
+        assert abs(rs.x - s.x) < 1e-9
+        assert abs(re.y - e.y) < 1e-9
+
+    def test_clipboard_empty_returns_false(self):
+        """[境界] クリップボードに無効なテキストがあると False を返す。"""
+        from PySide6.QtWidgets import QApplication, QPushButton, QLabel, QGroupBox, QDoubleSpinBox
+        QApplication.clipboard().setText("invalid content")
+        assert not _clipboard_has_point_pair()
+
+
+class TestCopyButtonInLineProps:
+    """直線プロパティの Copy ボタンのテスト。"""
+
+    def test_copy_button_exists_in_line_props(self):
+        """[仕様] 直線プロパティに Copy ボタンが存在する。"""
+        p, sc = make_panel()
+        ln = Line(Vec2(10.0, 20.0), Vec2(100.0, 50.0))
+        sc.add_line(ln)
+        p.update_selection([ln], sc)
+        btns = [w.text() for w in p.findChildren(QPushButton)]
+        assert any('Copy' in t for t in btns)
+
+    def test_copy_button_copies_ref_points(self):
+        """[仕様] 直線の Copy ボタンをクリックすると ref_start/ref_end がコピーされる。"""
+        p, sc = make_panel()
+        ln = Line(Vec2(10.0, 20.0), Vec2(100.0, 50.0))
+        sc.add_line(ln)
+        p.update_selection([ln], sc)
+        btns = [w for w in p.findChildren(QPushButton) if 'Copy' in w.text()]
+        if btns:
+            btns[0].click()
+        pair = _paste_point_pair()
+        assert pair is not None
+        rs, re = pair
+        assert abs(rs.x - 10.0) < 1e-6
+        assert abs(re.x - 100.0) < 1e-6
+
+    def test_paste_button_exists_in_line_props(self):
+        """[仕様] 直線プロパティに Paste ボタンが存在する。"""
+        p, sc = make_panel()
+        ln = Line(Vec2(10.0, 20.0), Vec2(100.0, 50.0))
+        sc.add_line(ln)
+        p.update_selection([ln], sc)
+        btns = [w.text() for w in p.findChildren(QPushButton)]
+        assert any('Paste' in t for t in btns)
+
+    def test_paste_button_disabled_when_clipboard_empty(self):
+        """[仕様] クリップボードが空のとき Paste ボタンは無効。"""
+        from PySide6.QtWidgets import QApplication, QPushButton, QLabel, QGroupBox, QDoubleSpinBox
+        QApplication.clipboard().setText("")
+        p, sc = make_panel()
+        ln = Line(Vec2(10.0, 20.0), Vec2(100.0, 50.0))
+        sc.add_line(ln)
+        p.update_selection([ln], sc)
+        paste_btns = [w for w in p.findChildren(QPushButton)
+                      if 'Paste' in w.text()]
+        if paste_btns:
+            assert not paste_btns[0].isEnabled()
+
+    def test_paste_button_enabled_when_clipboard_has_pair(self):
+        """[仕様] クリップボードにペアがあるとき Paste ボタンは有効。"""
+        _copy_point_pair(Vec2(1, 2), Vec2(3, 4))
+        p, sc = make_panel()
+        ln = Line(Vec2(10.0, 20.0), Vec2(100.0, 50.0))
+        sc.add_line(ln)
+        p.update_selection([ln], sc)
+        paste_btns = [w for w in p.findChildren(QPushButton)
+                      if 'Paste' in w.text()]
+        if paste_btns:
+            assert paste_btns[0].isEnabled()
+
+    def test_paste_button_applies_to_line_ref_points(self):
+        """[仕様] Paste ボタンクリックで直線の参照点が更新される。"""
+        _copy_point_pair(Vec2(5.0, 6.0), Vec2(50.0, 60.0))
+        p, sc = make_panel()
+        ln = Line(Vec2(10.0, 20.0), Vec2(100.0, 50.0))
+        sc.add_line(ln)
+        p.update_selection([ln], sc)
+        paste_btns = [w for w in p.findChildren(QPushButton)
+                      if 'Paste' in w.text()]
+        if paste_btns and paste_btns[0].isEnabled():
+            paste_btns[0].click()
+            assert abs(ln.ref_start.x - 5.0) < 1e-6
+            assert abs(ln.ref_end.x - 50.0) < 1e-6
+
+
+class TestCopyButtonInSegmentProps:
+    """線分プロパティの Copy ボタンのテスト。"""
+
+    def test_copy_button_in_segment_props(self):
+        """[仕様] 線分プロパティに Copy ボタンが存在する。"""
+        p, sc = make_panel()
+        ln = Line(Vec2(0.0, 0.0), Vec2(100.0, 0.0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        p.update_selection([seg], sc)
+        btns = [w.text() for w in p.findChildren(QPushButton)]
+        assert any('Copy' in t for t in btns)
+
+    def test_copy_button_copies_segment_endpoints(self):
+        """[仕様] 線分の Copy ボタンで始点・終点がコピーされる。"""
+        p, sc = make_panel()
+        ln = Line(Vec2(0.0, 0.0), Vec2(100.0, 0.0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        p.update_selection([seg], sc)
+        btns = [w for w in p.findChildren(QPushButton) if 'Copy' in w.text()]
+        if btns:
+            btns[0].click()
+        pair = _paste_point_pair()
+        assert pair is not None
+        rs, re = pair
+        # 始点=(0,0), 終点=(100,0)
+        assert abs(rs.x - 0.0) < 1e-3
+        assert abs(re.x - 100.0) < 1e-3
