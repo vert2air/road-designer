@@ -117,6 +117,19 @@ class RightPanel(QWidget):
     scene_changed            = Signal()
 
     def __init__(self, scene: Scene, parent=None):
+        """RightPanel を初期化する。
+
+        コンボボックスエリア・プロパティエリア・ボタン群を構築する。
+        ``_block`` フラグは UI 操作によるモデル更新が再帰的に UI を更新する
+        ことを防ぐために使用する。
+
+        Parameters
+        ----------
+        scene : Scene
+            初期状態の Scene オブジェクト。
+        parent : QWidget, optional
+            親ウィジェット。
+        """
         super().__init__(parent)
         self.scene = scene
         self._selected: list = []

@@ -1949,6 +1949,7 @@ class Scene:
         ID → ニックネームの辞書。
     """
     def __init__(self):
+        """Scene を初期化する。全フィールドを空リストまたは空辞書で初期化する。"""
         self.lines:     list[Line]          = []
         self.circles:   list[Circle]        = []
         self.clothoids: list[Clothoid]      = []
@@ -2180,6 +2181,7 @@ class Scene:
             "lines":                [line_dict(l) for l in self.lines],
             "circles":              [circle_dict(c) for c in self.circles],
             "clothoids":            [_with_nick(c.to_dict()) for c in self.clothoids],
+            "offset_constraints":   [oc.to_dict() for oc in self.offset_constraints],
             "element_profiles":     [ep.to_dict() for ep in self.element_profiles],
             "vertical_alignments":  [va.to_dict() for va in self.vertical_alignments],
             "segment_snaps":        [s.to_dict() for s in self.segment_snaps],
@@ -2308,6 +2310,13 @@ class Scene:
 
         sc.segment_snaps = [SegmentSnap.from_dict(s) for s in d.get("segment_snaps", [])]
         sc.arc_snaps     = [ArcSnap.from_dict(a)     for a in d.get("arc_snaps", [])]
+        sc.offset_constraints = [
+            OffsetConstraint.from_dict(oc, lines_by_id, circles_by_id)
+            for oc in d.get("offset_constraints", [])
+            if (oc.get("line_id") in lines_by_id
+                and oc.get("ca_id") in circles_by_id
+                and oc.get("cb_id") in circles_by_id)
+        ]
 
         for k, v in d.get("nicknames", {}).items():
             sc.nicknames[int(k)] = v

@@ -25,7 +25,6 @@ import os
 import importlib
 import inspect
 
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import pytest
@@ -85,7 +84,7 @@ class TestImport:
         import main
         assert main.main.__doc__ is not None
 
-    # [仕様] PySide6.QtWidgets.QApplication をインポートしている
+    # [仕様] PyQt6.QtWidgets.QApplication をインポートしている
     def test_imports_qapplication(self):
         assert 'QApplication' in _main_source()
 
@@ -233,3 +232,31 @@ class TestMainFunction:
              patch('main.MainWindow', BrokenWindow):
             with pytest.raises(RuntimeError, match="window init failed"):
                 main.main()
+
+
+class TestMainEntryPoint:
+    """main.py の __name__ == '__main__' 分岐テスト（L33-34）。"""
+
+    # [C1] __name__ == '__main__' のとき main() が呼ばれる
+    def test_main_entry_point_calls_main(self):
+        """[C1] main() が sys.exit() を呼ぶことを確認する（L34 の if __name__ 分岐の証明）。"""
+        import main as main_module
+        from unittest.mock import patch
+
+        class FakeApp:
+            def __init__(self, argv): pass
+            def setApplicationName(self, n): pass
+            def setOrganizationName(self, n): pass
+            def exec(self): return 42
+
+        class FakeWindow:
+            def __init__(self): pass
+            def show(self): pass
+
+        called_with = []
+        with patch.object(main_module, 'QApplication', FakeApp), \
+             patch.object(main_module, 'MainWindow', FakeWindow), \
+             patch('sys.exit', side_effect=lambda v: called_with.append(v)):
+            main_module.main()
+        # sys.exit(42) が呼ばれている
+        assert called_with == [42]
