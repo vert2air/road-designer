@@ -61,8 +61,7 @@ class TestPaintEvent:
     # [C1] 空シーンの描画（L414: paintEvent が呼ばれる）
     def test_paint_empty(self):
         c, _ = make_canvas()
-        c.update()
-        QTest.qWait(10)  # イベントループを回して描画を実行
+        c.grab()  # paintEvent を同期的に実行（Windows offscreen 不要）
 
     # [C1] Segment を含むシーンの描画
     def test_paint_with_segment(self):
@@ -71,8 +70,7 @@ class TestPaintEvent:
         seg = Segment(ln, 0.0, 1.0)
         ln.segments.append(seg)
         sc.add_line(ln)
-        c.update()
-        QTest.qWait(10)
+        c.grab()
 
     # [C1] Arc を含むシーンの描画
     def test_paint_with_arc(self):
@@ -81,8 +79,7 @@ class TestPaintEvent:
         arc = Arc(ci, 0.0, math.pi)
         ci.arcs.append(arc)
         sc.add_circle(ci)
-        c.update()
-        QTest.qWait(10)
+        c.grab()
 
     # [C1] Clothoid を含むシーンの描画
     def test_paint_with_clothoid(self):
@@ -93,8 +90,7 @@ class TestPaintEvent:
         sc.add_circle(ci)
         clo = Clothoid(ln, ci, snap_segment=True, snap_arc=True)
         sc.add_clothoid(clo)
-        c.update()
-        QTest.qWait(10)
+        c.grab()
 
     # [C1] 折れ線接続を含むシーンの描画
     def test_paint_with_connection(self):
@@ -104,8 +100,7 @@ class TestPaintEvent:
         sc.add_line(a)
         sc.add_line(b)
         c._connect_polyline(a, b)
-        c.update()
-        QTest.qWait(10)
+        c.grab()
 
     # [C1] ハンドルを含む状態での描画（snap 済み端点マーカーも）
     def test_paint_with_handles_and_snap(self):
@@ -121,8 +116,7 @@ class TestPaintEvent:
         clo = Clothoid(ln, ci, snap_segment=True, snap_arc=True)
         sc.add_clothoid(clo)
         c.set_selection([ln])
-        c.update()
-        QTest.qWait(10)
+        c.grab()
 
     # [C1] ラバー線（直線モード中のマウス追従）を含む描画
     def test_paint_rubber_line(self):
@@ -130,8 +124,7 @@ class TestPaintEvent:
         c.set_mode(Canvas.MODE_LINE)
         c._line_first_pt = Vec2(-50, 0)
         c._rubber_end = Vec2(50, 0)
-        c.update()
-        QTest.qWait(10)
+        c.grab()
 
     # [C1] 円モードのラバー円を含む描画
     def test_paint_rubber_circle(self):
@@ -139,8 +132,7 @@ class TestPaintEvent:
         c.set_mode(Canvas.MODE_CIRCLE)
         c._circle_center = Vec2(0, 0)
         c._rubber_radius = 50.0
-        c.update()
-        QTest.qWait(10)
+        c.grab()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -559,7 +551,7 @@ class TestMouseAndKey:
         ln = Line(Vec2(-200, 0), Vec2(200, 0))
         sc.add_line(ln)
         QTest.mouseMove(c, world_to_qpoint(c, 0, 0))
-        QTest.qWait(10)
+        QApplication.processEvents()
         # ホバーが更新されている（_hovered が設定される）
         # 例外にならないことを確認
 
