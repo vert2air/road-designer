@@ -1370,6 +1370,46 @@ class RightPanel(QWidget):
         lay.addWidget(QLabel(f"方向角: {ang:.2f}°"))
         self._prop_layout.addWidget(grp)
 
+        # ── 子線分リスト ──────────────────────────────────────────────
+        if ln.segments:
+            self._build_child_segments_list(ln)
+
+    def _build_child_segments_list(self, ln: 'Line'):
+        """直線に属する線分を始点順に一覧表示するパネルを構築する。
+
+        各行に始点・終点座標と長さを表示し、「選択」ボタンで線分を選択できる。
+
+        Parameters
+        ----------
+        ln : Line
+            親直線。
+        """
+        segs = sorted(ln.segments, key=lambda s: s.t_start)
+        grp = QGroupBox(f"線分一覧 ({len(segs)} 本)")
+        lay = QVBoxLayout(grp)
+        lay.setSpacing(2)
+        for seg in segs:
+            start = seg.start
+            end   = seg.end
+            nick  = self.scene.get_nickname(seg.id, 'seg')
+            row = QHBoxLayout()
+            row.setSpacing(4)
+            lbl = QLabel(
+                f"{nick}  "
+                f"({start.x:.2f}, {start.y:.2f}) → "
+                f"({end.x:.2f}, {end.y:.2f})  "
+                f"{seg.length():.3f} m"
+            )
+            lbl.setWordWrap(True)
+            btn_sel = QPushButton("選択")
+            btn_sel.setMaximumWidth(44)
+            btn_sel.clicked.connect(
+                lambda _, s=seg: self.request_select.emit([s]))
+            row.addWidget(lbl, 1)
+            row.addWidget(btn_sel)
+            lay.addLayout(row)
+        self._prop_layout.addWidget(grp)
+
     def _build_circle_props(self, ci: Circle):
         """円プロパティパネルを構築して ``_prop_layout`` に追加する。
 
@@ -1422,6 +1462,46 @@ class RightPanel(QWidget):
         row_r = QHBoxLayout()
         row_r.addWidget(QLabel("半径:")); row_r.addWidget(sb_r)
         lay.addLayout(row_r)
+        self._prop_layout.addWidget(grp)
+
+        # ── 子円弧リスト ──────────────────────────────────────────────
+        if ci.arcs:
+            self._build_child_arcs_list(ci)
+
+    def _build_child_arcs_list(self, ci: 'Circle'):
+        """円に属する円弧を始点角度順に一覧表示するパネルを構築する。
+
+        各行に始点角度・終点角度・弧長を表示し、「選択」ボタンで円弧を選択できる。
+
+        Parameters
+        ----------
+        ci : Circle
+            親円。
+        """
+        arcs = sorted(ci.arcs, key=lambda a: a.angle_start)
+        grp = QGroupBox(f"円弧一覧 ({len(arcs)} 本)")
+        lay = QVBoxLayout(grp)
+        lay.setSpacing(2)
+        for arc in arcs:
+            nick = self.scene.get_nickname(arc.id, 'arc')
+            ang_s = math.degrees(arc.angle_start)
+            ang_e = math.degrees(arc.angle_end)
+            arc_len = arc.arc_length()
+            row = QHBoxLayout()
+            row.setSpacing(4)
+            lbl = QLabel(
+                f"{nick}  "
+                f"{ang_s:.2f}° → {ang_e:.2f}°  "
+                f"{arc_len:.3f} m"
+            )
+            lbl.setWordWrap(True)
+            btn_sel = QPushButton("選択")
+            btn_sel.setMaximumWidth(44)
+            btn_sel.clicked.connect(
+                lambda _, a=arc: self.request_select.emit([a]))
+            row.addWidget(lbl, 1)
+            row.addWidget(btn_sel)
+            lay.addLayout(row)
         self._prop_layout.addWidget(grp)
 
     def _build_clothoid_props(self, clo: Clothoid):
