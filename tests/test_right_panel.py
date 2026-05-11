@@ -2299,3 +2299,196 @@ class TestCopyButtonInSegmentProps:
         # 始点=(0,0), 終点=(100,0)
         assert abs(rs.x - 0.0) < 1e-3
         assert abs(re.x - 100.0) < 1e-3
+
+
+# ══════════════════════════════════════════════════════════════
+# 子線分リスト / 子円弧リスト テスト
+# ══════════════════════════════════════════════════════════════
+
+class TestChildSegmentsList:
+    """直線選択時に子線分が始点順でリストアップされるテスト。"""
+
+    def _make_line_with_segs(self, sc, n=3):
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        # 意図的に逆順で追加して、始点順ソートを確認する
+        segs = [Segment(ln, i / n, (i + 1) / n) for i in range(n)]
+        for s in reversed(segs):   # 逆順で append
+            ln.segments.append(s)
+        sc.add_line(ln)
+        return ln, segs
+
+    def test_segment_list_group_shown(self):
+        """[仕様] 直線選択時に「線分一覧」グループが表示される。"""
+        p, sc = make_panel()
+        ln, _ = self._make_line_with_segs(sc)
+        p.update_selection([ln], sc)
+        groups = [w.title() for w in p.findChildren(QGroupBox)]
+        assert any('線分一覧' in t for t in groups)
+
+    def test_segment_count_in_title(self):
+        """[仕様] グループタイトルに線分本数が表示される。"""
+        p, sc = make_panel()
+        ln, _ = self._make_line_with_segs(sc, n=3)
+        p.update_selection([ln], sc)
+        groups = [w.title() for w in p.findChildren(QGroupBox)]
+        assert any('3' in t and '線分' in t for t in groups)
+
+    def test_segments_sorted_by_t_start(self):
+        """[仕様] 線分が t_start（始点位置）の昇順で並ぶ。"""
+        import math
+        p, sc = make_panel()
+        ln, segs = self._make_line_with_segs(sc, n=3)
+        p.update_selection([ln], sc)
+        labels = [w.text() for w in p.findChildren(QLabel)
+                  if '→' in w.text() and 'm' in w.text() and '°' not in w.text()]
+        # 座標が先頭から小さい順になっているか確認
+        # 各ラベルから始点 X を抽出
+        import re
+        xs = []
+        for lbl in labels:
+            m = re.search(r'\(([+-]?\d+\.\d+),', lbl)
+            if m:
+                xs.append(float(m.group(1)))
+        assert xs == sorted(xs), f"始点順になっていない: {xs}"
+
+    def test_select_button_per_segment(self):
+        """[仕様] 各線分に「選択」ボタンが存在する。"""
+        p, sc = make_panel()
+        ln, segs = self._make_line_with_segs(sc, n=2)
+        p.update_selection([ln], sc)
+        sel_btns = [w for w in p.findChildren(QPushButton)
+                    if w.text() == '選択']
+        assert len(sel_btns) >= 2
+
+    def test_select_button_emits_correct_segment(self):
+        """[仕様] 「選択」ボタンクリックで対応する Segment が emit される。"""
+        p, sc = make_panel()
+        ln, segs = self._make_line_with_segs(sc, n=2)
+        p.update_selection([ln], sc)
+        selected = []
+        p.request_select.connect(lambda s: selected.extend(s))
+        sel_btns = [w for w in p.findChildren(QPushButton)
+                    if w.text() == '選択']
+        if sel_btns:
+            sel_btns[0].click()
+        assert len(selected) == 1
+        assert isinstance(selected[0], Segment)
+
+    def test_no_segment_group_when_no_segs(self):
+        """[C1] 線分がない直線では「線分一覧」グループが表示されない。"""
+        p, sc = make_panel()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))  # segments なし
+        sc.add_line(ln)
+        p.update_selection([ln], sc)
+        groups = [w.title() for w in p.findChildren(QGroupBox)]
+        assert not any('線分一覧' in t for t in groups)
+
+    def test_segment_length_shown_in_label(self):
+        """[仕様] 各線分のラベルに長さ（m）が表示される。"""
+        p, sc = make_panel()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        p.update_selection([ln], sc)
+        labels = [w.text() for w in p.findChildren(QLabel)]
+        # 長さ 100.000 m が含まれるラベルがある
+        assert any('100.000 m' in l for l in labels)
+
+
+class TestChildArcsList:
+    """円選択時に子円弧が始点角度順でリストアップされるテスト。"""
+
+    def _make_circle_with_arcs(self, sc, angles=None):
+        import math
+        ci = Circle(Vec2(0, 0), 20.0)
+        if angles is None:
+            angles = [(math.pi, 2 * math.pi), (0, math.pi / 2), (math.pi / 2, math.pi)]
+        for s, e in reversed(angles):   # 逆順で追加
+            arc = Arc(ci, s, e)
+            ci.arcs.append(arc)
+        sc.add_circle(ci)
+        return ci
+
+    def test_arc_list_group_shown(self):
+        """[仕様] 円選択時に「円弧一覧」グループが表示される。"""
+        import math
+        p, sc = make_panel()
+        ci = self._make_circle_with_arcs(sc)
+        p.update_selection([ci], sc)
+        groups = [w.title() for w in p.findChildren(QGroupBox)]
+        assert any('円弧一覧' in t for t in groups)
+
+    def test_arc_count_in_title(self):
+        """[仕様] グループタイトルに円弧本数が表示される。"""
+        import math
+        p, sc = make_panel()
+        ci = self._make_circle_with_arcs(sc)
+        p.update_selection([ci], sc)
+        groups = [w.title() for w in p.findChildren(QGroupBox)]
+        assert any('3' in t and '円弧' in t for t in groups)
+
+    def test_arcs_sorted_by_angle_start(self):
+        """[仕様] 円弧が angle_start（始点角度）の昇順で並ぶ。"""
+        import math, re
+        p, sc = make_panel()
+        ci = self._make_circle_with_arcs(sc)
+        p.update_selection([ci], sc)
+        labels = [w.text() for w in p.findChildren(QLabel)
+                  if '°' in w.text() and '→' in w.text()]
+        # 各ラベルから始点角度を抽出
+        angs = []
+        for lbl in labels:
+            m = re.search(r'([\d.]+)°\s*→', lbl)
+            if m:
+                angs.append(float(m.group(1)))
+        assert angs == sorted(angs), f"始点角度順になっていない: {angs}"
+
+    def test_arc_length_shown_in_label(self):
+        """[仕様] 各円弧のラベルに弧長（m）が表示される。"""
+        import math
+        p, sc = make_panel()
+        ci = Circle(Vec2(0, 0), 20.0)
+        arc = Arc(ci, 0, math.pi)  # 半周 = 20π ≈ 62.832 m
+        ci.arcs.append(arc)
+        sc.add_circle(ci)
+        p.update_selection([ci], sc)
+        labels = [w.text() for w in p.findChildren(QLabel)]
+        assert any('62.8' in l for l in labels)
+
+    def test_select_button_per_arc(self):
+        """[仕様] 各円弧に「選択」ボタンが存在する。"""
+        import math
+        p, sc = make_panel()
+        ci = self._make_circle_with_arcs(sc)
+        p.update_selection([ci], sc)
+        sel_btns = [w for w in p.findChildren(QPushButton)
+                    if w.text() == '選択']
+        assert len(sel_btns) >= 3
+
+    def test_select_button_emits_correct_arc(self):
+        """[仕様] 「選択」ボタンクリックで対応する Arc が emit される。"""
+        import math
+        p, sc = make_panel()
+        ci = Circle(Vec2(0, 0), 20.0)
+        arc = Arc(ci, 0, math.pi)
+        ci.arcs.append(arc)
+        sc.add_circle(ci)
+        p.update_selection([ci], sc)
+        selected = []
+        p.request_select.connect(lambda s: selected.extend(s))
+        sel_btns = [w for w in p.findChildren(QPushButton)
+                    if w.text() == '選択']
+        if sel_btns:
+            sel_btns[0].click()
+        assert len(selected) == 1
+        assert isinstance(selected[0], Arc)
+
+    def test_no_arc_group_when_no_arcs(self):
+        """[C1] 円弧がない円では「円弧一覧」グループが表示されない。"""
+        p, sc = make_panel()
+        ci = Circle(Vec2(0, 0), 20.0)  # arcs なし
+        sc.add_circle(ci)
+        p.update_selection([ci], sc)
+        groups = [w.title() for w in p.findChildren(QGroupBox)]
+        assert not any('円弧一覧' in t for t in groups)
