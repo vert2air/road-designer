@@ -194,9 +194,27 @@ def _add_copy_paste_buttons(lay, get_start, get_end,
     row.addWidget(btn_paste)
     lay.addLayout(row)
 
+class _FlexSpinBox(QDoubleSpinBox):
+    """パネル幅に追従する QDoubleSpinBox。
+
+    デフォルト実装の minimumSizeHint が約 120px を主張するため、
+    右パネルで水平スクロールが発生する問題を防ぐためにオーバーライドする。
+    """
+
+    def minimumSizeHint(self):
+        sh = super().minimumSizeHint()
+        from PySide6.QtCore import QSize
+        return QSize(40, sh.height())
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        from PySide6.QtCore import QSize
+        return QSize(60, sh.height())
+
+
 def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
                   step: float = 0.1, decimals: int = 3) -> QDoubleSpinBox:
-    """設定済みの QDoubleSpinBox を生成して返すファクトリ関数。
+    """設定済みの _FlexSpinBox を生成して返すファクトリ関数。
 
     Parameters
     ----------
@@ -212,13 +230,16 @@ def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
     Returns
     -------
     QDoubleSpinBox
-        設定済みのスピンボックス。
+        設定済みのスピンボックス（実体は _FlexSpinBox）。
     """
-    sb = QDoubleSpinBox()
+    sb = _FlexSpinBox()
     sb.setRange(lo, hi)
     sb.setSingleStep(step)
     sb.setDecimals(decimals)
     sb.setValue(val)
+    # 内側の QLineEdit の sizeHint(≈123px) が GroupBox 幅を押し広げないよう
+    # 最大幅を設定して物理的にサイズを制限する
+    sb.setMaximumWidth(120)
     return sb
 
 
@@ -376,6 +397,11 @@ class RightPanel(QWidget):
         self._prop_widget = QWidget()
         self._prop_layout = QVBoxLayout(self._prop_widget)
         self._prop_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # ウィジェットが scroll のビューポート幅に追従するよう制約を設定
+        # SetFixedSize だとリサイズに追従しないので SetMinAndMaxSize を使う
+        from PySide6.QtWidgets import QLayout
+        self._prop_layout.setSizeConstraint(
+            QLayout.SizeConstraint.SetMinAndMaxSize)
         scroll.setWidget(self._prop_widget)
         root_layout.addWidget(scroll, 1)
 
@@ -1286,16 +1312,20 @@ class RightPanel(QWidget):
             prefix = ("line" if isinstance(rel, Line) else
                       "circle" if isinstance(rel, Circle) else "clothoid")
             name = self.scene.get_nickname(rid, prefix) if rid else str(rel)
-            row = QHBoxLayout()
-            row.addWidget(QLabel(name))
+            # ニックネームを上段、ボタンを下段にして幅を節約
+            lay.addWidget(QLabel(name))
+            btn_row = QHBoxLayout()
             btn_sel = QPushButton("選択")
+            btn_sel.setFixedWidth(44)
             btn_sel.clicked.connect(lambda _, r=rel: self.request_select.emit([r]))
             btn_add = QPushButton("選択追加")
+            btn_add.setFixedWidth(66)
             btn_add.clicked.connect(lambda _, r=rel:
                                      self.request_select.emit(self._selected + [r]))
-            row.addWidget(btn_sel)
-            row.addWidget(btn_add)
-            lay.addLayout(row)
+            btn_row.addStretch()
+            btn_row.addWidget(btn_sel)
+            btn_row.addWidget(btn_add)
+            lay.addLayout(btn_row)
         self._prop_layout.addWidget(grp)
 
     def _build_line_props(self, ln: Line):
@@ -1346,9 +1376,10 @@ class RightPanel(QWidget):
                 self.scene_changed.emit()
             sbx.valueChanged.connect(on_x)
             sby.valueChanged.connect(on_y)
-            row.addWidget(QLabel("X:")); row.addWidget(sbx)
-            row.addWidget(QLabel("Y:")); row.addWidget(sby)
-            lay.addLayout(row)
+            row_x = QHBoxLayout(); row_x.addWidget(QLabel("X:")); row_x.addWidget(sbx)
+            row_y = QHBoxLayout(); row_y.addWidget(QLabel("Y:")); row_y.addWidget(sby)
+            lay.addLayout(row_x)
+            lay.addLayout(row_y)
 
         add_vec2("参照始点", lambda: ln.ref_start,
                  lambda v: setattr(ln, 'ref_start', v))
@@ -1377,7 +1408,9 @@ class RightPanel(QWidget):
     def _build_child_segments_list(self, ln: 'Line'):
         """直線に属する線分を始点順に一覧表示するパネルを構築する。
 
-        各行に始点・終点座標と長さを表示し、「選択」ボタンで線分を選択できる。
+        各行にニックネーム・始点/終点座標・長さを表示し、
+        「選択」ボタンで線分を選択できる。ラベルは折り返して
+        ボタンが常にパネル右端に収まるよう配置する。
 
         Parameters
         ----------
@@ -1387,27 +1420,53 @@ class RightPanel(QWidget):
         segs = sorted(ln.segments, key=lambda s: s.t_start)
         grp = QGroupBox(f"線分一覧 ({len(segs)} 本)")
         lay = QVBoxLayout(grp)
-        lay.setSpacing(2)
+        lay.setSpacing(4)
         for seg in segs:
             start = seg.start
             end   = seg.end
             nick  = self.scene.get_nickname(seg.id, 'seg')
+
+            # 外側: ボタンを右端に固定、ラベルは残り幅を使う
             row = QHBoxLayout()
             row.setSpacing(4)
+            row.setContentsMargins(0, 0, 0, 0)
+
+            # ラベル部（折り返しあり・幅制限なし）
             lbl = QLabel(
-                f"{nick}  "
-                f"({start.x:.2f}, {start.y:.2f}) → "
-                f"({end.x:.2f}, {end.y:.2f})  "
-                f"{seg.length():.3f} m"
+                f"<b>{nick}</b><br>"
+                f"始: ({start.x:.2f}, {start.y:.2f})<br>"
+                f"終: ({end.x:.2f}, {end.y:.2f})<br>"
+                f"長: {seg.length():.3f} m"
             )
             lbl.setWordWrap(True)
+            lbl.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Preferred)
+
             btn_sel = QPushButton("選択")
-            btn_sel.setMaximumWidth(44)
+            btn_sel.setFixedWidth(44)
+            btn_sel.setSizePolicy(
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Fixed)
             btn_sel.clicked.connect(
                 lambda _, s=seg: self.request_select.emit([s]))
-            row.addWidget(lbl, 1)
-            row.addWidget(btn_sel)
-            lay.addLayout(row)
+
+            btn_add = QPushButton("選択追加")
+            btn_add.setFixedWidth(66)
+            btn_add.setSizePolicy(
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Fixed)
+            btn_add.clicked.connect(
+                lambda _, s=seg: self.request_select.emit(self._selected + [s]))
+
+            # ラベルを上段、ボタンを下段右寄せに配置
+            lay.addWidget(lbl)
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            btn_row.addWidget(btn_sel)
+            btn_row.addWidget(btn_add)
+            lay.addLayout(btn_row)
+
         self._prop_layout.addWidget(grp)
 
     def _build_circle_props(self, ci: Circle):
@@ -1457,8 +1516,10 @@ class RightPanel(QWidget):
         sb_r.valueChanged.connect(on_r)
 
         row_cx.addWidget(QLabel("中心X:")); row_cx.addWidget(sb_cx)
-        row_cx.addWidget(QLabel("Y:"));     row_cx.addWidget(sb_cy)
+        row_cy = QHBoxLayout()
+        row_cy.addWidget(QLabel("中心Y:")); row_cy.addWidget(sb_cy)
         lay.addLayout(row_cx)
+        lay.addLayout(row_cy)
         row_r = QHBoxLayout()
         row_r.addWidget(QLabel("半径:")); row_r.addWidget(sb_r)
         lay.addLayout(row_r)
@@ -1471,7 +1532,9 @@ class RightPanel(QWidget):
     def _build_child_arcs_list(self, ci: 'Circle'):
         """円に属する円弧を始点角度順に一覧表示するパネルを構築する。
 
-        各行に始点角度・終点角度・弧長を表示し、「選択」ボタンで円弧を選択できる。
+        各行にニックネーム・始点/終点角度・弧長を表示し、
+        「選択」ボタンで円弧を選択できる。ラベルは折り返して
+        ボタンが常にパネル右端に収まるよう配置する。
 
         Parameters
         ----------
@@ -1481,27 +1544,48 @@ class RightPanel(QWidget):
         arcs = sorted(ci.arcs, key=lambda a: a.angle_start)
         grp = QGroupBox(f"円弧一覧 ({len(arcs)} 本)")
         lay = QVBoxLayout(grp)
-        lay.setSpacing(2)
+        lay.setSpacing(4)
         for arc in arcs:
-            nick = self.scene.get_nickname(arc.id, 'arc')
-            ang_s = math.degrees(arc.angle_start)
-            ang_e = math.degrees(arc.angle_end)
+            nick    = self.scene.get_nickname(arc.id, 'arc')
+            ang_s   = math.degrees(arc.angle_start)
+            ang_e   = math.degrees(arc.angle_end)
             arc_len = arc.arc_length()
-            row = QHBoxLayout()
-            row.setSpacing(4)
+
             lbl = QLabel(
-                f"{nick}  "
-                f"{ang_s:.2f}° → {ang_e:.2f}°  "
-                f"{arc_len:.3f} m"
+                f"<b>{nick}</b><br>"
+                f"始: {ang_s:.2f}°<br>"
+                f"終: {ang_e:.2f}°<br>"
+                f"弧長: {arc_len:.3f} m"
             )
             lbl.setWordWrap(True)
+            lbl.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Preferred)
+
             btn_sel = QPushButton("選択")
-            btn_sel.setMaximumWidth(44)
+            btn_sel.setFixedWidth(44)
+            btn_sel.setSizePolicy(
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Fixed)
             btn_sel.clicked.connect(
                 lambda _, a=arc: self.request_select.emit([a]))
-            row.addWidget(lbl, 1)
-            row.addWidget(btn_sel)
-            lay.addLayout(row)
+
+            btn_add = QPushButton("選択追加")
+            btn_add.setFixedWidth(66)
+            btn_add.setSizePolicy(
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Fixed)
+            btn_add.clicked.connect(
+                lambda _, a=arc: self.request_select.emit(self._selected + [a]))
+
+            # ラベルを上段、ボタンを下段右寄せに配置
+            lay.addWidget(lbl)
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            btn_row.addWidget(btn_sel)
+            btn_row.addWidget(btn_add)
+            lay.addLayout(btn_row)
+
         self._prop_layout.addWidget(grp)
 
     def _build_clothoid_props(self, clo: Clothoid):
@@ -1613,12 +1697,13 @@ class RightPanel(QWidget):
         # 親の直線情報（読み取り専用）
         ln_nick = self.scene.get_nickname(ln.id, 'line')
         lbl_ln = QLabel(f"親直線: {ln_nick}  (ID:{ln.id})")
+        lbl_ln.setWordWrap(True)
         btn_sel_ln = QPushButton("直線を選択")
-        btn_sel_ln.setMaximumWidth(90)
+        btn_sel_ln.setFixedWidth(80)
         btn_sel_ln.clicked.connect(lambda checked=False, _ln=ln:
             self.request_select.emit([_ln]))
         row_ln = QHBoxLayout()
-        row_ln.addWidget(lbl_ln)
+        row_ln.addWidget(lbl_ln, 1)
         row_ln.addWidget(btn_sel_ln)
         lay.addLayout(row_ln)
 
@@ -1733,12 +1818,13 @@ class RightPanel(QWidget):
         # 親の円情報（読み取り専用）
         ci_nick = self.scene.get_nickname(ci.id, 'circle')
         lbl_ci = QLabel(f"親円: {ci_nick}  (ID:{ci.id})")
+        lbl_ci.setWordWrap(True)
         btn_sel_ci = QPushButton("円を選択")
-        btn_sel_ci.setMaximumWidth(80)
+        btn_sel_ci.setFixedWidth(66)
         btn_sel_ci.clicked.connect(lambda checked=False, _ci=ci:
             self.request_select.emit([_ci]))
         row_ci = QHBoxLayout()
-        row_ci.addWidget(lbl_ci)
+        row_ci.addWidget(lbl_ci, 1)
         row_ci.addWidget(btn_sel_ci)
         lay.addLayout(row_ci)
 
