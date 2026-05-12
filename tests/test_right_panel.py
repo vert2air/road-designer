@@ -2396,6 +2396,39 @@ class TestChildSegmentsList:
         assert any('100.000 m' in l for l in labels)
 
 
+
+    def test_select_add_button_in_segment_list(self):
+        """[仕様] 線分一覧の各行に「選択追加」ボタンが存在する。"""
+        p, sc = make_panel()
+        ln, segs = self._make_line_with_segs(sc, n=2)
+        p.update_selection([ln], sc)
+        add_btns = [w for w in p.findChildren(QPushButton)
+                    if w.text() == '選択追加']
+        assert len(add_btns) >= 2
+
+    def test_select_add_emits_combined_selection(self):
+        """[仕様] 「選択追加」で既存の選択に線分が追加される。"""
+        p, sc = make_panel()
+        ln, segs = self._make_line_with_segs(sc, n=2)
+        p.update_selection([ln], sc)
+        selected = []
+        p.request_select.connect(lambda s: selected.extend(s))
+        add_btns = [w for w in p.findChildren(QPushButton)
+                    if w.text() == '選択追加']
+        if add_btns:
+            add_btns[0].click()
+        # [ln] + [segs[x]] の形でemitされる
+        assert any(isinstance(o, Segment) for o in selected)
+
+    def test_panel_fits_within_260px(self):
+        """[仕様] 線分リストを含む直線選択時に最小幅が 260px 以内に収まる。"""
+        p, sc = make_panel()
+        ln, _ = self._make_line_with_segs(sc, n=3)
+        p.resize(260, 600)
+        p.update_selection([ln], sc)
+        mw = p._prop_widget.minimumSizeHint().width()
+        assert mw <= 260, f"幅が広すぎる: {mw}px"
+
 class TestChildArcsList:
     """円選択時に子円弧が始点角度順でリストアップされるテスト。"""
 
@@ -2492,3 +2525,40 @@ class TestChildArcsList:
         p.update_selection([ci], sc)
         groups = [w.title() for w in p.findChildren(QGroupBox)]
         assert not any('円弧一覧' in t for t in groups)
+
+    def test_select_add_button_in_arc_list(self):
+        """[仕様] 円弧一覧の各行に「選択追加」ボタンが存在する。"""
+        import math
+        p, sc = make_panel()
+        ci = self._make_circle_with_arcs(sc)
+        p.update_selection([ci], sc)
+        add_btns = [w for w in p.findChildren(QPushButton)
+                    if w.text() == '選択追加']
+        assert len(add_btns) >= 3
+
+    def test_select_add_emits_combined_selection_arc(self):
+        """[仕様] 「選択追加」で既存の選択に円弧が追加される。"""
+        import math
+        p, sc = make_panel()
+        ci = Circle(Vec2(0, 0), 20.0)
+        arc = Arc(ci, 0, math.pi)
+        ci.arcs.append(arc)
+        sc.add_circle(ci)
+        p.update_selection([ci], sc)
+        selected = []
+        p.request_select.connect(lambda s: selected.extend(s))
+        add_btns = [w for w in p.findChildren(QPushButton)
+                    if w.text() == '選択追加']
+        if add_btns:
+            add_btns[0].click()
+        assert any(isinstance(o, Arc) for o in selected)
+
+    def test_arc_panel_fits_within_260px(self):
+        """[仕様] 円弧リストを含む円選択時に最小幅が 260px 以内に収まる。"""
+        import math
+        p, sc = make_panel()
+        ci = self._make_circle_with_arcs(sc)
+        p.resize(260, 600)
+        p.update_selection([ci], sc)
+        mw = p._prop_widget.minimumSizeHint().width()
+        assert mw <= 260, f"幅が広すぎる: {mw}px"
