@@ -1122,10 +1122,19 @@ class RightPanel(QWidget):
         return ""
 
     def _clear_props(self):
+        """プロパティレイアウトの全ウィジェットを即時削除する。
+
+        ``deleteLater()`` はイベントループが回るまで実際の削除が実行されないため、
+        直後の ``_rebuild_props`` で ``findChildren`` が古いウィジェットを返す問題がある。
+        ``setParent(None)`` でツリーから切り離してから ``deleteLater()`` を呼ぶことで
+        ``findChildren`` の検索対象から即座に除外される。
+        """
         while self._prop_layout.count():
             item = self._prop_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            w = item.widget()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
 
     def _rebuild_props(self):
         """プロパティパネルの内容を選択状態に合わせて一から再構築する。
@@ -1736,9 +1745,12 @@ class RightPanel(QWidget):
             sb_t = _make_spinbox(get_t(), lo=0.0, hi=1.0, step=0.001, decimals=6)
             lbl_t = QLabel(f"割合: {get_t():.6f}")
 
+            _undo_pushed = [False]
+
             def on_x(v):
                 if self._block: return
-                # 直線上に束縛: t = projection
+                if not _undo_pushed[0]:
+                    self.request_push_undo.emit(); _undo_pushed[0] = True
                 from models import Vec2
                 current = ln.point_at(get_t())
                 t = ln.project_t(Vec2(v, current.y))
@@ -1748,6 +1760,8 @@ class RightPanel(QWidget):
 
             def on_y(v):
                 if self._block: return
+                if not _undo_pushed[0]:
+                    self.request_push_undo.emit(); _undo_pushed[0] = True
                 from models import Vec2
                 current = ln.point_at(get_t())
                 t = ln.project_t(Vec2(current.x, v))
@@ -1757,6 +1771,8 @@ class RightPanel(QWidget):
 
             def on_t(v):
                 if self._block: return
+                if not _undo_pushed[0]:
+                    self.request_push_undo.emit(); _undo_pushed[0] = True
                 set_t(v)
                 self._refresh_seg_display(sb_x, sb_y, sb_t, lbl_t, ln, get_t)
                 self.scene_changed.emit()
@@ -1875,14 +1891,20 @@ class RightPanel(QWidget):
                 lbl_len.setText(f"弧長: {arc.arc_length():.4f} m")
                 self._block = False
 
+            _undo_pushed = [False]
+
             def on_ang(v):
                 if self._block: return
+                if not _undo_pushed[0]:
+                    self.request_push_undo.emit(); _undo_pushed[0] = True
                 set_angle(math.radians(v))
                 refresh_display()
                 self.scene_changed.emit()
 
             def on_x(v):
                 if self._block: return
+                if not _undo_pushed[0]:
+                    self.request_push_undo.emit(); _undo_pushed[0] = True
                 cur_a = get_angle()
                 # 円上: x固定でyを2候補から近い方を選ぶ
                 dx = v - ci.center.x
@@ -1898,6 +1920,8 @@ class RightPanel(QWidget):
 
             def on_y(v):
                 if self._block: return
+                if not _undo_pushed[0]:
+                    self.request_push_undo.emit(); _undo_pushed[0] = True
                 cur_a = get_angle()
                 dy = v - ci.center.y
                 if abs(dy) > ci.radius:
