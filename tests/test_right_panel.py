@@ -2562,3 +2562,153 @@ class TestChildArcsList:
         p.update_selection([ci], sc)
         mw = p._prop_widget.minimumSizeHint().width()
         assert mw <= 260, f"幅が広すぎる: {mw}px"
+
+
+# ══════════════════════════════════════════════════════════════
+# マウスホイールでの値変更時の Undo 記録テスト
+# ══════════════════════════════════════════════════════════════
+
+class TestUndoOnWheelChange:
+    """マウスホイールでプロパティを変更したとき Undo が記録されるテスト。"""
+
+    def _make_panel_with_line(self):
+        p, sc = make_panel()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        sc.add_line(ln)
+        return p, sc, ln
+
+    def _wheel_spinbox(self, p, steps=1):
+        """プロパティパネル内の最初の QDoubleSpinBox を stepBy で変更する。"""
+        sbs = p._prop_widget.findChildren(QDoubleSpinBox)
+        if sbs:
+            sbs[0].stepBy(steps)
+            return True
+        return False
+
+    # [仕様] 1回目のホイール変更で request_push_undo が発行される
+    def test_first_wheel_pushes_undo(self):
+        """[仕様] ホイールで値を初めて変更すると request_push_undo が発行される。"""
+        p, sc, ln = self._make_panel_with_line()
+        p.update_selection([ln], sc)
+        push_count = []
+        p.request_push_undo.connect(lambda: push_count.append(1))
+        self._wheel_spinbox(p)
+        assert len(push_count) == 1
+
+    # [仕様] 同一選択セッション内の2回目は push しない（1セッション = 1 Undo）
+    def test_second_wheel_same_session_no_push(self):
+        """[仕様] 同一セッション内の2回目以降のホイールは push_undo を発行しない。"""
+        p, sc, ln = self._make_panel_with_line()
+        p.update_selection([ln], sc)
+        push_count = []
+        p.request_push_undo.connect(lambda: push_count.append(1))
+        self._wheel_spinbox(p)
+        self._wheel_spinbox(p)
+        assert len(push_count) == 1
+
+    # [バグ修正確認] 別の図形を選択してから新図形のホイールで push される
+    def test_wheel_after_selection_change_pushes(self):
+        """[バグ修正] 別の図形を選択し直した後のホイール変更で push_undo が発行される。
+
+        修正前は _clear_props の deleteLater タイミングの問題で
+        古いスピンボックスが findChildren に残り、新しい _undo_pushed フラグが
+        正しく初期化されなかった。
+        """
+        p, sc = make_panel()
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
+        ln2 = Line(Vec2(50, 50), Vec2(150, 50))
+        sc.add_line(ln1); sc.add_line(ln2)
+        push_count = []
+        p.request_push_undo.connect(lambda: push_count.append(1))
+
+        # 1回目の選択・変更
+        p.update_selection([ln1], sc)
+        self._wheel_spinbox(p)
+        assert len(push_count) == 1, "ln1 の最初のホイールで push されるべき"
+
+        # 図形を変えて再選択・変更
+        p.update_selection([ln2], sc)
+        push_count.clear()
+        self._wheel_spinbox(p)
+        assert len(push_count) == 1, "ln2 選択後の最初のホイールで push されるべき"
+
+    # [バグ修正確認] 同じ図形を再選択してもホイールで push される
+    def test_wheel_after_reselect_pushes(self):
+        """[バグ修正] 同じ図形を再選択した後のホイール変更で push_undo が発行される。
+
+        _clear_props でウィジェットが即時削除されることで
+        _undo_pushed フラグが正しく再初期化される。
+        """
+        p, sc, ln = self._make_panel_with_line()
+        push_count = []
+        p.request_push_undo.connect(lambda: push_count.append(1))
+
+        p.update_selection([ln], sc)
+        self._wheel_spinbox(p)
+        assert len(push_count) == 1
+
+        # 同じ図形を再選択（_rebuild_props が再実行される）
+        p.update_selection([ln], sc)
+        push_count.clear()
+        self._wheel_spinbox(p)
+        assert len(push_count) == 1, "再選択後の最初のホイールで push されるべき"
+
+    # [仕様] スピンボックス数が選択変更後も正しく 4 個（直線の場合）
+    def test_spinbox_count_correct_after_reselect(self):
+        """[バグ修正] 再選択後にスピンボックスが重複せず 4 個のまま。
+
+        修正前は deleteLater タイミングのため findChildren が
+        削除待ちの古いスピンボックスも返していた（8 個になる問題）。
+        """
+        p, sc, ln = self._make_panel_with_line()
+        p.update_selection([ln], sc)
+        count1 = len(p._prop_widget.findChildren(QDoubleSpinBox))
+
+        p.update_selection([ln], sc)  # 再選択
+        count2 = len(p._prop_widget.findChildren(QDoubleSpinBox))
+
+        assert count1 == count2, \
+            f"再選択後にスピンボックスが増加: {count1} → {count2}"
+
+    def test_segment_all_spinboxes_push_undo(self):
+        """[バグ修正] 線分の全スピンボックス（始点X/Y・終点X/Y）でホイール変更時にUndoが記録される。
+
+        修正前は add_endpoint に _undo_pushed が実装されていなかった。
+        """
+        p, sc = make_panel()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        sc.add_line(ln)
+        push_count = []
+        p.request_push_undo.connect(lambda: push_count.append(1))
+
+        for i in range(4):
+            p.update_selection([seg], sc)
+            sbs = p._prop_widget.findChildren(QDoubleSpinBox)
+            push_count.clear()
+            sbs[i].stepBy(1)
+            assert len(push_count) == 1, \
+                f"線分 sb[{i}] のホイール変更で push_undo が呼ばれなかった"
+
+    def test_arc_all_spinboxes_push_undo(self):
+        """[バグ修正] 円弧の全スピンボックでホイール変更時にUndoが記録される。
+
+        修正前は _build_arc_props の add_arc_endpoint に _undo_pushed が実装されていなかった。
+        """
+        import math as _math
+        p, sc = make_panel()
+        ci = Circle(Vec2(0, 0), 20.0)
+        arc = Arc(ci, 0, _math.pi / 2); ci.arcs.append(arc)
+        sc.add_circle(ci)
+        push_count = []
+        p.request_push_undo.connect(lambda: push_count.append(1))
+
+        p.update_selection([arc], sc)
+        n_sbs = len(p._prop_widget.findChildren(QDoubleSpinBox))
+        for i in range(n_sbs):
+            p.update_selection([arc], sc)
+            sbs = p._prop_widget.findChildren(QDoubleSpinBox)
+            push_count.clear()
+            sbs[i].stepBy(1)
+            assert len(push_count) == 1, \
+                f"円弧 sb[{i}] のホイール変更で push_undo が呼ばれなかった"
