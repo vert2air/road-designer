@@ -2931,3 +2931,151 @@ class TestDistanceDisplayInCombo:
         resolved = p._find_by_nick_label(cb2.currentText())
         assert resolved is seg2, \
             f"combo[1] が seg2 を指していない: {cb2.currentText()!r}"
+
+
+# ══════════════════════════════════════════════════════════════
+# 円弧追加機能テスト
+# ══════════════════════════════════════════════════════════════
+
+class TestCalcFreeArcIntervals:
+    """_calc_free_arc_intervals のテスト。"""
+
+    TWO_PI = 2 * math.pi
+
+    def _make_scene(self, ci):
+        sc = Scene()
+        sc.add_circle(ci)
+        return sc
+
+    def test_no_arcs_returns_full_circle(self):
+        """[仕様] 弧なし・接点なし → 全円周(360°)が1本の候補として返される。"""
+        ci = Circle(Vec2(0, 0), 20.0)
+        sc = self._make_scene(ci)
+        p, _ = make_panel()
+        p.scene = sc
+        free = p._calc_free_arc_intervals(ci)
+        assert len(free) == 1
+        assert abs(free[0].arc_angle() - self.TWO_PI) < 1e-6
+
+    def test_one_arc_returns_remaining(self):
+        """[仕様] 弧[0,90°]が1本 → 残り270°が1本の候補として返される。"""
+        ci = Circle(Vec2(0, 0), 20.0)
+        ci.arcs.append(Arc(ci, 0.0, math.pi / 2))
+        sc = self._make_scene(ci)
+        p, _ = make_panel()
+        p.scene = sc
+        free = p._calc_free_arc_intervals(ci)
+        assert len(free) == 1
+        assert abs(free[0].arc_angle() - 3 * math.pi / 2) < 1e-6
+
+    def test_two_arcs_returns_two_gaps(self):
+        """[仕様] 弧2本で2つの空き区間 → 2本の候補。"""
+        ci = Circle(Vec2(0, 0), 20.0)
+        ci.arcs.append(Arc(ci, 0.0, math.pi / 2))
+        ci.arcs.append(Arc(ci, math.pi, 3 * math.pi / 2))
+        sc = self._make_scene(ci)
+        p, _ = make_panel()
+        p.scene = sc
+        free = p._calc_free_arc_intervals(ci)
+        assert len(free) == 2
+        total = sum(a.arc_angle() for a in free)
+        assert abs(total - math.pi) < 1e-6
+
+    def test_tangent_point_splits_interval(self):
+        """[仕様] クロソイド接点がある場合、その角度で区間が分割される。"""
+        ci = Circle(Vec2(0, 30), 20.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        sc = Scene()
+        sc.add_circle(ci); sc.add_line(ln)
+        clo = Clothoid(ln, ci)
+        sc.add_clothoid(clo)
+        p, _ = make_panel()
+        p.scene = sc
+        free = p._calc_free_arc_intervals(ci)
+        # 弧なし・接点1つ → 2区間に分割
+        assert len(free) == 2
+        # 合計は全円周
+        total = sum(a.arc_angle() for a in free)
+        assert abs(total - self.TWO_PI) < 1e-6
+
+    def test_full_circle_arc_returns_empty(self):
+        """[C1] 全円周を覆う弧がある場合は空リストを返す。"""
+        ci = Circle(Vec2(0, 0), 20.0)
+        ci.arcs.append(Arc(ci, 0.0, self.TWO_PI - 1e-12))
+        sc = self._make_scene(ci)
+        p, _ = make_panel()
+        p.scene = sc
+        free = p._calc_free_arc_intervals(ci)
+        assert free == []
+
+    def test_largest_arc_for_btn_add_one(self):
+        """[仕様] 空き区間2本のうち「円弧を追加」は中心角最大の1本を選ぶ。"""
+        ci = Circle(Vec2(0, 0), 20.0)
+        ci.arcs.append(Arc(ci, 0.0, math.pi / 2))       # 90° 塞ぐ
+        ci.arcs.append(Arc(ci, math.pi, 5 * math.pi / 4)) # 45° 塞ぐ
+        sc = self._make_scene(ci)
+        p, _ = make_panel()
+        p.scene = sc
+        free = p._calc_free_arc_intervals(ci)
+        assert len(free) >= 2
+        largest = max(free, key=lambda a: a.arc_angle())
+        # 最大は 135°(3π/4): 225→360° の区間
+        assert largest.arc_angle() > math.pi / 2
+
+
+class TestArcAddButtons:
+    """円プロパティの円弧追加ボタンのテスト。"""
+
+    def test_buttons_shown_when_gap_exists(self):
+        """[仕様] 空き区間がある円を選択すると「円弧を追加」「円弧を全追加」が表示される。"""
+        p, sc = make_panel()
+        ci = Circle(Vec2(0, 0), 20.0)
+        sc.add_circle(ci)  # 弧なし → 全円周が空き
+        p.update_selection([ci], sc)
+        btns = [w.text() for w in p.findChildren(QPushButton)]
+        assert any('円弧を追加' == t for t in btns)
+        assert any('円弧を全追加' == t for t in btns)
+
+    def test_buttons_hidden_when_no_gap(self):
+        """[C1] 空き区間がない円（全円周弧あり）ではボタンが表示されない。"""
+        TWO_PI = 2 * math.pi
+        p, sc = make_panel()
+        ci = Circle(Vec2(0, 0), 20.0)
+        ci.arcs.append(Arc(ci, 0.0, TWO_PI - 1e-12))
+        sc.add_circle(ci)
+        p.update_selection([ci], sc)
+        btns = [w.text() for w in p.findChildren(QPushButton)]
+        assert not any('円弧を全追加' == t for t in btns)
+
+    def test_add_one_arc_emits_signal(self):
+        """[仕様] 「円弧を追加」ボタンで request_add_arcs が emit される（1本）。"""
+        p, sc = make_panel()
+        ci = Circle(Vec2(0, 0), 20.0)
+        sc.add_circle(ci)
+        p.update_selection([ci], sc)
+        received = []
+        p.request_add_arcs.connect(lambda c, aa: received.append((c, aa)))
+        btns = [w for w in p.findChildren(QPushButton) if w.text() == '円弧を追加']
+        if btns:
+            btns[0].click()
+        assert len(received) == 1
+        _, arcs = received[0]
+        assert len(arcs) == 1
+
+    def test_add_all_arcs_emits_signal(self):
+        """[仕様] 「円弧を全追加」ボタンで request_add_arcs が emit される（全空き区間）。"""
+        TWO_PI = 2 * math.pi
+        p, sc = make_panel()
+        ci = Circle(Vec2(0, 0), 20.0)
+        ci.arcs.append(Arc(ci, 0.0, math.pi / 2))
+        ci.arcs.append(Arc(ci, math.pi, 3 * math.pi / 2))
+        sc.add_circle(ci)
+        p.update_selection([ci], sc)
+        received = []
+        p.request_add_arcs.connect(lambda c, aa: received.append((c, aa)))
+        btns = [w for w in p.findChildren(QPushButton) if w.text() == '円弧を全追加']
+        if btns:
+            btns[0].click()
+        assert len(received) == 1
+        _, arcs = received[0]
+        assert len(arcs) == 2
