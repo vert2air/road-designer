@@ -460,6 +460,10 @@ class RightPanel(QWidget):
 
     # ─── 隣接図形の計算 ──────────────────────────────────────
     SNAP_TOL = SNAP_TOL  # models.SNAP_TOL を参照（= 1.0 m）
+    #: 高優先候補の隣接判定閾値 [m]。端点間距離がこれ未満のとき隣接とみなす。
+    #: 図形追加時のギャップ防止には SNAP_TOL(1.0m) を使うが、
+    #: コンボボックスの高優先候補には厳密な値を使う。
+    ADJ_TOL = 0.001
 
     def _endpoints_of(self, obj) -> list:
         """図形の端点座標リストを返す。
@@ -485,6 +489,93 @@ class RightPanel(QWidget):
             if obj.is_valid and obj._line_pt and obj._circle_pt:
                 return [obj._line_pt, obj._circle_pt]
         return []
+
+
+    # ── 高優先候補の厳密な隣接判定 ─────────────────────────────────────
+
+    def _directly_connected(self, obj_a, obj_b) -> bool:
+        """obj_a と obj_b が「直接接点」を持つかを判定する。
+
+        親図形が異なる場合に高優先候補に含めるかどうかの判定に使う。
+        以下のケースを「直接接点あり」とみなす:
+
+        * **クロソイド接点**: obj_a/obj_b の一方が Clothoid で、その
+          ``_line_pt`` / ``_circle_pt`` が相手の端点と ADJ_TOL 以内。
+        * **折れ線接続**: 一方が Segment で ``line.connection`` が
+          ``"polyline"`` であり、共有点が相手の端点と ADJ_TOL 以内。
+        * **オフセット拘束の接点**: OffsetConstraint で off_a=0 または
+          off_b=0 の場合、直線と円が接している。
+
+        スムーズ接続（``bisector_dir`` がある円経由）は接点でないため除外。
+        接点でないオフセット接続（off != 0）も除外。
+
+        Parameters
+        ----------
+        obj_a, obj_b : Segment or Arc or Clothoid
+            判定する 2 つの図形。
+
+        Returns
+        -------
+        bool
+        """
+        def pts_close(pa, pb):
+            return math.hypot(pa.x - pb.x, pa.y - pb.y) < self.ADJ_TOL
+
+        pts_a = self._endpoints_of(obj_a)
+        pts_b = self._endpoints_of(obj_b)
+
+        # クロソイド接点
+        for obj, other_pts in [(obj_a, pts_b), (obj_b, pts_a)]:
+            if isinstance(obj, Clothoid) and obj.is_valid:
+                for cp in [p for p in [obj._line_pt, obj._circle_pt]
+                           if p is not None]:
+                    for q in other_pts:
+                        if pts_close(cp, q):
+                            return True
+
+        # 折れ線接続（LineConnection "polyline"）
+        for obj, other_pts in [(obj_a, pts_b), (obj_b, pts_a)]:
+            if isinstance(obj, Segment):
+                conn = getattr(obj.line, 'connection', None)
+                if conn and getattr(conn, 'kind', None) == 'polyline':
+                    sp = getattr(conn, 'shared_point', None)
+                    if sp is not None:
+                        for q in other_pts:
+                            if pts_close(sp, q):
+                                return True
+
+        # オフセット拘束で接点（off=0 → 半径と距離が一致）
+        for oc in self.scene.offset_constraints:
+            a_line = getattr(oc, 'line', None)
+            ca = getattr(oc, 'circle_a', None)
+            cb = getattr(oc, 'circle_b', None)
+            # off=0 のとき直線と円が接点を持つ
+            if abs(oc.off_a) < 1e-9 and ca is not None and a_line is not None:
+                segs_a = a_line.segments if a_line else []
+                arcs_a = ca.arcs if ca else []
+                pair_obj_a = any(obj_a is s for s in segs_a) or any(obj_a is r for r in arcs_a)
+                pair_obj_b = any(obj_b is s for s in segs_a) or any(obj_b is r for r in arcs_a)
+                if pair_obj_a and pair_obj_b:
+                    return True
+            if abs(oc.off_b) < 1e-9 and cb is not None and a_line is not None:
+                segs_b = a_line.segments if a_line else []
+                arcs_b = cb.arcs if cb else []
+                pair_obj_a = any(obj_a is s for s in segs_b) or any(obj_a is r for r in arcs_b)
+                pair_obj_b = any(obj_b is s for s in segs_b) or any(obj_b is r for r in arcs_b)
+                if pair_obj_a and pair_obj_b:
+                    return True
+
+        return False
+
+    def _parent_of(self, obj):
+        """obj の親図形（Line または Circle）を返す。なければ None。"""
+        if isinstance(obj, Segment):
+            return obj.line
+        if isinstance(obj, Arc):
+            return obj.circle
+        if isinstance(obj, Clothoid):
+            return None  # Clothoid は Line と Circle の両方に跨がる
+        return None
 
     def _adjacent_elements(self, obj, exclude_pt=None) -> list:
         """obj の端点に隣接する図形のリストを返す。
@@ -529,12 +620,12 @@ class RightPanel(QWidget):
             cand_end   = cand_pts[-1]
             for mp in my_pts:
                 matched = False
-                if math.hypot(mp.x - cand_start.x, mp.y - cand_start.y) < self.SNAP_TOL:
+                if math.hypot(mp.x - cand_start.x, mp.y - cand_start.y) < self.ADJ_TOL:
                     if id(cand) not in seen:
                         result.append((cand, True))   # 始点で接続 → 順方向
                         seen.add(id(cand))
                     matched = True
-                elif math.hypot(mp.x - cand_end.x, mp.y - cand_end.y) < self.SNAP_TOL:
+                elif math.hypot(mp.x - cand_end.x, mp.y - cand_end.y) < self.ADJ_TOL:
                     if id(cand) not in seen:
                         result.append((cand, False))  # 終点で接続 → 逆方向
                         seen.add(id(cand))
@@ -738,17 +829,29 @@ class RightPanel(QWidget):
                     for item in all_items:
                         cb.addItem(item)
 
-            # 現在の選択を復元（[順]/[逆] プレフィックスも考慮）
+            # 現在の選択を復元（[順]/[逆] プレフィックス・距離文字列も考慮）
+            import re as _re
             base = cur_text
             for prefix in ("[順] ", "[逆] "):
                 if base.startswith(prefix):
                     base = base[len(prefix):]
                     break
+            # 末尾の距離文字列を除去
+            base = _re.sub(r'\s+[\d.]+\s*m$', '', base)
             found = -1
             for search in [cur_text, "[順] " + base, "[逆] " + base, base]:
                 found = cb.findText(search)
                 if found >= 0:
                     break
+            # 距離付きラベルでの照合（_find_by_nick_label を使う）
+            if found < 0:
+                target = self._find_by_nick_label(cur_text)
+                if target is not None:
+                    for j in range(cb.count()):
+                        t = cb.itemText(j)
+                        if t and self._find_by_nick_label(t) is target:
+                            found = j
+                            break
             cb.setCurrentIndex(found if found >= 0 else 0)
             cb.blockSignals(False)
 
@@ -760,7 +863,7 @@ class RightPanel(QWidget):
         cb : QComboBox
             追加先のコンボボックス。
         adj : list[tuple]
-            [(cand, is_forward), ...] の隣接候補リスト。
+            ``(cand, is_forward, distance)`` の隣接候補リスト。
         prev_obj : Segment or Arc or Clothoid
             前のコンボで選択された図形。
         prev_is_fwd : bool
@@ -771,21 +874,24 @@ class RightPanel(QWidget):
 
         Notes
         -----
-        len(adj) >= 2 のとき [順]/[逆] プレフィックスを付与する。
+        * len(adj) >= 2 のとき [順]/[逆] プレフィックスを付与する。
+        * 各候補の末尾に接続端点までの距離 ``x.xxx m`` を表示する。
         """
-
         show_dir = len(adj) >= 2
-        for cand, _ in adj:
+        for item in adj:
+            cand, _, dist = item[0], item[1], item[2] if len(item) > 2 else 0.0
+            fwd_cand = item[1]
             base_label = self._label_for_obj(cand)
             if not base_label:
                 continue
+            dist_str = f"  {dist:.3f} m"
             if show_dir:
                 pef = (self._prev_is_fwd_for_adj(prev_obj, cand)
                        if is_2nd else prev_is_fwd)
                 prefix = "[順] " if self._compute_next_forward(prev_obj, pef, cand) else "[逆] "
-                cb.addItem(prefix + base_label)
+                cb.addItem(prefix + base_label + dist_str)
             else:
-                cb.addItem(base_label)
+                cb.addItem(base_label + dist_str)
 
     def _prev_is_fwd_for_adj(self, prev_obj, cand) -> bool:
         """2 つ目コンボ専用。cand が prev_obj のどちらの端点で接続しているかを返す。
@@ -865,18 +971,18 @@ class RightPanel(QWidget):
         # 各端点から隣接を探す
         for pt in pts:
             adj = self._adjacent_from_pt(pt, excludes=excludes, prev_obj=obj)
-            for cand, fwd in adj:
+            for cand, fwd, *_ in adj:
                 add(cand, fwd)
 
         # obj が Clothoid の場合、接点に接する線分・円弧を追加で探す
         if isinstance(obj, Clothoid) and obj.is_valid:
             if obj._line_pt:
                 adj2 = self._adjacent_from_pt(obj._line_pt, excludes=excludes, prev_obj=obj)
-                for cand, fwd in adj2:
+                for cand, fwd, *_ in adj2:
                     add(cand, fwd)
             if obj._circle_pt:
                 adj3 = self._adjacent_from_pt(obj._circle_pt, excludes=excludes, prev_obj=obj)
-                for cand, fwd in adj3:
+                for cand, fwd, *_ in adj3:
                     add(cand, fwd)
 
         # obj が Arc の場合、両端の接点に接するクロソイドも探す
@@ -909,16 +1015,39 @@ class RightPanel(QWidget):
         return result
 
     def _adjacent_from_pt(self, pt, excludes=None, prev_obj=None) -> list:
-        """
-        指定座標 pt に隣接する図形を返す。
-        prev_obj がクロソイドで pt が _line_pt の場合、
-        その点を含む線分（端点でなくても）も候補に含める。
-        excludes: 除外するオブジェクトのリスト（選択済み全図形）
-        戻り値: [(cand, is_forward), ...]
+        """指定座標 pt に隣接する図形を ADJ_TOL で厳密に判定して返す。
+
+        高優先候補の選択に使う。SNAP_TOL(1.0m) より厳密な ADJ_TOL(0.001m) で
+        端点距離を判定する。
+
+        **絞り込みルール（親図形が異なる場合）**:
+
+        * クロソイド接点 / 折れ線接続 / オフセット拘束で接点（off=0）のみを含める。
+        * スムーズ接続や接点でないオフセット接続は除外する。
+
+        **同一親の複数候補**: 同一親図形の候補が複数ある場合、
+        最も pt に近いもの（各方向で1つ）のみを残す。
+
+        Parameters
+        ----------
+        pt : Vec2
+            基点となる座標。
+        excludes : list, optional
+            除外するオブジェクトのリスト（選択済み全図形）。
+        prev_obj : Segment or Arc or Clothoid, optional
+            前の選択図形（クロソイドの line_pt 判定に使う）。
+
+        Returns
+        -------
+        list[tuple[object, bool, float]]
+            ``(cand, is_forward, distance)`` のリスト。
+            ``is_forward=True``: cand の始点で接続（正順）。
+            ``distance``: pt と接続端点の距離 [m]。
         """
         exclude_set = set(id(e) for e in excludes if e is not None) if excludes else set()
         result = []
         seen = set()
+
         all_elems = []
         for ln in self.scene.lines:
             all_elems.extend(ln.segments)
@@ -926,6 +1055,8 @@ class RightPanel(QWidget):
             all_elems.extend(ci.arcs)
         all_elems.extend(self.scene.clothoids)
 
+        # ── 端点距離 ADJ_TOL での一次候補収集 ──────────────────────────
+        raw_candidates = []   # (cand, is_forward, distance)
         for cand in all_elems:
             if id(cand) in exclude_set:
                 continue
@@ -934,37 +1065,80 @@ class RightPanel(QWidget):
                 continue
             d_start = math.hypot(pt.x - cand_pts[0].x, pt.y - cand_pts[0].y)
             d_end   = math.hypot(pt.x - cand_pts[-1].x, pt.y - cand_pts[-1].y)
-            if d_start < self.SNAP_TOL:
-                if id(cand) not in seen:
-                    result.append((cand, True))
-                    seen.add(id(cand))
-            elif d_end < self.SNAP_TOL:
-                if id(cand) not in seen:
-                    result.append((cand, False))
-                    seen.add(id(cand))
+            if d_start < self.ADJ_TOL:
+                raw_candidates.append((cand, True,  d_start))
+            elif d_end < self.ADJ_TOL:
+                raw_candidates.append((cand, False, d_end))
 
-        # クロソイドの _line_pt は線分の内部点の場合がある
-        # clo.line と同じ直線上の線分のみを対象に「線分上にあるか」で判定
+        # クロソイドの _line_pt が線分の内部点の場合も収集
         if (prev_obj is not None and isinstance(prev_obj, Clothoid)
                 and prev_obj._line_pt is not None
                 and math.hypot(pt.x - prev_obj._line_pt.x,
-                              pt.y - prev_obj._line_pt.y) < self.SNAP_TOL):
+                               pt.y - prev_obj._line_pt.y) < self.ADJ_TOL):
             clo_line = prev_obj.line
             t = clo_line.project_t(prev_obj._line_pt)
-            for seg in clo_line.segments:       # ← clo.line の線分のみ
-                if id(seg) in exclude_set or id(seg) in seen:
+            for seg in clo_line.segments:
+                if id(seg) in exclude_set:
                     continue
                 if seg.t_start - 1e-6 <= t <= seg.t_end + 1e-6:
+                    d = math.hypot(pt.x - prev_obj._line_pt.x,
+                                   pt.y - prev_obj._line_pt.y)
                     if abs(t - seg.t_start) < 1e-4:
-                        result.append((seg, True))
-                        seen.add(id(seg))
+                        raw_candidates.append((seg, True,  d))
                     elif abs(t - seg.t_end) < 1e-4:
-                        result.append((seg, False))
-                        seen.add(id(seg))
+                        raw_candidates.append((seg, False, d))
                     else:
-                        result.append((seg, False))
-                        result.append((seg, True))
-                        seen.add(id(seg))
+                        raw_candidates.append((seg, True,  d))
+                        raw_candidates.append((seg, False, d))
+
+        # ── 親図形が異なる場合の絞り込み ─────────────────────────────
+        prev_parent = self._parent_of(prev_obj) if prev_obj is not None else None
+
+        filtered = []
+        for cand, fwd, dist in raw_candidates:
+            cand_parent = self._parent_of(cand)
+            same_parent = (prev_obj is not None
+                           and prev_parent is not None
+                           and cand_parent is not None
+                           and prev_parent is cand_parent)
+            if same_parent:
+                # 同一親 → そのまま通す（後でフィルタ）
+                filtered.append((cand, fwd, dist, True))
+            elif prev_obj is None:
+                # 先頭コンボ（prev なし）→ 全て通す
+                filtered.append((cand, fwd, dist, False))
+            else:
+                # 親が異なる → 直接接点チェック
+                if self._directly_connected(prev_obj, cand):
+                    filtered.append((cand, fwd, dist, False))
+
+        # ── 同一親・同一方向で最近傍1つだけ残す ─────────────────────
+        # prev_parent ごと・fwd ごとに最小 dist のものを採用
+        same_parent_best = {}   # key: (id(parent), fwd) → (cand, dist)
+        others = []
+        for cand, fwd, dist, is_same in filtered:
+            if is_same:
+                cp = self._parent_of(cand)
+                key = (id(cp), fwd)
+                if key not in same_parent_best or dist < same_parent_best[key][1]:
+                    same_parent_best[key] = (cand, dist, fwd)
+            else:
+                others.append((cand, fwd, dist))
+
+        # 同一親の最近傍を結果に追加
+        final = []
+        for (pid, fwd), (cand, dist, _) in same_parent_best.items():
+            final.append((cand, fwd, dist))
+        final.extend(others)
+
+        # 重複除去してソート（距離順）
+        seen_ids = set()
+        result = []
+        for cand, fwd, dist in sorted(final, key=lambda x: x[2]):
+            if id(cand) not in seen_ids:
+                result.append((cand, fwd, dist))
+                seen_ids.add(id(cand))
+
         return result
 
     def _redraw(self):
@@ -1015,6 +1189,9 @@ class RightPanel(QWidget):
             if label.startswith(prefix):
                 label = label[len(prefix):]
                 break
+        # 末尾の距離文字列（例: "  0.001 m"）を除去
+        import re as _re
+        label = _re.sub(r'\s+[\d.]+\s*m$', '', label)
         for ln in self.scene.lines:
             if f"{self.scene.get_nickname(ln.id, 'line')} [直線#{ln.id}]" == label:
                 return ln
@@ -1079,12 +1256,23 @@ class RightPanel(QWidget):
             if i < len(labels):
                 label = labels[i]
                 # プレフィックスなし → あり の順で検索
+                # 距離付きラベル（例: "  0.000 m"）にも対応するため
+                # findText が失敗したら全アイテムを走査して _find_by_nick_label で比較
                 idx = cb.findText(label)
                 if idx < 0:
                     for prefix in ("[順] ", "[逆] "):
                         idx = cb.findText(prefix + label)
                         if idx >= 0:
                             break
+                if idx < 0:
+                    # 距離付きラベルの可能性: 全アイテムを _find_by_nick_label で照合
+                    target = self._find_by_nick_label(label)
+                    if target is not None:
+                        for j in range(cb.count()):
+                            t = cb.itemText(j)
+                            if t and self._find_by_nick_label(t) is target:
+                                idx = j
+                                break
                 if idx >= 0:
                     cb.blockSignals(True)
                     cb.setCurrentIndex(idx)
