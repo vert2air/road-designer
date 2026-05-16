@@ -295,6 +295,10 @@ class RightPanel(QWidget):
         オフセット拘束設定を要求する。引数: ``(line, ci_a, ci_b)``。
     request_clear_offset : Signal(object)
         オフセット拘束解除を要求する。引数: ``line``。
+    request_add_arcs : Signal(object, list)
+        円弧追加を要求する。引数: ``(circle, [Arc, ...])``。
+        Arc オブジェクトは arc_start/arc_end が設定済みで
+        まだ ci.arcs には追加されていない。
     request_push_undo : Signal()
         プロパティ変更前の Undo スタックへの push を要求する。
         プロパティ編集コールバックの初回呼び出し時に1回だけ発行する。
@@ -311,6 +315,7 @@ class RightPanel(QWidget):
     request_delete           = Signal(list)   # 削除要求
     request_set_offset       = Signal(object, object, object)  # line, ci_a, ci_b
     request_clear_offset     = Signal(object)                  # line
+    request_add_arcs         = Signal(object, list)            # circle, [Arc]
     request_undo             = Signal()                        # Undo 要求
     request_push_undo        = Signal()                        # プロパティ変更前の状態保存
     scene_changed            = Signal()
@@ -1720,11 +1725,142 @@ class RightPanel(QWidget):
         row_r = QHBoxLayout()
         row_r.addWidget(QLabel("半径:")); row_r.addWidget(sb_r)
         lay.addLayout(row_r)
+
+        # ── 円弧追加ボタン ────────────────────────────────────────
+        free_arcs = self._calc_free_arc_intervals(ci)
+        if free_arcs:
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+
+            # 「円弧を追加」: 空き区間の中で中心角最大の1本だけ
+            btn_one = QPushButton("円弧を追加")
+            btn_one.setToolTip("空き区間の中で中心角が最大の円弧を1本追加する")
+            largest = max(free_arcs, key=lambda a: a.arc_angle())
+            btn_one.clicked.connect(
+                lambda _, c=ci, a=largest: (
+                    self.request_push_undo.emit(),
+                    self.request_add_arcs.emit(c, [a]),
+                ))
+            btn_row.addWidget(btn_one)
+
+            # 「円弧を全追加」: 空き区間すべて
+            btn_all = QPushButton("円弧を全追加")
+            btn_all.setToolTip("空き区間すべてに円弧を追加する（接点で区切る）")
+            btn_all.clicked.connect(
+                lambda _, c=ci, aa=free_arcs: (
+                    self.request_push_undo.emit(),
+                    self.request_add_arcs.emit(c, list(aa)),
+                ))
+            btn_row.addWidget(btn_all)
+            lay.addLayout(btn_row)
+
         self._prop_layout.addWidget(grp)
 
         # ── 子円弧リスト ──────────────────────────────────────────────
         if ci.arcs:
             self._build_child_arcs_list(ci)
+
+    def _calc_free_arc_intervals(self, ci: 'Circle') -> list:
+        """円 ci の空き区間（円弧がない部分）を Arc オブジェクトのリストで返す。
+
+        クロソイドの接点（``_circle_pt``）がある場合はその角度で区切る。
+        既存の弧が全円周を覆っている場合は空リストを返す。
+
+        Parameters
+        ----------
+        ci : Circle
+            対象の円。
+
+        Returns
+        -------
+        list[Arc]
+            追加候補の :class:`Arc` オブジェクトのリスト（まだ ci.arcs には含まれない）。
+            中心角 (``arc_angle()``) が 0 の区間は除外する。
+        """
+        from models import Arc as _Arc
+        TWO_PI = 2 * math.pi
+        EPS    = 1e-9
+
+        # 既存弧の占有区間を (start, span) で収集（start ∈ [0, 2π), span > 0）
+        occupied = []          # [(start, span), ...]
+        for arc in ci.arcs:
+            s    = arc.angle_start % TWO_PI
+            span = arc.arc_angle()   # 常に正
+            occupied.append((s, span))
+
+        # 接点角度を収集
+        tangent_angles = set()
+        for clo in self.scene.clothoids:
+            if not clo.is_valid or clo.circle is not ci:
+                continue
+            if clo._circle_pt is not None:
+                cp  = clo._circle_pt
+                ang = math.atan2(cp.y - ci.center.y,
+                                 cp.x - ci.center.x) % TWO_PI
+                tangent_angles.add(ang)
+
+        # occupied の境界角度 + 接点角度 を合わせた境界点集合
+        boundaries = set()
+        for s, span in occupied:
+            boundaries.add(s)
+            boundaries.add((s + span) % TWO_PI)
+        boundaries |= tangent_angles
+
+        def is_covered(angle):
+            """angle が既存弧のいずれかに含まれるか判定（環状）。"""
+            a = angle % TWO_PI
+            for s, span in occupied:
+                if span >= TWO_PI - EPS:
+                    return True        # 全円周を覆う弧
+                end = (s + span) % TWO_PI
+                if end > s:            # 折り返しなし
+                    if s - EPS < a < end + EPS:
+                        return True
+                else:                  # 折り返しあり（s > end）
+                    if a > s - EPS or a < end + EPS:
+                        return True
+            return False
+
+        # 弧なし・接点なし → 全円周
+        if not occupied and not boundaries:
+            # angle_end = angle_start + 2π - eps で全円周を表現
+            # (arc_angle() = (end - start) % 2π = 0 を避けるため)
+            return [_Arc(ci, 0.0, TWO_PI - 1e-12)]
+
+        # 全円周を覆っているか確認
+        if occupied and all(span >= TWO_PI - EPS for _, span in occupied):
+            return []
+
+        # 境界点が1点だけの場合は 0 も加える
+        if len(boundaries) == 0:
+            return []
+        if len(boundaries) == 1:
+            boundaries.add(0.0)
+
+        sorted_bounds = sorted(boundaries)
+        n = len(sorted_bounds)
+
+        free_arcs = []
+        for i in range(n):
+            seg_s = sorted_bounds[i]
+            seg_e = sorted_bounds[(i + 1) % n] if i < n - 1 else sorted_bounds[0] + TWO_PI
+
+            span = seg_e - seg_s
+            if span < EPS:
+                continue
+
+            # 区間の中点が覆われているか確認
+            mid = (seg_s + span / 2) % TWO_PI
+            if is_covered(mid):
+                continue
+
+            a_s  = seg_s % TWO_PI
+            # arc_angle() = (end - start) % 2π が 0 にならないよう span を制限
+            span = min(span, TWO_PI - 1e-12)
+            new_arc = _Arc(ci, a_s, a_s + span)
+            free_arcs.append(new_arc)
+
+        return free_arcs
 
     def _build_child_arcs_list(self, ci: 'Circle'):
         """円に属する円弧を始点角度順に一覧表示するパネルを構築する。

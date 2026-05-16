@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
         * ``RightPanel.request_polyline_connect`` → :meth:`_do_polyline_connect`
         * ``RightPanel.request_disconnect`` → :meth:`_do_disconnect`
         * ``RightPanel.request_add_clothoid`` → :meth:`_do_add_clothoid`
+        * ``RightPanel.request_add_arcs`` → :meth:`_do_add_arcs`
         * ``RightPanel.request_delete_clothoid`` → :meth:`_do_delete_clothoid`
         * ``RightPanel.request_flip_clothoid`` → :meth:`_do_flip_clothoid`
         * ``RightPanel.request_set_offset`` → :meth:`_do_set_offset_constraint`
@@ -227,6 +228,7 @@ class MainWindow(QMainWindow):
         rp.request_polyline_connect.connect(self._do_polyline_connect)
         rp.request_disconnect.connect(self._do_disconnect)
         rp.request_add_clothoid.connect(self._do_add_clothoid)
+        rp.request_add_arcs.connect(self._do_add_arcs)
         rp.request_delete_clothoid.connect(self._do_delete_clothoid)
         rp.request_flip_clothoid.connect(self._do_flip_clothoid)
         rp.request_set_offset.connect(self._do_set_offset_constraint)
@@ -369,6 +371,26 @@ class MainWindow(QMainWindow):
     def _do_disconnect(self, a, b):
         """RightPanel.request_disconnect シグナルを受けて Canvas.disconnect_lines を呼ぶ。"""
         self._canvas.disconnect_lines(a, b)
+        self._right_panel.update_selection(self._canvas._selected, self.scene)
+
+    def _do_add_arcs(self, ci: 'Circle', arcs: list):
+        """``request_add_arcs`` シグナルを受けて Arc を円に追加する。
+
+        ``RightPanel._calc_free_arc_intervals`` が生成した Arc オブジェクトを
+        そのまま ``ci.arcs`` に追加する。push_undo は RightPanel 側で発行済み。
+
+        Parameters
+        ----------
+        ci : Circle
+            追加先の円。
+        arcs : list[Arc]
+            追加する :class:`Arc` オブジェクトのリスト。
+            まだ ``ci.arcs`` には含まれていない。
+        """
+        for arc in arcs:
+            ci.arcs.append(arc)
+        self._canvas.scene_changed.emit()
+        self._canvas.update()
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     def _do_add_clothoid(self, ln, ci):
