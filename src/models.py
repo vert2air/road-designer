@@ -1064,20 +1064,34 @@ class Clothoid:
 
         # _split_seg_ids が空でも、接点 t 値を境界に持つ分割線分ペアを探して統合する。
         # （to_dict で split_seg_ids が保存されなかった旧バグで情報が失われた場合の救済）
+        # _apply_segment_split は reversed_flag によらず常に:
+        #   元の線分 → AX (t_start〜t_x) に縮小、XB (t_x〜元t_end) を新規生成
+        # _clear_segment_split の正しい動作:
+        #   AX.t_end = XB.t_end (元の t_end に戻す)、XB を削除
+        # → その後 _apply_segment_snap で best_seg.t_end = t_x に snap される
         if not self._split_seg_ids and self._line_pt is not None:
             t_x = self.line.project_t(self._line_pt)
             TOL = 1e-6
-            # t_x を t_end とする線分(AX) と t_start とする線分(XB) を探す
             seg_ax = next((s for s in self.line.segments
                            if abs(s.t_end - t_x) < TOL), None)
             seg_xb = next((s for s in self.line.segments
                            if abs(s.t_start - t_x) < TOL and
                            (seg_ax is None or s is not seg_ax)), None)
             if seg_ax and seg_xb:
-                # AX の終端を XB の終端まで延長し、XB を削除
+                # _clear_segment_split と同等: AX を元の t_end に戻し XB を削除
                 seg_ax.t_end = seg_xb.t_end
                 if seg_xb in self.line.segments:
                     self.line.segments.remove(seg_xb)
+                # 救済後、seg_ax と t_start が同じで範囲が小さい別の線分が存在する場合、
+                # それが正規の線分（他のクロソイドの snap 結果など）で seg_ax が余剰ならば
+                # seg_ax を削除する（seg_ax.t_start を共有する線分が他にあるか確認）
+                duplicates = [s for s in self.line.segments
+                              if s is not seg_ax
+                              and abs(s.t_start - seg_ax.t_start) < TOL]
+                if duplicates:
+                    # 他の線分が同じ t_start から始まる → seg_ax が分割由来の余剰線分
+                    if seg_ax in self.line.segments:
+                        self.line.segments.remove(seg_ax)
 
         contact  = self._line_pt
         best_seg = min(self.line.segments,
