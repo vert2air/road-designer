@@ -1050,6 +1050,8 @@ class Clothoid:
         使うため、接点が線分の中央付近にある場合でも正しい線分を選べる。
 
         既存の `_split_seg_ids` があれば先にクリアする（snap=off からの切り替え）。
+        `_split_seg_ids` が空でも、接点の t 値を境界として持つ線分ペアがあれば
+        統合して余分な線分を削除する（旧バグで split_seg_ids が失われた場合の救済）。
 
         Notes
         -----
@@ -1059,6 +1061,24 @@ class Clothoid:
         if not self.line.segments:
             return
         self._clear_segment_split()   # snap=off で作った分割があれば解除
+
+        # _split_seg_ids が空でも、接点 t 値を境界に持つ分割線分ペアを探して統合する。
+        # （to_dict で split_seg_ids が保存されなかった旧バグで情報が失われた場合の救済）
+        if not self._split_seg_ids and self._line_pt is not None:
+            t_x = self.line.project_t(self._line_pt)
+            TOL = 1e-6
+            # t_x を t_end とする線分(AX) と t_start とする線分(XB) を探す
+            seg_ax = next((s for s in self.line.segments
+                           if abs(s.t_end - t_x) < TOL), None)
+            seg_xb = next((s for s in self.line.segments
+                           if abs(s.t_start - t_x) < TOL and
+                           (seg_ax is None or s is not seg_ax)), None)
+            if seg_ax and seg_xb:
+                # AX の終端を XB の終端まで延長し、XB を削除
+                seg_ax.t_end = seg_xb.t_end
+                if seg_xb in self.line.segments:
+                    self.line.segments.remove(seg_xb)
+
         contact  = self._line_pt
         best_seg = min(self.line.segments,
                        key=lambda s: min((s.start - contact).length(),
@@ -1176,8 +1196,27 @@ class Clothoid:
 
         円弧が存在しない場合は中心角 45° の円弧を自動生成して circle.arcs に追加する。
         既存の `_split_arc_ids` があれば先にクリアする（snap=off からの切り替え）。
+        `_split_arc_ids` が空でも、接点角度を境界として持つ分割円弧ペアがあれば
+        統合して余分な円弧を削除する（旧バグで split_arc_ids が失われた場合の救済）。
         """
         self._clear_arc_split()       # snap=off で作った分割があれば解除
+
+        # _split_arc_ids が空でも、接点角度を境界に持つ分割円弧ペアを探して統合する
+        if not self._split_arc_ids and self._circle_pt is not None:
+            contact = self._circle_pt
+            angle_x = math.atan2(contact.y - self.circle.center.y,
+                                  contact.x - self.circle.center.x)
+            TOL = 1e-4  # rad
+            arc_ax = next((a for a in self.circle.arcs
+                           if abs(a.angle_end - angle_x) < TOL), None)
+            arc_xb = next((a for a in self.circle.arcs
+                           if abs(a.angle_start - angle_x) < TOL and
+                           (arc_ax is None or a is not arc_ax)), None)
+            if arc_ax and arc_xb:
+                arc_ax.angle_end = arc_xb.angle_end
+                if arc_xb in self.circle.arcs:
+                    self.circle.arcs.remove(arc_xb)
+
         circle        = self.circle
         contact       = self._circle_pt
         angle_contact = math.atan2(contact.y - circle.center.y,
