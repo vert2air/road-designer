@@ -227,6 +227,7 @@ class MainWindow(QMainWindow):
         self._canvas.selection_changed.connect(self._on_selection_changed)
         self._canvas.scene_changed.connect(self._on_scene_changed)
         self._canvas.mouse_world_pos.connect(self._right_panel.update_mouse_pos)
+        self._canvas.hover_changed.connect(self._right_panel.update_hovered)
 
         rp = self._right_panel
         rp.request_smooth_connect.connect(self._do_smooth_connect)

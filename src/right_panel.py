@@ -347,11 +347,19 @@ class RightPanel(QWidget):
 
         # ── マウス座標表示 ────────────────────────────────────
         coord_group = QGroupBox("マウス座標")
-        coord_layout = QHBoxLayout(coord_group)
+        coord_layout = QVBoxLayout(coord_group)
+        coord_xy = QHBoxLayout()
         self._lbl_mouse_x = QLabel("X: ---")
         self._lbl_mouse_y = QLabel("Y: ---")
-        coord_layout.addWidget(self._lbl_mouse_x)
-        coord_layout.addWidget(self._lbl_mouse_y)
+        coord_xy.addWidget(self._lbl_mouse_x)
+        coord_xy.addWidget(self._lbl_mouse_y)
+        coord_layout.addLayout(coord_xy)
+        # ホバー中の図形名ラベル（図形がある時のみ表示）
+        self._lbl_hovered = QLabel("")
+        self._lbl_hovered.setWordWrap(True)
+        self._lbl_hovered.setStyleSheet("color: #ccaa00; font-style: italic;")
+        self._lbl_hovered.hide()
+        coord_layout.addWidget(self._lbl_hovered)
         root_layout.addWidget(coord_group)
 
         # ── ニックネームで選択エリア ─────────────────────────
@@ -420,6 +428,59 @@ class RightPanel(QWidget):
         """
         self._lbl_mouse_x.setText(f"X: {x:.3f}")
         self._lbl_mouse_y.setText(f"Y: {y:.3f}")
+
+    def update_hovered(self, obj):
+        """Canvas.hover_changed シグナルを受け取り、ホバー中の図形名を表示する。
+
+        ニックネーム・タイプ#id・親図形情報をまとめて表示する。
+        obj が None のとき表示を消す。
+
+        Parameters
+        ----------
+        obj : Segment | Arc | Clothoid | Line | Circle | None
+            ホバー中の図形。None のとき表示を消す。
+        """
+        if obj is None:
+            self._lbl_hovered.hide()
+            self._lbl_hovered.setText("")
+            return
+
+        from models import Segment, Arc, Clothoid, Line, Circle
+
+        def _nick(o, kind):
+            if self.scene is not None:
+                return self.scene.get_nickname(o.id, kind)
+            return f"#{o.id}"
+
+        def _fmt(o, kind, type_label):
+            """ニックネーム (タイプ#id) 形式の文字列を返す。"""
+            nick = _nick(o, kind)
+            return f"{nick} ({type_label}#{o.id})"
+
+        lines = []
+        if isinstance(obj, Segment):
+            lines.append(_fmt(obj, 'seg', '線分'))
+            if obj.line is not None:
+                lines.append(f"  親: {_fmt(obj.line, 'line', '直線')}")
+        elif isinstance(obj, Arc):
+            lines.append(_fmt(obj, 'arc', '円弧'))
+            if obj.circle is not None:
+                lines.append(f"  親: {_fmt(obj.circle, 'circle', '円')}")
+        elif isinstance(obj, Clothoid):
+            lines.append(_fmt(obj, 'clothoid', 'クロソイド'))
+            if obj.line is not None:
+                lines.append(f"  直線: {_fmt(obj.line, 'line', '直線')}")
+            if obj.circle is not None:
+                lines.append(f"  円: {_fmt(obj.circle, 'circle', '円')}")
+        elif isinstance(obj, Line):
+            lines.append(_fmt(obj, 'line', '直線'))
+        elif isinstance(obj, Circle):
+            lines.append(_fmt(obj, 'circle', '円'))
+        else:
+            lines.append(f"#{getattr(obj, 'id', '?')}")
+
+        self._lbl_hovered.setText("\n".join(lines))
+        self._lbl_hovered.show()
 
     # ─── ニックネームコンボ ──────────────────────────────────
     def _add_nick_combo(self):

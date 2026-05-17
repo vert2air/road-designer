@@ -64,6 +64,7 @@ class Canvas(QWidget):
     selection_changed = Signal(list)   # 選択図形リスト
     scene_changed     = Signal()       # シーン変更
     mouse_world_pos   = Signal(float, float)  # マウスのワールド座標
+    hover_changed     = Signal(object)         # ホバー中の図形（None のとき非ホバー）
 
     MODE_SELECT = "select"
     MODE_LINE   = "line"
@@ -709,6 +710,7 @@ class Canvas(QWidget):
         self._hovered = self._hit_object(sw)
         if self._hovered is not old:
             self.update()
+            self.hover_changed.emit(self._hovered)
 
         # マウスのワールド座標を通知
         self.mouse_world_pos.emit(w.x, w.y)
