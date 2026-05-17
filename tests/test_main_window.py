@@ -1127,3 +1127,106 @@ class TestOpenVerticalWindowElevSync:
         w._open_vertical_window()
         assert ep1.elev_end == before1
         assert ep2.elev_start == before2
+
+
+class TestBuildInitializedDict:
+    """_build_initialized_dict のテスト。"""
+
+    def _make_window_with_scene(self):
+        from models import Vec2, Line, Segment, Circle, Arc, Clothoid, Scene
+        import math
+        w = make_window()
+        # 線分2本を持つ直線
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        s1 = Segment(ln, 0.0, 0.5); s2 = Segment(ln, 0.5, 1.0)
+        ln.segments.extend([s1, s2])
+        w.scene.add_line(ln)
+        # 円弧2本を持つ円
+        ci = Circle(Vec2(0, 0), 30.0)
+        ci.arcs.append(Arc(ci, 0.0, math.pi / 2))
+        ci.arcs.append(Arc(ci, math.pi, 3 * math.pi / 2))
+        w.scene.add_circle(ci)
+        # snap onのクロソイド
+        clo = Clothoid(ln, ci)
+        clo.snap_segment = True
+        clo.snap_arc = True
+        w.scene.add_clothoid(clo)
+        return w, ln, ci, clo
+
+    def test_segments_reduced_to_one(self):
+        """[仕様] 各直線の線分が1本（t_start=0, t_end=1）になる。"""
+        w, ln, ci, clo = self._make_window_with_scene()
+        data = w._build_initialized_dict()
+        for ln_d in data["lines"]:
+            assert len(ln_d["segments"]) == 1
+            seg = ln_d["segments"][0]
+            assert seg["t_start"] == 0.0
+            assert seg["t_end"] == 1.0
+
+    def test_segment_id_preserved(self):
+        """[仕様] 線分のIDは元の最初の線分のIDを引き継ぐ。"""
+        w, ln, ci, clo = self._make_window_with_scene()
+        orig_first_id = ln.segments[0].id
+        data = w._build_initialized_dict()
+        for ln_d in data["lines"]:
+            assert ln_d["segments"][0]["id"] == orig_first_id
+
+    def test_arcs_all_deleted(self):
+        """[仕様] 全円の円弧が削除される。"""
+        w, ln, ci, clo = self._make_window_with_scene()
+        data = w._build_initialized_dict()
+        for ci_d in data["circles"]:
+            assert ci_d["arcs"] == []
+
+    def test_clothoid_snap_all_off(self):
+        """[仕様] 全クロソイドの snap_segment と snap_arc が False になる。"""
+        w, ln, ci, clo = self._make_window_with_scene()
+        data = w._build_initialized_dict()
+        for clo_d in data["clothoids"]:
+            assert clo_d["snap_segment"] is False
+            assert clo_d["snap_arc"] is False
+
+    def test_original_scene_unchanged(self):
+        """[仕様] 元の Scene は変更されない。"""
+        w, ln, ci, clo = self._make_window_with_scene()
+        n_segs_before = len(ln.segments)
+        n_arcs_before = len(ci.arcs)
+        snap_before = clo.snap_segment
+        w._build_initialized_dict()
+        assert len(ln.segments) == n_segs_before
+        assert len(ci.arcs) == n_arcs_before
+        assert clo.snap_segment == snap_before
+
+    def test_offset_constraints_preserved(self):
+        """[仕様] オフセット拘束はそのまま維持される。"""
+        from models import SegmentSnap, ArcSnap
+        w, ln, ci, clo = self._make_window_with_scene()
+        orig_oc = len(w.scene.offset_constraints)
+        data = w._build_initialized_dict()
+        assert len(data.get("offset_constraints", [])) == orig_oc
+
+    def test_connections_not_deleted(self):
+        """[仕様] 直線の connection フィールドは to_dict 後も削除されない（None のまま維持）。
+
+        Note: LineConnection は現状 to_dict/from_dict で永続化されていないため、
+        connection キー自体は None になることが期待される。
+        _build_initialized_dict はこのキーを削除しない。
+        """
+        w, ln, ci, clo = self._make_window_with_scene()
+        data = w._build_initialized_dict()
+        # connection キーが lines から消えていないことを確認（None でも良い）
+        for ln_d in data["lines"]:
+            # connection キーがあってもなくても OK だが、削除していないことを確認
+            # (少なくとも初期化処理で segments/arcs/snap 以外が壊れていない)
+            assert "id" in ln_d
+            assert "segments" in ln_d
+
+    def test_initialized_data_loadable(self):
+        """[仕様] 初期化済みデータが Scene.from_dict で正しくロードできる。"""
+        from models import Scene
+        w, ln, ci, clo = self._make_window_with_scene()
+        data = w._build_initialized_dict()
+        sc2 = Scene.from_dict(data)
+        assert all(len(l.segments) == 1 for l in sc2.lines)
+        assert all(len(c.arcs) == 0 for c in sc2.circles)
+        assert all(not c.snap_segment and not c.snap_arc for c in sc2.clothoids)

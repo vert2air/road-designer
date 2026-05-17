@@ -541,7 +541,8 @@ class TestSegEndBlocked:
             assert blocked_end or blocked_start
 
     # [仕様] _split_seg_ids に含まれる → True
-    def test_blocked_by_split_ids(self):
+    def test_not_blocked_by_split_ids_when_snap_off(self):
+        """[仕様] snap_segment=False のクロソイドの _split_seg_ids に含まれても blocked にならない。"""
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         seg = Segment(ln, 0.0, 1.0)
@@ -552,8 +553,9 @@ class TestSegEndBlocked:
         sc.add_circle(ci)
         sc.add_clothoid(clo)
         p.scene = sc
+        # snap_segment=False なので _split_seg_ids に入っていても blocked にならない
         if clo.is_valid and seg.id in clo._split_seg_ids:
-            assert p._seg_end_blocked(seg, 'end') is True
+            assert p._seg_end_blocked(seg, 'end') is False
 
     # [C1] 無効なクロソイドは無視される
     def test_invalid_clothoid_ignored(self):
@@ -583,7 +585,8 @@ class TestArcEndBlocked:
         assert p._arc_end_blocked(arc, 'end') is False
 
     # [仕様] _split_arc_ids に含まれる → True
-    def test_blocked_by_split_ids(self):
+    def test_not_blocked_by_split_ids_when_snap_off(self):
+        """[仕様] snap_arc=False のクロソイドの _split_arc_ids に含まれても blocked にならない。"""
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
@@ -592,8 +595,9 @@ class TestArcEndBlocked:
         clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
         sc.add_clothoid(clo)
         p.scene = sc
+        # snap_arc=False なので _split_arc_ids に入っていても blocked にならない
         if arc.id in clo._split_arc_ids:
-            assert p._arc_end_blocked(arc, 'end') is True
+            assert p._arc_end_blocked(arc, 'end') is False
 
     # [C1] 無効なクロソイドは無視される
     def test_invalid_clothoid_ignored(self):
