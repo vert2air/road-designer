@@ -406,19 +406,38 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self, "開く", "", "Road Design JSON (*.rdjson);;JSON (*.json)")
         if path:
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self._canvas.scene = Scene.from_dict(data)
-                self._canvas._selected.clear()
-                self._canvas._handles.clear()
-                self._canvas.scene_changed.emit()
-                self._canvas.selection_changed.emit([])
-                self._filepath = path
-                self.setWindowTitle(f"道路設計アプリ - {os.path.basename(path)}")
-                self._canvas.fit_all()
-            except Exception as e:
-                QMessageBox.critical(self, "読み込みエラー", str(e))
+            self._open_file(path)
+
+    def _open_file(self, path: str) -> bool:
+        """指定パスのファイルを読み込んで Scene を更新する。
+
+        ``-i``/``--input-file`` オプションや ``_open`` から呼ばれる共通ロジック。
+
+        Parameters
+        ----------
+        path : str
+            読み込む rdjson ファイルのパス。
+
+        Returns
+        -------
+        bool
+            読み込み成功のとき True、失敗のとき False。
+        """
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._canvas.scene = Scene.from_dict(data)
+            self._canvas._selected.clear()
+            self._canvas._handles.clear()
+            self._canvas.scene_changed.emit()
+            self._canvas.selection_changed.emit([])
+            self._filepath = path
+            self.setWindowTitle(f"道路設計アプリ - {os.path.basename(path)}")
+            self._canvas.fit_all()
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "読み込みエラー", str(e))
+            return False
 
     def _clear_all(self):
         """全データを削除する。確認ダイアログを表示し、承認時に Undo に記録する。"""
