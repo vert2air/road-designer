@@ -486,19 +486,92 @@ class RightPanel(QWidget):
     def _add_nick_combo(self):
         cb = QComboBox()
         cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        # コンボボックスのsizeHintが長いニックネームで幅を押し広げるのを防ぐ
         cb.setMaximumWidth(240)
         self._nick_combos.append(cb)
         self._nick_combo_area.addWidget(cb)
-        # 選択変更時に後続コンボの選択肢を更新
         cb.currentIndexChanged.connect(self._on_combo_changed)
         self._refresh_nick_combos()
+
+    def _road_follow(self, combo_idx: int):
+        """「道なり」ボタンのハンドラ。
+
+        combo_idx 番目のコンボに対して高優先候補から自動選択を試み、
+        選べた場合はさらに次のコンボに対しても繰り返す。
+
+        選択ルール（高優先候補 adj に対して）:
+
+        1. adj が 1 件 → それを選ぶ。
+        2. adj が複数件で、``[順]`` ラベルの候補が 1 件だけ → それを選ぶ。
+        3. それ以外 → 停止。
+
+        Parameters
+        ----------
+        combo_idx : int
+            操作対象のコンボボックスのインデックス（1 以上）。
+        """
+        from PySide6.QtCore import Qt as _Qt
+
+        i = combo_idx
+        while True:
+            if i >= len(self._nick_combos):
+                break
+            cb = self._nick_combos[i]
+
+            # 高優先候補（セパレータより前のアイテム）を収集
+            # [道なり] アイテム自体は連鎖の再帰を避けるため除外する
+            adj_items = []   # [(item_index, text), ...]
+            for j in range(cb.count()):
+                t = cb.itemText(j)
+                flags = cb.model().flags(cb.model().index(j, 0))
+                is_separator = (not t and
+                                not bool(flags & _Qt.ItemFlag.ItemIsEnabled))
+                if is_separator:
+                    break  # セパレータに到達 → 高優先候補はここまで
+                if t and t != '(なし)' and not t.startswith('[道なり] '):
+                    adj_items.append((j, t))
+
+            if not adj_items:
+                break  # 高優先候補なし → 停止
+
+            chosen_idx = None
+
+            if len(adj_items) == 1:
+                # ルール1: 候補が1件だけ
+                chosen_idx = adj_items[0][0]
+            else:
+                # ルール2: [順] ラベル付きが1件だけ
+                forward_items = [(j, t) for j, t in adj_items
+                                 if t.startswith('[順] ')]
+                if len(forward_items) == 1:
+                    chosen_idx = forward_items[0][0]
+
+            if chosen_idx is None:
+                break  # 選べない → 停止
+
+            # 選択を反映（blockSignals してから手動で後続更新）
+            cb.blockSignals(True)
+            cb.setCurrentIndex(chosen_idx)
+            cb.blockSignals(False)
+
+            # _on_combo_changed 相当: 最後のコンボなら新しいコンボを追加
+            if i == len(self._nick_combos) - 1:
+                chosen_obj = self._find_by_nick_label(cb.currentText())
+                if chosen_obj and self._endpoints_of(chosen_obj):
+                    self._add_nick_combo()
+            else:
+                # 後続コンボの選択肢を更新
+                self._refresh_nick_combos()
+
+            i += 1
 
     def _on_combo_changed(self, idx: int):
         """コンボボックス選択変更時のコールバック。
 
-        最後のコンボに図形が選択された場合は _add_nick_combo で 1 個追加する。
-        その後 _refresh_nick_combos で全コンボの選択肢を更新する。
+        * ``[道なり]`` プレフィックスのアイテムが選ばれた場合:
+          プレフィックスを除いた実際の選択肢に置き換えてから
+          :meth:`_road_follow` で連鎖選択を実行する。
+        * 最後のコンボに図形が選択された場合は _add_nick_combo で 1 個追加する。
+        * その後 _refresh_nick_combos で全コンボの選択肢を更新する。
 
         Parameters
         ----------
@@ -510,6 +583,31 @@ class RightPanel(QWidget):
             text = sender.itemText(idx)
             if not text:  # セパレータはスキップ
                 return
+
+            # [道なり] アイテムが選ばれた場合
+            if text.startswith("[道なり] "):
+                # プレフィックスを除いた実ラベルに相当するアイテムをコンボから探す
+                real_label = text[len("[道なり] "):]
+                real_idx = sender.findText(real_label)
+                # 実アイテムが見つかれば選択を置き換え
+                if real_idx >= 0:
+                    sender.blockSignals(True)
+                    sender.setCurrentIndex(real_idx)
+                    sender.blockSignals(False)
+                # このコンボが何番目か特定して連鎖処理
+                if sender in self._nick_combos:
+                    combo_pos = self._nick_combos.index(sender)
+                    # 末尾なら新しいコンボを追加
+                    if combo_pos == len(self._nick_combos) - 1:
+                        obj = self._find_by_nick_label(sender.currentText())
+                        if obj is not None:
+                            self._add_nick_combo()
+                    else:
+                        self._refresh_nick_combos()
+                    # 次のコンボから連鎖選択
+                    self._road_follow(combo_pos + 1)
+                return
+
         # 最後のコンボに何かが選択されたら1個追加する
         if sender is not None and self._nick_combos:
             last_cb = self._nick_combos[-1]
@@ -926,6 +1024,18 @@ class RightPanel(QWidget):
     def _fill_adjacent_items(self, cb, adj, prev_obj, prev_is_fwd, is_2nd: bool):
         """隣接候補リストをコンボボックスに追加する。
 
+        高優先候補を追加した後、道なり条件を満たす場合は
+        ``[道なり] <元の選択肢>`` アイテムも追加する。
+
+        **道なり条件**:
+
+        * 高優先候補が 1 件 → その候補の直後に ``[道なり]`` 版を追加。
+        * 高優先候補が複数件で ``[順]`` ラベルが 1 件のみ
+          → その ``[順]`` 候補の直後に ``[道なり]`` 版を追加。
+
+        ``[道なり]`` アイテムが選ばれると :meth:`_on_combo_changed` が
+        連鎖処理（:meth:`_road_follow_from`）を呼び出す。
+
         Parameters
         ----------
         cb : QComboBox
@@ -938,17 +1048,12 @@ class RightPanel(QWidget):
             前の図形をどちらの向きで通過するか。
         is_2nd : bool
             True のとき 2 つ目コンボ用ロジック（_prev_is_fwd_for_adj を使う）。
-            False のとき 3 つ目以降用（prev_is_fwd をそのまま使う）。
-
-        Notes
-        -----
-        * len(adj) >= 2 のとき [順]/[逆] プレフィックスを付与する。
-        * 各候補の末尾に接続端点までの距離 ``x.xxx m`` を表示する。
         """
         show_dir = len(adj) >= 2
+        labels = []   # [(label_text, is_road_follow_candidate), ...]
+
         for item in adj:
             cand, _, dist = item[0], item[1], item[2] if len(item) > 2 else 0.0
-            fwd_cand = item[1]
             base_label = self._label_for_obj(cand)
             if not base_label:
                 continue
@@ -956,10 +1061,29 @@ class RightPanel(QWidget):
             if show_dir:
                 pef = (self._prev_is_fwd_for_adj(prev_obj, cand)
                        if is_2nd else prev_is_fwd)
-                prefix = "[順] " if self._compute_next_forward(prev_obj, pef, cand) else "[逆] "
-                cb.addItem(prefix + base_label + dist_str)
+                is_fwd = self._compute_next_forward(prev_obj, pef, cand)
+                prefix = "[順] " if is_fwd else "[逆] "
+                labels.append((prefix + base_label + dist_str, is_fwd))
             else:
-                cb.addItem(base_label + dist_str)
+                labels.append((base_label + dist_str, True))
+
+        # 高優先候補を追加
+        for label, _ in labels:
+            cb.addItem(label)
+
+        # 道なり条件を判定して [道なり] アイテムを追加
+        road_follow_label = None
+        if len(labels) == 1:
+            # 候補が1件 → その直後に [道なり] 版
+            road_follow_label = "[道なり] " + labels[0][0]
+        elif len(labels) > 1:
+            # 複数候補で [順] が1件のみ
+            fwd_labels = [(l, f) for l, f in labels if f]
+            if len(fwd_labels) == 1:
+                road_follow_label = "[道なり] " + fwd_labels[0][0]
+
+        if road_follow_label:
+            cb.addItem(road_follow_label)
 
     def _prev_is_fwd_for_adj(self, prev_obj, cand) -> bool:
         """2 つ目コンボ専用。cand が prev_obj のどちらの端点で接続しているかを返す。
@@ -1252,8 +1376,8 @@ class RightPanel(QWidget):
         self.request_select.emit(selected)
 
     def _find_by_nick_label(self, label: str) -> Optional[object]:
-        # [順]/[逆] プレフィックスを除去
-        for prefix in ("[順] ", "[逆] "):
+        # [道なり] / [順] / [逆] プレフィックスを除去
+        for prefix in ("[道なり] ", "[順] ", "[逆] "):
             if label.startswith(prefix):
                 label = label[len(prefix):]
                 break
