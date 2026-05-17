@@ -60,6 +60,57 @@ def _elev_at_dist(dist: float, profiles: list,
 
 
 
+
+def build_car_box(length: float = 4.0, width: float = 2.0,
+                  height: float = 1.5) -> GeomNode:
+    """車を表す直方体の GeomNode を返す。
+
+    Panda3D の座標系（Y が前方）を前提とする。
+    原点は車底面の中央。
+
+    Parameters
+    ----------
+    length, width, height : float
+        車体の長さ・幅・高さ [m]。
+
+    Returns
+    -------
+    GeomNode
+    """
+    from panda3d.core import (GeomVertexFormat, GeomVertexData, GeomVertexWriter,
+                               Geom, GeomTriangles, GeomNode, LColor)
+    fmt  = GeomVertexFormat.get_v3n3c4()
+    vdata = GeomVertexData("car_box", fmt, Geom.UH_static)
+    vdata.setNumRows(24)
+    vw = GeomVertexWriter(vdata, "vertex")
+    nw = GeomVertexWriter(vdata, "normal")
+    cw = GeomVertexWriter(vdata, "color")
+
+    hl, hw, hh = length / 2, width / 2, height
+    # 面ごとに法線と色を変える（6面 × 4頂点 = 24頂点）
+    faces = [
+        # (4頂点リスト, 法線, 色)
+        ([(-hl,-hw,0),( hl,-hw,0),( hl, hw,0),(-hl, hw,0)],  (0,0,-1), LColor(0.7,0.1,0.1,1)),  # 底
+        ([(-hl,-hw,hh),( hl,-hw,hh),( hl, hw,hh),(-hl, hw,hh)], (0,0,1), LColor(0.9,0.2,0.2,1)),  # 天井
+        ([(-hl,-hw,0),(-hl,-hw,hh),( hl,-hw,hh),( hl,-hw,0)],  (0,-1,0), LColor(0.8,0.15,0.15,1)),  # 前
+        ([( hl, hw,0),( hl, hw,hh),(-hl, hw,hh),(-hl, hw,0)],  (0, 1,0), LColor(0.8,0.15,0.15,1)),  # 後
+        ([( hl,-hw,0),( hl, hw,0),( hl, hw,hh),( hl,-hw,hh)],  (1,0,0), LColor(0.75,0.12,0.12,1)), # 右
+        ([(-hl, hw,0),(-hl,-hw,0),(-hl,-hw,hh),(-hl, hw,hh)], (-1,0,0), LColor(0.75,0.12,0.12,1)), # 左
+    ]
+    tris = GeomTriangles(Geom.UH_static)
+    vi = 0
+    for verts, normal, color in faces:
+        for v in verts:
+            vw.addData3(*v); nw.addData3(*normal); cw.addData4(color)
+        tris.addVertices(vi, vi+1, vi+2)
+        tris.addVertices(vi, vi+2, vi+3)
+        vi += 4
+
+    geom = Geom(vdata); geom.addPrimitive(tris)
+    node = GeomNode("car_box"); node.addGeom(geom)
+    return node
+
+
 def _elem_endpoints_xy(obj):
     """obj の始点・終点の Vec2 タプルを返す。取得できない場合は None。"""
     if isinstance(obj, Segment):
@@ -570,6 +621,13 @@ class RoadViewer(ShowBase):
         self._ad_total    = self._total
         self._ad_dist     = 0.0                    # 現在のチェーン内距離
 
+        # ── 周囲車両（トラフィック）──────────────────────────
+        #: 初期台数（自車の前後それぞれ N 台）
+        self.TRAFFIC_EACH   = 5
+        #: 初期車間距離 [m]
+        self.TRAFFIC_GAP    = 20.0
+        self._traffic: list = []
+
         self._build_scene()
         self._setup_hud()
         self._setup_lighting()
@@ -640,13 +698,342 @@ class RoadViewer(ShowBase):
         cx, cy = sum(xs)/len(xs), sum(ys)/len(ys)
         self.render.attachNewNode(build_ground(cx, cy))
 
-        # 車ダミー
+        # 自車（直方体）
         self.car_np = self.render.attachNewNode("car")
-        cm = CardMaker("car_body")
-        cm.set_frame(-1.0, 1.0, 0, 1.5)
-        body = self.car_np.attachNewNode(cm.generate())
-        body.set_p(-90)
+        ego_box = self.car_np.attachNewNode(build_car_box(4.0, 2.0, 1.5))
+        ego_box.setLightOff()
         self._update_car_pose(0.0)
+
+        # 周囲車両を初期化
+        self._init_traffic()
+
+    # ─── 周囲車両（トラフィック）────────────────────────────────
+
+    def _init_traffic(self):
+        """周囲車両を初期配置する。
+
+        自車が最後尾となり、前方に「選択した道路の長さ ÷ TRAFFIC_GAP」台を
+        ``TRAFFIC_GAP`` [m] 間隔で一列に並べる。
+
+        配置イメージ（進行方向 →）:
+          [先頭] ... [car2] [car1] [自車（最後尾）]
+        """
+        if not self._elem_graph:
+            return
+
+        # 選択した走行チェーンの総延長から台数を決定
+        road_length = self._total if self._total > 0 else self.TRAFFIC_GAP
+        total = max(1, int(road_length / self.TRAFFIC_GAP))
+
+        for k in range(total, 0, -1):
+            # k=total が先頭（最も前）、k=1 が自車の直前
+            self._add_traffic_car(offset=self.TRAFFIC_GAP * k)
+
+    def _add_traffic_car(self, offset: float = 0.0):
+        """周囲車両を 1 台追加する。
+
+        ``offset`` は自車チェーン上の距離オフセット [m]（正=前方、負=後方）。
+        オフセット先の要素・距離を elem_graph から解決し、初期状態を設定する。
+
+        Parameters
+        ----------
+        offset : float
+            自車からの初期距離オフセット [m]。
+        """
+        import math, random
+
+        # NodePath 生成
+        np_root = self.render.attachNewNode(f"traffic_{len(self._traffic)}")
+        box = np_root.attachNewNode(build_car_box(4.0, 2.0, 1.5))
+        box.setLightOff()
+        box.setColorScale(0.4, 0.7, 1.0, 1.0)
+
+        # 初期位置: 自車チェーンをオフセットした位置から出発
+        cur_cl    = list(self._ad_cl)
+        cur_total = self._ad_total
+        cur_id    = self._ad_cur_id
+        cur_fwd   = self._ad_forward
+        init_dist = self._ad_dist + offset
+
+        # オフセットが正のとき: チェーンを進む
+        while init_dist > cur_total and cur_total > 0:
+            overflow = init_dist - cur_total
+            # 同じ _ad_advance ロジックで次の要素を探す
+            end_pt = cur_cl[-1]
+            ex, ey = end_pt[0], end_pt[1]
+            if len(cur_cl) >= 2:
+                dx = cur_cl[-1][0] - cur_cl[-2][0]
+                dy = cur_cl[-1][1] - cur_cl[-2][1]
+                ln = math.hypot(dx, dy) or 1.0
+                fwd_x, fwd_y = dx / ln, dy / ln
+            else:
+                fwd_x, fwd_y = 1.0, 0.0
+
+            cur_elem = next((e for e in self._elem_graph if e["id"] == cur_id), None)
+            exit_clo_ref = None
+            if cur_elem:
+                exit_clo_ref = cur_elem.get("end_clo_ref" if cur_fwd else "start_clo_ref")
+
+            cands = self._find_next_candidates(cur_id, ex, ey, exit_clo_ref)
+            def _fwd_vec(elem, forward):
+                pts = elem.get("points_xy", [])
+                if len(pts) >= 2:
+                    p0, p1 = (pts[0], pts[1]) if forward else (pts[-1], pts[-2])
+                    dx, dy = p1[0]-p0[0], p1[1]-p0[1]
+                else:
+                    sx,sy = elem["start"]; ex2,ey2 = elem["end"]
+                    dx,dy = (ex2-sx, ey2-sy) if forward else (sx-ex2, sy-ey2)
+                ln2 = math.hypot(dx,dy) or 1
+                return dx/ln2, dy/ln2
+            cands = [(e,f) for e,f in cands
+                     if fwd_x*_fwd_vec(e,f)[0]+fwd_y*_fwd_vec(e,f)[1] >= 0]
+            if not cands:
+                # ワープ
+                B = self._warp_boundary
+                new_x = -ex if abs(ex) > B else ex
+                new_y = -ey if abs(ey) > B else ey
+                pl = 100.0; n = 50
+                z_end = cur_cl[-1][2]
+                cur_cl = [(new_x+fwd_x*pl*t/n, new_y+fwd_y*pl*t/n, z_end, pl*t/n)
+                          for t in range(n+1)]
+                cur_total = pl
+                cur_id    = None
+                init_dist = overflow
+                break
+
+            chosen_elem, chosen_fwd = random.choice(cands)
+            cl2, total2 = self._make_elem_cl(chosen_elem, chosen_fwd)
+            cur_cl    = cl2
+            cur_total = total2
+            cur_id    = chosen_elem["id"]
+            cur_fwd   = chosen_fwd
+            init_dist = overflow
+
+        # オフセットが負のとき: チェーンを逆に辿る
+        while init_dist < 0 and cur_total > 0:
+            need = -init_dist
+            # 逆方向に走行していた要素を探す（簡易: 現在チェーンを反転）
+            # 現在チェーンの先頭座標
+            sx, sy = cur_cl[0][0], cur_cl[0][1]
+            if len(cur_cl) >= 2:
+                dx = cur_cl[0][0] - cur_cl[1][0]
+                dy = cur_cl[0][1] - cur_cl[1][1]
+                ln2 = math.hypot(dx, dy) or 1.0
+                rfwd_x, rfwd_y = dx / ln2, dy / ln2
+            else:
+                rfwd_x, rfwd_y = -1.0, 0.0
+
+            cur_elem = next((e for e in self._elem_graph if e["id"] == cur_id), None)
+            exit_clo_ref = None
+            if cur_elem:
+                exit_clo_ref = cur_elem.get("start_clo_ref" if cur_fwd else "end_clo_ref")
+
+            cands = self._find_next_candidates(cur_id, sx, sy, exit_clo_ref)
+            cands = [(e,f) for e,f in cands
+                     if rfwd_x*_fwd_vec(e,f)[0]+rfwd_y*_fwd_vec(e,f)[1] >= 0]
+            if not cands:
+                break
+
+            chosen_elem, chosen_fwd = random.choice(cands)
+            cl2, total2 = self._make_elem_cl(chosen_elem, chosen_fwd)
+            cur_cl    = cl2
+            cur_total = total2
+            cur_id    = chosen_elem["id"]
+            cur_fwd   = chosen_fwd
+            init_dist = total2 + init_dist  # total2 - need
+
+        init_dist = max(0.0, min(init_dist, cur_total))
+
+        car_state = {
+            "np":        np_root,
+            "cl":        cur_cl,
+            "total":     cur_total,
+            "dist":      init_dist,
+            "cur_id":    cur_id,
+            "forward":   cur_fwd,
+            "speed_mul": random.uniform(0.7, 1.3),  # 個別速度係数（±30%）
+        }
+        self._traffic.append(car_state)
+        # 初期位置にセット
+        self._update_traffic_car_pose(car_state)
+
+    def _find_next_candidates(self, cur_id, ex, ey, exit_clo_ref):
+        """_ad_advance と同じ隣接候補探索を返す（(elem, forward) のリスト）。"""
+        import math
+        cands = []
+        for elem in self._elem_graph:
+            if elem["id"] == cur_id:
+                continue
+            sx, sy = elem["start"]
+            ex2, ey2 = elem["end"]
+            s_ref = elem.get("start_clo_ref")
+            e_ref = elem.get("end_clo_ref")
+            if exit_clo_ref is not None:
+                cid = exit_clo_ref["clothoid_id"]
+                side = exit_clo_ref["side"]
+                if s_ref and s_ref["clothoid_id"]==cid and s_ref["side"]==side:
+                    cands.append((elem, True)); continue
+                if e_ref and e_ref["clothoid_id"]==cid and e_ref["side"]==side:
+                    cands.append((elem, False)); continue
+            else:
+                if math.hypot(ex-sx, ey-sy) < self.AD_TOL:
+                    cands.append((elem, True))
+                elif math.hypot(ex-ex2, ey-ey2) < self.AD_TOL:
+                    cands.append((elem, False))
+        return cands
+
+    def _make_elem_cl(self, elem, forward):
+        """_ad_start_elem と同じロジックで (cl, total) を返す。"""
+        import math
+        pl = elem["plan_length"]
+        heights = elem.get("heights", [[0.0,0.0],[pl,0.0]])
+        pts_xy  = elem.get("points_xy", None)
+        if not forward:
+            if pts_xy: pts_xy = list(reversed(pts_xy))
+            heights = [[pl-h[0],h[1]] for h in reversed(heights)]
+
+        def _elev(d):
+            if not heights: return 0.0
+            if d <= heights[0][0]: return heights[0][1]
+            for k in range(len(heights)-1):
+                d0,z0 = heights[k]; d1,z1 = heights[k+1]
+                if d0 <= d <= d1:
+                    t = (d-d0)/(d1-d0) if d1>d0 else 0
+                    return z0+(z1-z0)*t
+            return heights[-1][1]
+
+        new_cl = []
+        if pts_xy and len(pts_xy) >= 2:
+            cum = [0.0]
+            for k in range(1, len(pts_xy)):
+                dx = pts_xy[k][0]-pts_xy[k-1][0]
+                dy = pts_xy[k][1]-pts_xy[k-1][1]
+                cum.append(cum[-1]+math.hypot(dx,dy))
+            total = cum[-1]
+            scale = pl/total if total > 1e-9 else 1.0
+            for k,(xy,cd) in enumerate(zip(pts_xy,cum)):
+                d = cd*scale
+                new_cl.append((xy[0],xy[1],_elev(d),d))
+        else:
+            sx,sy = elem["start"] if forward else elem["end"]
+            ex,ey = elem["end"]   if forward else elem["start"]
+            n = max(2,int(pl*0.5))
+            for i in range(n+1):
+                t = i/n; d = pl*t
+                new_cl.append((sx+(ex-sx)*t, sy+(ey-sy)*t, _elev(d), d))
+        return new_cl, pl
+
+    def _update_traffic_car_pose(self, car: dict):
+        """周囲車両 1 台の位置・姿勢を更新する。"""
+        import math
+        pos, fwd, _ = self._interp_cl(car["cl"], car["dist"])
+        np_root = car["np"]
+        np_root.setPos(pos[0], pos[1], pos[2])
+        heading = math.degrees(math.atan2(-fwd[0], fwd[1]))
+        pitch   = math.degrees(math.atan2(fwd[2], math.hypot(fwd[0], fwd[1])))
+        np_root.setHpr(heading, pitch, 0)
+
+    def _step_traffic_car(self, car: dict, dt: float):
+        """周囲車両 1 台を 1 フレーム進める。"""
+        import math, random
+
+        car["dist"] += self.speed * car.get("speed_mul", 1.0) * dt
+        if car["dist"] < car["total"]:
+            return
+
+        overflow = car["dist"] - car["total"]
+        end_pt = car["cl"][-1]
+        ex, ey = end_pt[0], end_pt[1]
+        if len(car["cl"]) >= 2:
+            dx = car["cl"][-1][0] - car["cl"][-2][0]
+            dy = car["cl"][-1][1] - car["cl"][-2][1]
+            ln = math.hypot(dx,dy) or 1.0
+            fwd_x, fwd_y = dx/ln, dy/ln
+        else:
+            fwd_x, fwd_y = 1.0, 0.0
+
+        cur_elem = next((e for e in self._elem_graph if e["id"] == car["cur_id"]), None)
+        exit_clo_ref = None
+        if cur_elem:
+            exit_clo_ref = cur_elem.get("end_clo_ref" if car["forward"] else "start_clo_ref")
+
+        cands = self._find_next_candidates(car["cur_id"], ex, ey, exit_clo_ref)
+
+        def _fwd_vec(elem, forward):
+            pts = elem.get("points_xy", [])
+            if len(pts) >= 2:
+                p0,p1 = (pts[0],pts[1]) if forward else (pts[-1],pts[-2])
+                dx,dy = p1[0]-p0[0], p1[1]-p0[1]
+            else:
+                sx,sy=elem["start"]; ex2,ey2=elem["end"]
+                dx,dy=(ex2-sx,ey2-sy) if forward else (sx-ex2,sy-ey2)
+            ln2=math.hypot(dx,dy) or 1
+            return dx/ln2, dy/ln2
+
+        cands = [(e,f) for e,f in cands
+                 if fwd_x*_fwd_vec(e,f)[0]+fwd_y*_fwd_vec(e,f)[1] >= 0]
+
+        if cands:
+            chosen_elem, chosen_fwd = random.choice(cands)
+            cl2, total2 = self._make_elem_cl(chosen_elem, chosen_fwd)
+            car["cl"]      = cl2
+            car["total"]   = total2
+            car["dist"]    = min(overflow, total2)
+            car["cur_id"]  = chosen_elem["id"]
+            car["forward"] = chosen_fwd
+        else:
+            # ワープ
+            B = self._warp_boundary
+            new_x = -ex if abs(ex) > B else ex
+            new_y = -ey if abs(ey) > B else ey
+            z_end = car["cl"][-1][2]
+            pl = 100.0; n = 50
+            car["cl"]    = [(new_x+fwd_x*pl*t/n, new_y+fwd_y*pl*t/n, z_end, pl*t/n)
+                            for t in range(n+1)]
+            car["total"] = pl
+            car["dist"]  = min(overflow, pl)
+            car["cur_id"] = None
+
+    def _on_traffic_key(self, key_name: str):
+        """台数増減キーハンドラ（特殊キー名で登録した分）。"""
+        self._on_any_key(key_name)
+
+    def _add_one_traffic(self):
+        """周囲車両を 1 台追加する。
+
+        自車の進行方向に沿って、現在いる全車両の中で最も前にいる車の
+        さらに TRAFFIC_GAP [m] 前に配置する。
+        車両がいない場合は自車から TRAFFIC_GAP [m] 前に配置する。
+        """
+        import math
+
+        # 自車の現在位置・方向
+        cur_cl   = self._ad_cl if self._auto_drive else self.cl
+        cur_dist = self._ad_dist if self._auto_drive else self.dist
+        ego_pos, ego_fwd, _ = self._interp_cl(cur_cl, cur_dist)
+        ex, ey = ego_pos[0], ego_pos[1]
+        fx, fy = ego_fwd[0], ego_fwd[1]
+
+        # 自車前方にいる各車両の「自車からの前方距離」を計算
+        # 内積が正 = 前方
+        max_forward_dist = 0.0   # 自車基準の前方距離（負なら後方）
+        for car in self._traffic:
+            pos, _, _ = self._interp_cl(car["cl"], car["dist"])
+            dx = pos[0] - ex
+            dy = pos[1] - ey
+            dot = dx * fx + dy * fy   # 前方が正
+            if dot > max_forward_dist:
+                max_forward_dist = dot
+
+        # 最前列から TRAFFIC_GAP 前に追加（車両がいなければ自車から TRAFFIC_GAP 前）
+        new_offset = max_forward_dist + self.TRAFFIC_GAP
+        self._add_traffic_car(offset=new_offset)
+
+    def _remove_one_traffic(self):
+        """周囲車両を 1 台削除する（末尾）。"""
+        if self._traffic:
+            car = self._traffic.pop()
+            car["np"].removeNode()
 
     def _apply_surface_visible(self, visible: bool):
         for np in self._surface_nodes:
@@ -677,15 +1064,36 @@ class RoadViewer(ShowBase):
             align=TextNode.ALeft, mayChange=True)
 
     def _setup_keys(self):
-        self.accept("escape",      sys.exit)
-        self.accept("v",           self._toggle_view)
-        self.accept("r",           self._toggle_surface)
-        self.accept("space",       self._toggle_pause)
-        self.accept("a",           self._toggle_auto_drive)
-        self.accept("arrow_up",    lambda: self._change_speed(+10))
-        self.accept("arrow_down",  lambda: self._change_speed(-10))
-        self.accept("arrow_left",  self._rewind)
-        self.accept("arrow_right", self._forward)
+        self.accept("escape",       sys.exit)
+        self.accept("v",            self._toggle_view)
+        self.accept("r",            self._toggle_surface)
+        self.accept("space",        self._toggle_pause)
+        self.accept("a",            self._toggle_auto_drive)
+        self.accept("arrow_up",     lambda: self._change_speed(+10))
+        self.accept("arrow_down",   lambda: self._change_speed(-10))
+        self.accept("arrow_left",   self._rewind)
+        self.accept("arrow_right",  self._forward)
+        # 台数増減: p = plus（増やす）、m = minus（減らす）
+        self.accept("p",            self._add_one_traffic)
+        self.accept("shift-p",      self._remove_one_traffic)
+
+    def _on_bt_key(self, key_name: str):
+        pass
+
+    def _on_raw_key(self, key_name: str, shifted: bool):
+        pass
+
+    def _on_any_key(self, key_name: str):
+        pass
+
+    def _setup_button_watcher(self):
+        pass
+
+    def _button_poll_task(self, task):
+        return task.cont
+
+    def _dispatch_key(self, key_name: str):
+        pass
 
     # ─── 走行処理 ────────────────────────────────────────────
     def _move_task(self, task):
@@ -705,6 +1113,12 @@ class RoadViewer(ShowBase):
         pos, fwd, _ = self._interp_cl(cur_cl, cur_dist)
         self._cur_pos = pos
         self._cur_fwd = fwd
+
+        # 周囲車両を更新
+        if not self.paused:
+            for car in self._traffic:
+                self._step_traffic_car(car, dt)
+                self._update_traffic_car_pose(car)
 
         self._update_hud()
         return Task.cont
@@ -988,12 +1402,22 @@ class RoadViewer(ShowBase):
                     self.CAM_ABOVE)
             cam_pos = LPoint3(pos[0]+back[0], pos[1]+back[1], pos[2]+back[2])
             self.camera.set_pos(cam_pos)
-            self.camera.look_at(LPoint3(*pos))
+            # 自車の少し前方を見ることで自車がカメラ視錐台の境界に入るのを防ぐ
+            look_ahead = 5.0
+            look = LPoint3(pos[0] + fwd[0]*look_ahead,
+                           pos[1] + fwd[1]*look_ahead,
+                           pos[2] + fwd[2]*look_ahead)
+            self.camera.look_at(look)
         else:
-            eye  = LPoint3(pos[0], pos[1], pos[2] + self.CAM_EYE_H)
-            look = LPoint3(pos[0] + fwd[0]*5,
-                           pos[1] + fwd[1]*5,
-                           pos[2] + fwd[2]*5 + self.CAM_EYE_H)
+            # 運転席視点: 自車の少し前方・目の高さにカメラを置く
+            # 自車底面中央から前方 2m + 高さ CAM_EYE_H の位置
+            eye_forward = 2.0
+            eye  = LPoint3(pos[0] + fwd[0]*eye_forward,
+                           pos[1] + fwd[1]*eye_forward,
+                           pos[2] + self.CAM_EYE_H)
+            look = LPoint3(pos[0] + fwd[0]*20,
+                           pos[1] + fwd[1]*20,
+                           pos[2] + fwd[2]*20 + self.CAM_EYE_H)
             self.camera.set_pos(eye)
             self.camera.look_at(look)
 
@@ -1078,7 +1502,8 @@ class RoadViewer(ShowBase):
             f"Dist: {cur_dist:.0f} / {cur_total:.0f} m\n"
             f"Speed: {self.speed:.0f} m/s ({self.speed*3.6:.0f} km/h)\n"
             f"View: {mode_str} [V]  Surface: {surface_str} [R]  Auto [A]\n"
-            f"Up/Down:Speed  Left/Right:Jump  Space:Pause  Esc:Quit"
+            f"Up/Down:Speed  Left/Right:Jump  Space:Pause  Esc:Quit\n"
+            f"Traffic: {len(self._traffic)} cars  P:Add  Shift-P:Remove"
         )
 
     # ─── 補間 ────────────────────────────────────────────────
