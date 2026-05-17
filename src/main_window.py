@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QKeySequence, QIcon, QAction, QActionGroup
 
-from models import Scene, Line, Circle, Clothoid, Segment, Arc, Vec2, resolve_chain, SNAP_TOL
+from models import Scene, Line, Circle, Clothoid, Segment, Arc, Vec2, resolve_chain, SNAP_TOL, new_id
 from canvas import Canvas
 from right_panel import RightPanel
 from vertical_window import VerticalAlignmentWindow
@@ -99,6 +99,11 @@ class MainWindow(QMainWindow):
         act_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
         act_save_as.triggered.connect(self._save_as)
         file_menu.addAction(act_save_as)
+
+        act_save_init = QAction("子図形を初期化して保存(&I)...", self)
+        act_save_init.setShortcut(QKeySequence("Ctrl+Shift+I"))
+        act_save_init.triggered.connect(self._save_initialized)
+        file_menu.addAction(act_save_init)
 
         act_open = QAction("開く(&O)...", self)
         act_open.setShortcut(QKeySequence("Ctrl+O"))
@@ -301,6 +306,80 @@ class MainWindow(QMainWindow):
         if path:
             self._filepath = path
             self._write_file(path)
+
+    def _save_initialized(self):
+        """子図形を初期化した状態でファイルに保存する（名前を付けて保存）。
+
+        以下の初期化を行ってから保存する。通常の Scene は変更しない。
+
+        * **直線**: 線分を全削除し、参照始点・終点を端点とする線分1本だけを設定する。
+        * **円**: 円弧を全削除する。
+        * **クロソイド**: snap_segment / snap_arc を False にする。
+          （smooth 接続由来の bisector も off にする）
+        * **折れ線接続・スムーズ接続・オフセット拘束**: そのまま維持する。
+        """
+        path, _ = QFileDialog.getSaveFileName(
+            self, "子図形を初期化して保存", "",
+            "Road Design JSON (*.rdjson);;JSON (*.json)")
+        if not path:
+            return
+        try:
+            data = self._build_initialized_dict()
+            with open(path, "w", encoding="utf-8") as f:
+                import json as _json
+                _json.dump(data, f, indent=2, ensure_ascii=False)
+            self._status_label.setText(
+                f"初期化保存完了: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.critical(self, "保存エラー", str(e))
+
+    def _build_initialized_dict(self) -> dict:
+        """Scene を初期化した状態の JSON 辞書を返す。
+
+        元の Scene は変更しない（コピーを操作する）。
+
+        Returns
+        -------
+        dict
+            ``Scene.to_dict()`` と同じ形式だが、各図形の子が初期化されている。
+        """
+        import copy
+        data = copy.deepcopy(self.scene.to_dict())
+
+        # ── 直線: 線分を1本に初期化 ──────────────────────────
+        for ln_d in data.get("lines", []):
+            # 参照始点・終点が端点の線分1本だけを残す
+            # t_start=0.0, t_end=1.0 で全長をカバーする線分
+            orig_segs = ln_d.get("segments", [])
+            # ID は最初の線分のIDを使うか、新IDを割り当てる
+            # 既存 segment があれば最初の id を再利用（ニックネーム維持のため）
+            seg_id = orig_segs[0]["id"] if orig_segs else new_id()
+            ln_d["segments"] = [{
+                "id":      seg_id,
+                "t_start": 0.0,
+                "t_end":   1.0,
+            }]
+
+        # ── 円: 全円弧を削除 ────────────────────────────────
+        for ci_d in data.get("circles", []):
+            ci_d["arcs"] = []
+
+        # ── クロソイド: snap を全て off ─────────────────────
+        for clo_d in data.get("clothoids", []):
+            clo_d["snap_segment"] = False
+            clo_d["snap_arc"]     = False
+            # smooth 接続由来の bisector_dir も off にする
+            # （bisector_dir は Line 側に記録されるため lines も処理）
+
+        # ── 直線の bisector_dir を削除（smooth接続の円参照を初期化）──
+        # smooth 接続の円は connection で維持されるが、
+        # bisector_origin / bisector_dir は Clothoid snap off で不要になる
+        # ※ 折れ線接続(connection)・オフセット拘束(offset_constraints)は維持
+        for ci_d in data.get("circles", []):
+            ci_d.pop("bisector_dir",    None)
+            ci_d.pop("bisector_origin", None)
+
+        return data
 
     def _write_file(self, path: str):
         """Scene を JSON 形式でファイルに書き出す。

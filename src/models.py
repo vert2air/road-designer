@@ -1299,10 +1299,13 @@ class Clothoid:
         return self._valid
 
     def to_dict(self) -> dict:
-        """{"id","line_id","circle_id","reversed_flag","snap_segment","snap_arc"} 形式の辞書に変換する。
+        """{"id","line_id","circle_id","reversed_flag","snap_segment","snap_arc",
+        "split_seg_ids","split_arc_ids"} 形式の辞書に変換する。
 
         計算キャッシュ（_line_pt 等）はシリアライズしない。
         ロード後は `Scene.from_dict` 内で `compute()` が呼ばれてキャッシュが再構築される。
+        `_split_seg_ids`/`_split_arc_ids` は snap=False のとき生成した分割線分・円弧の ID リスト。
+        保存・復元することで、ロード後の `compute()` 再実行時に重複分割を防ぐ。
         """
         return {
             "id":            self.id,
@@ -1311,6 +1314,8 @@ class Clothoid:
             "reversed_flag": self.reversed_flag,
             "snap_segment":  self.snap_segment,
             "snap_arc":      self.snap_arc,
+            "split_seg_ids": list(self._split_seg_ids),
+            "split_arc_ids": list(self._split_arc_ids),
         }
 
 
@@ -2291,6 +2296,17 @@ class Scene:
                                cd.get("snap_segment", False),
                                cd.get("snap_arc", False),
                                cd.get("id"))
+                # _split_seg_ids / _split_arc_ids を復元してから compute() を再実行する。
+                # コンストラクタの compute() 時点ではまだ [] なので _apply_segment_split が
+                # 再実行されて余分な線分を生成してしまう。
+                # 保存済みの ID リストを設定してから再 compute することで
+                # 追従更新モード（再分割なし）で動作させる。
+                saved_sids = cd.get("split_seg_ids", [])
+                saved_aids = cd.get("split_arc_ids", [])
+                if saved_sids or saved_aids:
+                    clo._split_seg_ids = list(saved_sids)
+                    clo._split_arc_ids = list(saved_aids)
+                    clo.compute()   # 追従更新モードで再実行（再分割しない）
                 sc.clothoids.append(clo)
 
         sc.element_profiles    = [ElementProfile.from_dict(ep)
