@@ -100,6 +100,10 @@ class ProfileCanvas(QWidget):
         # これを直接編集し、保存時に要素単位に切り出す
         self._grade_lines:     List[GradeLine]     = []
         self._vertical_curves: List[VerticalCurve] = []
+        # Undo/Redo スタック
+        self._undo_stack: list = []   # [(grade_lines_snapshot, vc_snapshot), ...]
+        self._redo_stack: list = []
+        self._UNDO_MAX = 50
 
         # 各要素の累積開始距離 [element_idx → dist_offset]
         self._elem_offsets: List[float] = []
@@ -826,6 +830,7 @@ class ProfileCanvas(QWidget):
             # ハンドルヒット？
             h = self._hit_handle(sx, sy)
             if h:
+                self._push_undo()   # ドラッグ操作前に保存
                 self._drag_handle = h
                 self._drag_start_screen = Vec2(sx, sy)
                 self._mouse_moved_px = 0.0
@@ -929,6 +934,7 @@ class ProfileCanvas(QWidget):
                                    dist_end=new_end, elev_end=new_elev_end)
                 new_gls.append(new_gl)
                 new_gls.sort(key=lambda g: g.dist_start)
+                self._push_undo()   # 勾配直線追加前に保存
                 self._grade_lines.clear()
                 self._grade_lines.extend(new_gls)
 
@@ -1045,7 +1051,8 @@ class ProfileCanvas(QWidget):
 
     def mouseReleaseEvent(self, event):
         if self._drag_handle is not None:
-            # 全縦断曲線の勾配を再確定
+            # ドラッグ開始時（mousePressEventで記録）にpush_undoするため
+            # ここでは全縦断曲線の勾配を再確定するだけ
             for vc in self._vertical_curves:
                 self._recalc_vc_gradients(vc)
             self._drag_handle = None
@@ -1066,6 +1073,56 @@ class ProfileCanvas(QWidget):
                 self.update()
         super().keyPressEvent(event)
 
+    # ─── Undo/Redo ───────────────────────────────────────────
+
+    def _push_undo(self):
+        """現在の状態を Undo スタックに保存する。
+
+        呼び出し側は操作を実行する**直前**に呼ぶこと。
+        保存するのは _grade_lines と _vertical_curves のディープコピー。
+        操作後に Redo スタックはクリアされる。
+        """
+        import copy
+        snap = (copy.deepcopy(self._grade_lines),
+                copy.deepcopy(self._vertical_curves))
+        self._undo_stack.append(snap)
+        if len(self._undo_stack) > self._UNDO_MAX:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+
+    def _undo(self):
+        """直前の操作を取り消す。"""
+        if not self._undo_stack:
+            return
+        import copy
+        # 現在の状態を Redo に保存
+        self._redo_stack.append((copy.deepcopy(self._grade_lines),
+                                  copy.deepcopy(self._vertical_curves)))
+        gls, vcs = self._undo_stack.pop()
+        self._grade_lines.clear()
+        self._grade_lines.extend(gls)
+        self._vertical_curves.clear()
+        self._vertical_curves.extend(vcs)
+        self._selected = None
+        self.selection_changed.emit(None)
+        self.update()
+
+    def _redo(self):
+        """取り消した操作をやり直す。"""
+        if not self._redo_stack:
+            return
+        import copy
+        self._undo_stack.append((copy.deepcopy(self._grade_lines),
+                                  copy.deepcopy(self._vertical_curves)))
+        gls, vcs = self._redo_stack.pop()
+        self._grade_lines.clear()
+        self._grade_lines.extend(gls)
+        self._vertical_curves.clear()
+        self._vertical_curves.extend(vcs)
+        self._selected = None
+        self.selection_changed.emit(None)
+        self.update()
+
     def _delete_grade_line(self, gl: GradeLine):
         """勾配直線を削除し、関連する縦断曲線もあわせて削除する。
 
@@ -1080,6 +1137,7 @@ class ProfileCanvas(QWidget):
         """
         if gl not in self._grade_lines:
             return
+        self._push_undo()   # 勾配直線削除前に保存
         # この勾配直線が prev or next の縦断曲線を削除
         to_remove = [vc for vc in self._vertical_curves
                      if vc.prev_line_id == gl.id or vc.next_line_id == gl.id
@@ -1327,7 +1385,16 @@ class VerticalAlignmentWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         k = event.key()
-        if k == Qt.Key.Key_S:
+        mods = event.modifiers()
+        if k == Qt.Key.Key_Z and mods & Qt.KeyboardModifier.ControlModifier:
+            self._canvas._undo()
+            self._refresh_props()
+        elif k in (Qt.Key.Key_Y, Qt.Key.Key_Z) and \
+                mods & Qt.KeyboardModifier.ControlModifier and \
+                mods & Qt.KeyboardModifier.ShiftModifier:
+            self._canvas._redo()
+            self._refresh_props()
+        elif k == Qt.Key.Key_S:
             self._set_select_mode()
         elif k == Qt.Key.Key_G:
             self._set_grade_mode()
@@ -1467,10 +1534,15 @@ class VerticalAlignmentWindow(QMainWindow):
                 sb_e.setValue(get_elev())
                 self._block_grade_sb = False
 
+            _undo_pushed = [False]   # この編集セッションで push 済みか
+
             def on_dist(v, _end=end_type):
                 """距離スピンボックスの値変更コールバック。"""
                 if self._block_grade_sb:
                     return
+                if not _undo_pushed[0]:
+                    self._canvas._push_undo()
+                    _undo_pushed[0] = True
                 self._block_grade_sb = True
                 set_dist(v)
                 for vc in self._canvas._vertical_curves:
@@ -1483,6 +1555,9 @@ class VerticalAlignmentWindow(QMainWindow):
                 """標高スピンボックスの値変更コールバック。"""
                 if self._block_grade_sb:
                     return
+                if not _undo_pushed[0]:
+                    self._canvas._push_undo()
+                    _undo_pushed[0] = True
                 self._block_grade_sb = True
                 set_elev(v)
                 for vc in self._canvas._vertical_curves:
@@ -1569,6 +1644,8 @@ class VerticalAlignmentWindow(QMainWindow):
         lay.addWidget(QLabel("曲線長 L [m]:"))
         sb_L = _make_spinbox(vc.length, lo=1.0, hi=10000.0, step=10.0, decimals=1)
 
+        _vc_undo_pushed = [False]
+
         def on_L_changed(val: float):
             """曲線長スピンボックスの値変更コールバック。VPC/VPT および前後 GradeLine の端点を追従させる。
 
@@ -1579,6 +1656,9 @@ class VerticalAlignmentWindow(QMainWindow):
             """
             if val < 1.0:
                 return
+            if not _vc_undo_pushed[0]:
+                self._canvas._push_undo()
+                _vc_undo_pushed[0] = True
             # 勾配直線を VPC/VPT に合わせて再調整
             old_vpc = vc.vpc_dist
             old_vpt = vc.vpt_dist
@@ -1673,6 +1753,7 @@ class VerticalAlignmentWindow(QMainWindow):
             prev_line_id=gl.id,
             next_line_id=gl2.id,
         )
+        self._canvas._push_undo()   # 縦断曲線追加前に保存
         self._canvas._vertical_curves.append(vc)
         self._canvas._selected = None
         self._canvas.update()
@@ -1692,6 +1773,7 @@ class VerticalAlignmentWindow(QMainWindow):
         """
         if vc not in self._canvas._vertical_curves:
             return
+        self._canvas._push_undo()   # 縦断曲線削除前に保存
         self._canvas._vertical_curves.remove(vc)
         self._canvas._selected = None
         self._canvas.update()
