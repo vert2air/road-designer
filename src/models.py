@@ -1050,6 +1050,8 @@ class Clothoid:
         使うため、接点が線分の中央付近にある場合でも正しい線分を選べる。
 
         既存の `_split_seg_ids` があれば先にクリアする（snap=off からの切り替え）。
+        `_split_seg_ids` が空でも、接点の t 値を境界として持つ線分ペアがあれば
+        統合して余分な線分を削除する（旧バグで split_seg_ids が失われた場合の救済）。
 
         Notes
         -----
@@ -1059,6 +1061,38 @@ class Clothoid:
         if not self.line.segments:
             return
         self._clear_segment_split()   # snap=off で作った分割があれば解除
+
+        # _split_seg_ids が空でも、接点 t 値を境界に持つ分割線分ペアを探して統合する。
+        # （to_dict で split_seg_ids が保存されなかった旧バグで情報が失われた場合の救済）
+        # _apply_segment_split は reversed_flag によらず常に:
+        #   元の線分 → AX (t_start〜t_x) に縮小、XB (t_x〜元t_end) を新規生成
+        # _clear_segment_split の正しい動作:
+        #   AX.t_end = XB.t_end (元の t_end に戻す)、XB を削除
+        # → その後 _apply_segment_snap で best_seg.t_end = t_x に snap される
+        if not self._split_seg_ids and self._line_pt is not None:
+            t_x = self.line.project_t(self._line_pt)
+            TOL = 1e-6
+            seg_ax = next((s for s in self.line.segments
+                           if abs(s.t_end - t_x) < TOL), None)
+            seg_xb = next((s for s in self.line.segments
+                           if abs(s.t_start - t_x) < TOL and
+                           (seg_ax is None or s is not seg_ax)), None)
+            if seg_ax and seg_xb:
+                # _clear_segment_split と同等: AX を元の t_end に戻し XB を削除
+                seg_ax.t_end = seg_xb.t_end
+                if seg_xb in self.line.segments:
+                    self.line.segments.remove(seg_xb)
+                # 救済後、seg_ax と t_start が同じで範囲が小さい別の線分が存在する場合、
+                # それが正規の線分（他のクロソイドの snap 結果など）で seg_ax が余剰ならば
+                # seg_ax を削除する（seg_ax.t_start を共有する線分が他にあるか確認）
+                duplicates = [s for s in self.line.segments
+                              if s is not seg_ax
+                              and abs(s.t_start - seg_ax.t_start) < TOL]
+                if duplicates:
+                    # 他の線分が同じ t_start から始まる → seg_ax が分割由来の余剰線分
+                    if seg_ax in self.line.segments:
+                        self.line.segments.remove(seg_ax)
+
         contact  = self._line_pt
         best_seg = min(self.line.segments,
                        key=lambda s: min((s.start - contact).length(),
@@ -1176,8 +1210,27 @@ class Clothoid:
 
         円弧が存在しない場合は中心角 45° の円弧を自動生成して circle.arcs に追加する。
         既存の `_split_arc_ids` があれば先にクリアする（snap=off からの切り替え）。
+        `_split_arc_ids` が空でも、接点角度を境界として持つ分割円弧ペアがあれば
+        統合して余分な円弧を削除する（旧バグで split_arc_ids が失われた場合の救済）。
         """
         self._clear_arc_split()       # snap=off で作った分割があれば解除
+
+        # _split_arc_ids が空でも、接点角度を境界に持つ分割円弧ペアを探して統合する
+        if not self._split_arc_ids and self._circle_pt is not None:
+            contact = self._circle_pt
+            angle_x = math.atan2(contact.y - self.circle.center.y,
+                                  contact.x - self.circle.center.x)
+            TOL = 1e-4  # rad
+            arc_ax = next((a for a in self.circle.arcs
+                           if abs(a.angle_end - angle_x) < TOL), None)
+            arc_xb = next((a for a in self.circle.arcs
+                           if abs(a.angle_start - angle_x) < TOL and
+                           (arc_ax is None or a is not arc_ax)), None)
+            if arc_ax and arc_xb:
+                arc_ax.angle_end = arc_xb.angle_end
+                if arc_xb in self.circle.arcs:
+                    self.circle.arcs.remove(arc_xb)
+
         circle        = self.circle
         contact       = self._circle_pt
         angle_contact = math.atan2(contact.y - circle.center.y,
@@ -1299,10 +1352,13 @@ class Clothoid:
         return self._valid
 
     def to_dict(self) -> dict:
-        """{"id","line_id","circle_id","reversed_flag","snap_segment","snap_arc"} 形式の辞書に変換する。
+        """{"id","line_id","circle_id","reversed_flag","snap_segment","snap_arc",
+        "split_seg_ids","split_arc_ids"} 形式の辞書に変換する。
 
         計算キャッシュ（_line_pt 等）はシリアライズしない。
         ロード後は `Scene.from_dict` 内で `compute()` が呼ばれてキャッシュが再構築される。
+        `_split_seg_ids`/`_split_arc_ids` は snap=False のとき生成した分割線分・円弧の ID リスト。
+        保存・復元することで、ロード後の `compute()` 再実行時に重複分割を防ぐ。
         """
         return {
             "id":            self.id,
@@ -1311,6 +1367,8 @@ class Clothoid:
             "reversed_flag": self.reversed_flag,
             "snap_segment":  self.snap_segment,
             "snap_arc":      self.snap_arc,
+            "split_seg_ids": list(self._split_seg_ids),
+            "split_arc_ids": list(self._split_arc_ids),
         }
 
 
@@ -2291,6 +2349,17 @@ class Scene:
                                cd.get("snap_segment", False),
                                cd.get("snap_arc", False),
                                cd.get("id"))
+                # _split_seg_ids / _split_arc_ids を復元してから compute() を再実行する。
+                # コンストラクタの compute() 時点ではまだ [] なので _apply_segment_split が
+                # 再実行されて余分な線分を生成してしまう。
+                # 保存済みの ID リストを設定してから再 compute することで
+                # 追従更新モード（再分割なし）で動作させる。
+                saved_sids = cd.get("split_seg_ids", [])
+                saved_aids = cd.get("split_arc_ids", [])
+                if saved_sids or saved_aids:
+                    clo._split_seg_ids = list(saved_sids)
+                    clo._split_arc_ids = list(saved_aids)
+                    clo.compute()   # 追従更新モードで再実行（再分割しない）
                 sc.clothoids.append(clo)
 
         sc.element_profiles    = [ElementProfile.from_dict(ep)

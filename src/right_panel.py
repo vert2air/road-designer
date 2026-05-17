@@ -425,6 +425,8 @@ class RightPanel(QWidget):
     def _add_nick_combo(self):
         cb = QComboBox()
         cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        # コンボボックスのsizeHintが長いニックネームで幅を押し広げるのを防ぐ
+        cb.setMaximumWidth(240)
         self._nick_combos.append(cb)
         self._nick_combo_area.addWidget(cb)
         # 選択変更時に後続コンボの選択肢を更新
@@ -2295,9 +2297,9 @@ class RightPanel(QWidget):
             self._prop_layout.addWidget(grp)
             return
 
-        lay.addWidget(QLabel(
-            "近接する端点で結合します。\n"
-            "一方の線分を削除し、もう一方を延長します。"))
+        _lbl_merge = QLabel("近接する端点で結合します。\n一方の線分を削除し、もう一方を延長します。")
+        _lbl_merge.setWordWrap(True)
+        lay.addWidget(_lbl_merge)
         lay.addWidget(_separator())
 
         pairs = self._candidate_seg_pairs(seg_a, seg_b)
@@ -2307,6 +2309,9 @@ class RightPanel(QWidget):
             return
 
         combo = QComboBox()
+        combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMaximumWidth(240)
         for p in pairs:
             status = ""
             if p['blocked_a']: status += f"  ★A.{p['end_a']}束縛"
@@ -2319,8 +2324,12 @@ class RightPanel(QWidget):
             p = _p[_c.currentIndex()]
             if p['blocked_a'] or p['blocked_b']:
                 from PySide6.QtWidgets import QMessageBox
+                # blocked でないペアがあるか確認
+                unblocked = [q for q in _p if not q['blocked_a'] and not q['blocked_b']]
+                hint = (f"\n\n「{unblocked[0]['label']}」を選んで試してください。"
+                        if unblocked else "")
                 QMessageBox.warning(self, "結合不可",
-                    "選択した端点は他の図形に束縛されているため結合できません。")
+                    "選択した端点は他の図形に束縛されているため結合できません。" + hint)
                 return
             self._merge_segments(_a, _b, p['end_a'], p['end_b'])
             self.scene_changed.emit()
@@ -2344,13 +2353,20 @@ class RightPanel(QWidget):
         -------
         bool
             束縛されているとき True。
-            条件 1: snap_segment=True のクロソイドの接点が端点と一致する。
-            条件 2: seg.id が clo._split_seg_ids に含まれる。
+            条件 1: ``snap_segment=True`` のクロソイドの接点が端点と一致する。
+            条件 2: ``snap_segment=True`` のクロソイドの ``_split_seg_ids`` に
+            seg.id が含まれる。
+
+        Note
+        ----
+        ``snap_segment=False`` のクロソイドの ``_split_seg_ids`` は無視する。
         """
         for clo in self.scene.clothoids:
             if not clo.is_valid:
                 continue
-            if clo.snap_segment and clo.line is seg.line and clo._line_pt is not None:
+            if not clo.snap_segment:
+                continue
+            if clo.line is seg.line and clo._line_pt is not None:
                 t_x = clo.line.project_t(clo._line_pt)
                 if end == 'end'   and abs(seg.t_end   - t_x) < 1e-4: return True
                 if end == 'start' and abs(seg.t_start - t_x) < 1e-4: return True
@@ -2370,7 +2386,7 @@ class RightPanel(QWidget):
                     'label': (f"A.{end_a}({pt_a.x:.1f},{pt_a.y:.1f}) ↔ "
                               f"B.{end_b}({pt_b.x:.1f},{pt_b.y:.1f})  d={dist:.1f}m"),
                 })
-        return sorted(candidates, key=lambda c: c['dist'])
+        return sorted(candidates, key=lambda c: (c['blocked_a'] or c['blocked_b'], c['dist']))
 
     def _merge_segments(self, seg_a: Segment, seg_b: Segment,
                          end_a: str, end_b: str):
@@ -2402,9 +2418,9 @@ class RightPanel(QWidget):
             self._prop_layout.addWidget(grp)
             return
 
-        lay.addWidget(QLabel(
-            "近接する端点で結合します。\n"
-            "一方の円弧を削除し、もう一方を延長します。"))
+        _lbl_merge = QLabel("近接する端点で結合します。\n一方の円弧を削除し、もう一方を延長します。")
+        _lbl_merge.setWordWrap(True)
+        lay.addWidget(_lbl_merge)
         lay.addWidget(_separator())
 
         pairs = self._candidate_arc_pairs(arc_a, arc_b)
@@ -2414,6 +2430,9 @@ class RightPanel(QWidget):
             return
 
         combo = QComboBox()
+        combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMaximumWidth(240)
         for p in pairs:
             status = ""
             if p['blocked_a']: status += f"  ★A.{p['end_a']}束縛"
@@ -2426,8 +2445,11 @@ class RightPanel(QWidget):
             p = _p[_c.currentIndex()]
             if p['blocked_a'] or p['blocked_b']:
                 from PySide6.QtWidgets import QMessageBox
+                unblocked = [q for q in _p if not q['blocked_a'] and not q['blocked_b']]
+                hint = (f"\n\n「{unblocked[0]['label']}」を選んで試してください。"
+                        if unblocked else "")
                 QMessageBox.warning(self, "結合不可",
-                    "選択した端点は他の図形に束縛されているため結合できません。")
+                    "選択した端点は他の図形に束縛されているため結合できません。" + hint)
                 return
             self._merge_arcs(_a, _b, p['end_a'], p['end_b'])
             self.scene_changed.emit()
@@ -2451,13 +2473,23 @@ class RightPanel(QWidget):
         -------
         bool
             束縛されているとき True。
-            条件 1: snap_arc=True のクロソイドの接点角度が端点角度と一致する。
-            条件 2: arc.id が clo._split_arc_ids に含まれる。
+
+            条件 1: ``snap_arc=True`` のクロソイドの接点角度が端点角度と
+            ``1e-4 rad`` 以内で一致する。
+            条件 2: ``snap_arc=True`` のクロソイドの ``_split_arc_ids`` に
+            arc.id が含まれる（接点で分割管理されている弧）。
+
+        Note
+        ----
+        ``snap_arc=False`` のクロソイドの ``_split_arc_ids`` は無視する。
+        snap が off のときは接点拘束が解除されており、結合を妨げる理由がない。
         """
         for clo in self.scene.clothoids:
             if not clo.is_valid:
                 continue
-            if clo.snap_arc and clo.circle is arc.circle and clo._circle_pt is not None:
+            if not clo.snap_arc:
+                continue
+            if clo.circle is arc.circle and clo._circle_pt is not None:
                 ang = math.atan2(clo._circle_pt.y - arc.circle.center.y,
                                clo._circle_pt.x - arc.circle.center.x)
                 if end == 'start' and abs(arc.angle_start - ang) < 1e-4: return True
@@ -2480,7 +2512,7 @@ class RightPanel(QWidget):
                     'label': (f"A.{end_a}({math.degrees(ang_a):.1f}°) ↔ "
                               f"B.{end_b}({math.degrees(ang_b):.1f}°)  d={dist:.1f}m"),
                 })
-        return sorted(candidates, key=lambda c: c['dist'])
+        return sorted(candidates, key=lambda c: (c['blocked_a'] or c['blocked_b'], c['dist']))
 
     def _merge_arcs(self, arc_a: Arc, arc_b: Arc, end_a: str, end_b: str):
         """

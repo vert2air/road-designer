@@ -59,6 +59,19 @@ def _elev_at_dist(dist: float, profiles: list,
     return 0.0
 
 
+
+def _elem_endpoints_xy(obj):
+    """obj の始点・終点の Vec2 タプルを返す。取得できない場合は None。"""
+    if isinstance(obj, Segment):
+        return obj.start, obj.end
+    if isinstance(obj, Arc):
+        return obj.start, obj.end
+    if isinstance(obj, Clothoid):
+        if obj.is_valid and obj._line_pt and obj._circle_pt:
+            return obj._line_pt, obj._circle_pt
+    return None
+
+
 def build_centerline(elements: list, profiles: list[ElementProfile],
                      rev_flags: list[bool],
                      n_per_m: float = 0.5) -> list[tuple]:
@@ -514,8 +527,29 @@ class RoadViewer(ShowBase):
     CAM_ABOVE     = 6.0    # 外部視点: 高さ
     CAM_EYE_H    = 1.5    # 車載視点: 目の高さ
 
+    #: ワープ境界 [m]。|x| または |y| がこの値を超えたら符号を反転してワープ
+    WARP_BOUNDARY = 500.0
+
     def __init__(self, centerline: list[tuple],
-                 display_segs: list[list[tuple]] = None):
+                 display_segs: list[list[tuple]] = None,
+                 elem_graph: list[dict] = None,
+                 start_info: dict = None,
+                 warp_boundary: float = None):
+        """
+        Parameters
+        ----------
+        centerline : list[tuple]
+            走行チェーンの 3D 中心線点列 [(x,y,z,dist), ...]。
+        display_segs : list[list[tuple]], optional
+            背景表示用の中心線セグメント群。
+        elem_graph : list[dict], optional
+            オートドライブ用の全要素グラフ。各要素は
+            {id, type, start:[x,y], end:[x,y], plan_length} の辞書。
+        start_info : dict, optional
+            走行開始要素の情報 {id, forward}。
+        warp_boundary : float, optional
+            ワープ境界距離 [m]。None のとき WARP_BOUNDARY クラス定数を使う。
+        """
         ShowBase.__init__(self)
         self.cl          = centerline
         self.disp_segs   = display_segs or []
@@ -524,12 +558,34 @@ class RoadViewer(ShowBase):
         self.view_mode   = "follow"
         self.paused      = False
         self._total      = centerline[-1][3] if centerline else 0.0
+        self._auto_drive = (elem_graph is not None)  # True: オートドライブモード
+        self._elem_graph = elem_graph or []
+        self._start_info = start_info
+        self._warp_boundary = warp_boundary if warp_boundary is not None                               else self.WARP_BOUNDARY
+
+        # オートドライブ状態
+        self._ad_cur_id   = start_info["id"]      if start_info else None
+        self._ad_forward  = start_info["forward"]  if start_info else True
+        self._ad_cl       = centerline             # 現在走行中の中心線
+        self._ad_total    = self._total
+        self._ad_dist     = 0.0                    # 現在のチェーン内距離
 
         self._build_scene()
         self._setup_hud()
         self._setup_lighting()
         self.taskMgr.add(self._move_task, "move")
         self._setup_keys()
+
+        # HUD 用の現在位置・方向（最初のフレームまでは (0,0,0), (1,0,0)）
+        self._cur_pos = (0.0, 0.0, 0.0)
+        self._cur_fwd = (1.0, 0.0, 0.0)
+
+        # 走行履歴スタック（← で最大 _AD_HISTORY_MAX 要素分戻れる）
+        # 各エントリ: {"cl": [...], "total": float, "dist": float,
+        #              "cur_id": int, "forward": bool}
+        self._AD_HISTORY_MAX = 10
+        self._ad_history: list = []   # インデックス0が最古
+        self._ad_history_idx = -1     # -1: 最新（リアルタイム走行中）
 
         # マウス無効化（デフォルトのカメラ操作を切る）
         self.disableMouse()
@@ -625,6 +681,7 @@ class RoadViewer(ShowBase):
         self.accept("v",           self._toggle_view)
         self.accept("r",           self._toggle_surface)
         self.accept("space",       self._toggle_pause)
+        self.accept("a",           self._toggle_auto_drive)
         self.accept("arrow_up",    lambda: self._change_speed(+10))
         self.accept("arrow_down",  lambda: self._change_speed(-10))
         self.accept("arrow_left",  self._rewind)
@@ -632,28 +689,300 @@ class RoadViewer(ShowBase):
 
     # ─── 走行処理 ────────────────────────────────────────────
     def _move_task(self, task):
-        if not self.paused and self._total > 0:
+        if not self.paused:
             dt = globalClock.get_dt()
-            self.dist = (self.dist + self.speed * dt) % self._total
+            if self._auto_drive:
+                self._ad_step(dt)
+            elif self._total > 0:
+                self.dist = (self.dist + self.speed * dt) % self._total
 
-        self._update_car_pose(self.dist)
-        self._update_camera()
+        cur_cl   = self._ad_cl if self._auto_drive else self.cl
+        cur_dist = self._ad_dist if self._auto_drive else self.dist
+        self._update_car_pose_cl(cur_cl, cur_dist)
+        self._update_camera_cl(cur_cl, cur_dist)
+
+        # HUD 用に現在の位置・方向を保存
+        pos, fwd, _ = self._interp_cl(cur_cl, cur_dist)
+        self._cur_pos = pos
+        self._cur_fwd = fwd
+
         self._update_hud()
         return Task.cont
 
+    # ─── オートドライブ ─────────────────────────────────────
+    #: 隣接判定の距離閾値 [m]（端点がこの距離以内なら接続とみなす）
+    AD_TOL = 1.0
+
+    def _ad_step(self, dt: float):
+        """オートドライブの1フレーム処理。"""
+        if self._ad_total <= 0:
+            return
+        self._ad_dist += self.speed * dt
+        if self._ad_dist < self._ad_total:
+            return  # まだチェーン内
+
+        # 末端を超えた余剰距離を次チェーンに引き継ぐ
+        overflow = self._ad_dist - self._ad_total
+        self._ad_advance(overflow)
+
+    def _ad_advance(self, overflow: float = 0.0):
+        """チェーン末端に達したとき次の走行要素を決定する。
+
+        Parameters
+        ----------
+        overflow : float
+            前チェーンの末端を超えた余剰距離 [m]。次チェーンの開始位置に加算して
+            位置が連続して見えるようにする（ジャンプ防止）。
+
+        1. 現在の末端座標から候補を探す（AD_TOL 以内の端点を持つ要素）。
+        2. 候補が 1 つ → それを選ぶ。
+        3. 候補が複数 → ランダムに選ぶ。
+        4. 候補なし → ワープ処理（境界を超えていたら符号を反転）。
+        """
+        import random
+
+        # 現在チェーンの末端座標
+        end_pt = self._ad_cl[-1]   # (x, y, z, dist)
+        ex, ey = end_pt[0], end_pt[1]
+
+        # 走行方向の接線（末端2点から計算）
+        if len(self._ad_cl) >= 2:
+            dx = self._ad_cl[-1][0] - self._ad_cl[-2][0]
+            dy = self._ad_cl[-1][1] - self._ad_cl[-2][1]
+            ln = math.hypot(dx, dy) or 1.0
+            fwd_x, fwd_y = dx / ln, dy / ln
+        else:
+            fwd_x, fwd_y = 1.0, 0.0
+
+        # 候補を収集（現在要素以外で末端に接続する要素）
+        # Clothoid接点を経由する接続は、接点のclothoid_id/sideが一致するかで判定する
+        cur_elem = next((e for e in self._elem_graph
+                         if e["id"] == self._ad_cur_id), None)
+
+        # 現在要素の末端の Clothoid 接点参照（正順走行 → end_clo_ref, 逆順 → start_clo_ref）
+        if cur_elem is not None:
+            if self._ad_forward:
+                exit_clo_ref = cur_elem.get("end_clo_ref")
+            else:
+                exit_clo_ref = cur_elem.get("start_clo_ref")
+        else:
+            exit_clo_ref = None
+
+        candidates = []   # [(elem_dict, forward), ...]
+        for elem in self._elem_graph:
+            if elem["id"] == self._ad_cur_id:
+                continue
+            sx, sy = elem["start"]
+            ex2, ey2 = elem["end"]
+            s_ref = elem.get("start_clo_ref")
+            e_ref = elem.get("end_clo_ref")
+
+            # 接続判定: 同じ Clothoid 接点を共有しているか（最優先）
+            if exit_clo_ref is not None:
+                cid = exit_clo_ref["clothoid_id"]
+                side = exit_clo_ref["side"]
+                # 候補の start_clo_ref が同じ接点 → 正順で入る
+                if (s_ref is not None
+                        and s_ref["clothoid_id"] == cid
+                        and s_ref["side"] == side):
+                    candidates.append((elem, True))
+                    continue
+                # 候補の end_clo_ref が同じ接点 → 逆順で入る
+                if (e_ref is not None
+                        and e_ref["clothoid_id"] == cid
+                        and e_ref["side"] == side):
+                    candidates.append((elem, False))
+                    continue
+
+            # Clothoid 接点参照がない場合は座標距離で判定（AD_TOL 以内）
+            if exit_clo_ref is None:
+                if math.hypot(ex - sx, ey - sy) < self.AD_TOL:
+                    candidates.append((elem, True))
+                elif math.hypot(ex - ex2, ey - ey2) < self.AD_TOL:
+                    candidates.append((elem, False))
+
+        # 遷移前に現在状態を履歴に積む
+        self._ad_history_push()
+
+        # 進行方向フィルタ: 現在の進行方向と逆向きの候補を除外する
+        # 候補の走行方向と現在の fwd の内積が負（逆向き）のものは除外
+        def _cand_fwd_vec(elem, forward):
+            """候補要素を forward 方向に走行したときの先頭接線ベクトルを返す。"""
+            pts = elem.get("points_xy")
+            if pts and len(pts) >= 2:
+                if forward:
+                    dx = pts[1][0] - pts[0][0]
+                    dy = pts[1][1] - pts[0][1]
+                else:
+                    dx = pts[-2][0] - pts[-1][0]
+                    dy = pts[-2][1] - pts[-1][1]
+            else:
+                sx, sy = elem["start"]
+                ex2, ey2 = elem["end"]
+                if forward:
+                    dx, dy = ex2 - sx, ey2 - sy
+                else:
+                    dx, dy = sx - ex2, sy - ey2
+            ln = math.hypot(dx, dy) or 1.0
+            return dx / ln, dy / ln
+
+        def _direction_filter(cands):
+            """進行方向と逆向きの候補を除外する。全除外時は元のリストを返す。"""
+            ok = [(e, f) for e, f in cands
+                  if (fwd_x * _cand_fwd_vec(e, f)[0]
+                      + fwd_y * _cand_fwd_vec(e, f)[1]) >= 0.0]
+            return ok if ok else cands
+
+        candidates = _direction_filter(candidates)
+
+        # Clothoid接点参照フィルタ後に候補なしの場合、
+        # 座標距離でフォールバックして同方向の候補を探す（0.97mギャップ等への対応）
+        if not candidates:
+            dist_cands = []
+            for elem in self._elem_graph:
+                if elem["id"] == self._ad_cur_id:
+                    continue
+                sx, sy = elem["start"]
+                ex2, ey2 = elem["end"]
+                if math.hypot(ex - sx, ey - sy) < self.AD_TOL:
+                    dist_cands.append((elem, True))
+                elif math.hypot(ex - ex2, ey - ey2) < self.AD_TOL:
+                    dist_cands.append((elem, False))
+            candidates = _direction_filter(dist_cands)
+
+        if candidates:
+            # 候補あり: 1つならそれ、複数ならランダム
+            chosen_elem, chosen_fwd = random.choice(candidates)
+            self._ad_start_elem(chosen_elem, chosen_fwd, overflow)
+        else:
+            # 候補なし: ワープ処理
+            self._ad_warp(ex, ey, fwd_x, fwd_y, overflow)
+
+    def _ad_start_elem(self, elem: dict, forward: bool, overflow: float = 0.0):
+        """elem を走行開始する中心線を生成してリセットする。
+
+        縦断高さは elem["heights"] [[dist, elev], ...] から線形補間する。
+        forward=False のとき始点/終点と heights を逆順にして使う。
+
+        Parameters
+        ----------
+        overflow : float
+            前チェーンの余剰距離。_ad_dist の初期値に設定して位置を連続させる。
+        """
+        pl      = elem["plan_length"]
+        heights = elem.get("heights", [[0.0, 0.0], [pl, 0.0]])
+        pts_xy  = elem.get("points_xy", None)  # [[x, y], ...] 正順
+
+        if not forward:
+            # 逆順: 点列を反転、heights の dist も反転
+            if pts_xy:
+                pts_xy = list(reversed(pts_xy))
+            heights = [[pl - h[0], h[1]] for h in reversed(heights)]
+
+        def _elev(d):
+            """dist d に対する高さを heights から線形補間して返す。"""
+            if not heights:
+                return 0.0
+            if d <= heights[0][0]:
+                return heights[0][1]
+            for k in range(len(heights) - 1):
+                d0, z0 = heights[k]
+                d1, z1 = heights[k + 1]
+                if d0 <= d <= d1:
+                    t = (d - d0) / (d1 - d0) if d1 > d0 else 0.0
+                    return z0 + (z1 - z0) * t
+            return heights[-1][1]
+
+        # points_xy から累積距離を計算して (x, y, z, dist) の中心線を生成
+        new_cl = []
+        if pts_xy and len(pts_xy) >= 2:
+            # 各点間の距離を積算して dist を計算
+            cum_d = [0.0]
+            for k in range(1, len(pts_xy)):
+                dx = pts_xy[k][0] - pts_xy[k-1][0]
+                dy = pts_xy[k][1] - pts_xy[k-1][1]
+                cum_d.append(cum_d[-1] + math.hypot(dx, dy))
+            total_pts = cum_d[-1]
+            # dist を pl にスケーリング（点列の合計長と plan_length が一致するとは限らない）
+            scale = pl / total_pts if total_pts > 1e-9 else 1.0
+            for k, (xy, cd) in enumerate(zip(pts_xy, cum_d)):
+                d = cd * scale
+                z = _elev(d)
+                new_cl.append((xy[0], xy[1], z, d))
+        else:
+            # フォールバック: 直線補間
+            sx, sy = elem["start"] if forward else elem["end"]
+            ex, ey = elem["end"]   if forward else elem["start"]
+            n = max(2, int(pl * 0.5))
+            for i in range(n + 1):
+                t = i / n
+                d = pl * t
+                z = _elev(d)
+                new_cl.append((sx + (ex-sx)*t, sy + (ey-sy)*t, z, d))
+
+        self._ad_cur_id  = elem["id"]
+        self._ad_forward = forward
+        self._ad_cl      = new_cl
+        self._ad_total   = pl
+        # 余剰距離を引き継いで位置を連続させる（チェーン長を超える場合は末端にクランプ）
+        self._ad_dist    = min(overflow, pl)
+
+    def _ad_warp(self, ex: float, ey: float, fwd_x: float, fwd_y: float,
+                 overflow: float = 0.0):
+        """候補なしのとき境界ワープして同方向に走行を続ける。
+
+        パックマン式（トーラス空間）: 境界を超えた座標軸の符号だけを反転し、
+        **進行方向は変えない**。
+
+        例: x=+550(右端)を超えて右向きに走行中
+              → x=-550(左端)に移動して、**同じ右向きで**走行継続
+        例: y=-520(下端)を超えて下向きに走行中
+              → y=+520(上端)に移動して、**同じ下向きで**走行継続
+
+        超えていない軸は座標も方向も一切変えない。
+        """
+        B = self._warp_boundary
+        new_x, new_y = ex, ey
+
+        if abs(ex) > B:
+            new_x = -ex    # x 座標の符号を反転（向きは変えない）
+
+        if abs(ey) > B:
+            new_y = -ey    # y 座標の符号を反転（向きは変えない）
+
+        # ワープ先から同じ方向に仮の直線チェーンを生成
+        pl    = 100.0
+        n     = 50
+        z_end = self._ad_cl[-1][2] if self._ad_cl else 0.0
+        new_cl = []
+        for i in range(n + 1):
+            t = i / n
+            x = new_x + fwd_x * pl * t   # 方向はそのまま
+            y = new_y + fwd_y * pl * t
+            d = pl * t
+            new_cl.append((x, y, z_end, d))
+
+        self._ad_cl     = new_cl
+        self._ad_total  = pl
+        self._ad_dist   = min(overflow, pl)
+        self._ad_cur_id = None
+
     def _update_car_pose(self, dist: float):
-        """距離 dist に対応する位置・姿勢を車のノードに設定"""
-        pos, fwd, _ = self._interp(dist)
+        self._update_car_pose_cl(self.cl, dist)
+
+    def _update_car_pose_cl(self, cl: list, dist: float):
+        pos, fwd, _ = self._interp_cl(cl, dist)
         self.car_np.set_pos(pos)
-        # 進行方向を向く (Panda3D: H=ヨー, P=ピッチ, R=ロール)
-        heading = math.degrees(math.atan2(-fwd[0], fwd[1]))  # Panda3D の H
+        heading = math.degrees(math.atan2(-fwd[0], fwd[1]))
         pitch   = math.degrees(math.atan2(fwd[2], math.hypot(fwd[0], fwd[1])))
         self.car_np.set_hpr(heading, pitch, 0)
 
     def _update_camera(self):
-        pos, fwd, _ = self._interp(self.dist)
+        self._update_camera_cl(self.cl, self.dist)
+
+    def _update_camera_cl(self, cl: list, dist: float):
+        pos, fwd, _ = self._interp_cl(cl, dist)
         if self.view_mode == "follow":
-            # 後方上方から追従
             back = (-fwd[0] * self.CAM_BEHIND,
                     -fwd[1] * self.CAM_BEHIND,
                     self.CAM_ABOVE)
@@ -661,65 +990,124 @@ class RoadViewer(ShowBase):
             self.camera.set_pos(cam_pos)
             self.camera.look_at(LPoint3(*pos))
         else:
-            # 車載視点
-            eye = LPoint3(pos[0], pos[1], pos[2] + self.CAM_EYE_H)
+            eye  = LPoint3(pos[0], pos[1], pos[2] + self.CAM_EYE_H)
             look = LPoint3(pos[0] + fwd[0]*5,
                            pos[1] + fwd[1]*5,
                            pos[2] + fwd[2]*5 + self.CAM_EYE_H)
             self.camera.set_pos(eye)
             self.camera.look_at(look)
 
-    def _update_hud(self):
-        mode_str    = "Follow" if self.view_mode == "follow" else "Onboard"
-        pause_str   = "[PAUSED]\n" if self.paused else ""
-        surface_str = "ON" if self.ROAD_SURFACE else "OFF"
-        self.hud.setText(
-            f"{pause_str}"
-            f"Dist: {self.dist:.0f} / {self._total:.0f} m\n"
-            f"Speed: {self.speed:.0f} m/s ({self.speed*3.6:.0f} km/h)\n"
-            f"View: {mode_str} [V]  Surface: {surface_str} [R]\n"
-            f"Up/Down:Speed  Left/Right:Jump  Space:Pause  Esc:Quit")
+    @staticmethod
+    def _bearing_str(fwd_x: float, fwd_y: float) -> str:
+        """進行方向ベクトル (fwd_x, fwd_y) を 8 方位文字列に変換する。
 
-    # ─── 補間 ────────────────────────────────────────────────
-    def _interp(self, dist: float):
-        """チェーン累積距離 dist に対応する位置と接線方向を線形補間して返す。
+        座標系: x=東, y=北（設計アプリのワールド座標系に準拠）。
 
         Parameters
         ----------
-        dist : float
-            チェーン始端からの累積距離 [m]。
+        fwd_x, fwd_y : float
+            進行方向の単位ベクトル。
 
         Returns
         -------
-        tuple
-            (x, y, z, tx, ty, tz) — 位置 (x, y, z) と接線方向 (tx, ty, tz)。
-            dist < 0 のとき先頭点、dist >= _total のとき末尾点の情報を返す。
+        str
+            "N" / "NE" / "E" / "SE" / "S" / "SW" / "W" / "NW" のいずれか。
         """
-        """
-        累積距離 dist に対する (位置, 前方ベクトル, 右ベクトル) を返す
-        位置は (x, y, z) タプル
-        """
-        cl = self.cl
-        n  = len(cl)
-        # 対応セグメントを探す
+        import math
+        # atan2(y, x) → 北(+y)=90°, 東(+x)=0° の角度
+        deg = math.degrees(math.atan2(fwd_y, fwd_x))
+        # -180〜+180 → 0〜360（北=90°を0°に補正して時計回りに）
+        # 方位角: 北=0°, 東=90°, 南=180°, 西=270°（時計回り）
+        bearing = (90.0 - deg) % 360.0
+        # 8方位に丸める（各方位 = 45° 幅）
+        idx = int((bearing + 22.5) / 45.0) % 8
+        return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][idx]
+
+    def _update_hud(self):
+        import math
+        mode_str    = "Follow" if self.view_mode == "follow" else "Onboard"
+        pause_str   = "[PAUSED]\n" if self.paused else ""
+        surface_str = "ON" if self.ROAD_SURFACE else "OFF"
+
+        # 現在位置・方向
+        px, py, pz = self._cur_pos
+        fwd_x, fwd_y = self._cur_fwd[0], self._cur_fwd[1]
+        bearing = self._bearing_str(fwd_x, fwd_y)
+
+        if self._auto_drive:
+            cur_dist  = self._ad_dist
+            cur_total = self._ad_total
+            # 走行中の図形名を elem_graph から取得
+            elem_name = "---"
+            if self._ad_cur_id is not None:
+                for e in self._elem_graph:
+                    if e["id"] == self._ad_cur_id:
+                        nick = e.get("nickname", f"#{e['id']}")
+                        # OnscreenText はデフォルトフォントが ASCII のみ対応
+                        # 非ASCII文字を含む場合は ASCII 安全な形式にフォールバック
+                        try:
+                            nick.encode("ascii")
+                            elem_name = nick
+                        except UnicodeEncodeError:
+                            elem_name = f"#{e['id']}({e['type']})"
+                        break
+            else:
+                elem_name = "(warp)"
+            fwd_str = "->" if self._ad_forward else "<-"
+            # 履歴参照中の表示
+            if self._ad_history_idx >= 0:
+                hist_str = (f"[History {self._ad_history_idx + 1}/"
+                            f"{len(self._ad_history)}]  <- back  -> fwd\n")
+            else:
+                hist_str = ""
+            auto_str = (
+                f"[AUTO] {elem_name} {fwd_str}  "
+                f"{cur_dist:.0f}/{cur_total:.0f} m\n"
+                f"{hist_str}"
+            )
+        else:
+            cur_dist  = self.dist
+            cur_total = self._total
+            auto_str  = ""
+
+        self.hud.setText(
+            f"{pause_str}"
+            f"{auto_str}"
+            f"Pos: ({px:.1f}, {py:.1f})  Alt: {pz:.1f} m\n"
+            f"Dir: {bearing}  ({fwd_x:+.2f}, {fwd_y:+.2f})\n"
+            f"Dist: {cur_dist:.0f} / {cur_total:.0f} m\n"
+            f"Speed: {self.speed:.0f} m/s ({self.speed*3.6:.0f} km/h)\n"
+            f"View: {mode_str} [V]  Surface: {surface_str} [R]  Auto [A]\n"
+            f"Up/Down:Speed  Left/Right:Jump  Space:Pause  Esc:Quit"
+        )
+
+    # ─── 補間 ────────────────────────────────────────────────
+    def _interp(self, dist: float):
+        """固定チェーン self.cl 上の dist に対する位置・方向を返す（後方互換）。"""
+        return self._interp_cl(self.cl, dist)
+
+    def _interp_cl(self, cl: list, dist: float):
+        """任意の中心線 cl 上の累積距離 dist に対応する位置・方向を線形補間して返す。"""
+        n = len(cl)
+        if n == 0:
+            return (0, 0, 0), (1, 0, 0), (0, -1, 0)
         for i in range(n - 1):
-            d0 = cl[i][3]
-            d1 = cl[i+1][3]
+            d0 = cl[i][3]; d1 = cl[i+1][3]
             if d0 <= dist <= d1:
-                t = (dist - d0) / (d1 - d0) if d1 > d0 else 0
-                x = cl[i][0] + (cl[i+1][0] - cl[i][0]) * t
-                y = cl[i][1] + (cl[i+1][1] - cl[i][1]) * t
-                z = cl[i][2] + (cl[i+1][2] - cl[i][2]) * t
+                t  = (dist - d0) / (d1 - d0) if d1 > d0 else 0
+                x  = cl[i][0] + (cl[i+1][0] - cl[i][0]) * t
+                y  = cl[i][1] + (cl[i+1][1] - cl[i][1]) * t
+                z  = cl[i][2] + (cl[i+1][2] - cl[i][2]) * t
                 dx = cl[i+1][0] - cl[i][0]
                 dy = cl[i+1][1] - cl[i][1]
                 dz = cl[i+1][2] - cl[i][2]
                 ln = math.hypot(dx, dy, dz) or 1
-                fwd = (dx/ln, dy/ln, dz/ln)
+                fwd   = (dx/ln, dy/ln, dz/ln)
                 right = (fwd[1], -fwd[0], 0)
                 return (x, y, z), fwd, right
-        # 末端
         x, y, z, _ = cl[-1]
         return (x, y, z), (1, 0, 0), (0, -1, 0)
+
 
     # ─── 操作 ────────────────────────────────────────────────
     def _toggle_view(self):
@@ -728,14 +1116,85 @@ class RoadViewer(ShowBase):
     def _toggle_pause(self):
         self.paused = not self.paused
 
+    def _toggle_auto_drive(self):
+        """A キーでオートドライブモードを切り替える。"""
+        self._auto_drive = not self._auto_drive
+        if self._auto_drive and self._start_info:
+            # オートドライブ開始時は元の走行チェーンにリセット
+            self._ad_cl    = self.cl
+            self._ad_total = self._total
+            self._ad_dist  = self.dist  # 現在位置から再開
+            self._ad_cur_id  = self._start_info["id"]
+            self._ad_forward = self._start_info["forward"]
+
     def _change_speed(self, delta: float):
         self.speed = max(1.0, self.speed + delta)
 
+    def _ad_history_push(self):
+        """現在のオートドライブ状態を履歴スタックに積む。
+
+        履歴参照中（_ad_history_idx >= 0）は push しない（巻き戻し中の
+        自動遷移による上書きを防ぐ）。
+        最大 _AD_HISTORY_MAX 件を保持し、古いものは捨てる。
+        """
+        if self._ad_history_idx >= 0:
+            return  # 履歴参照中は積まない
+        snap = {
+            "cl":      self._ad_cl,
+            "total":   self._ad_total,
+            "dist":    self._ad_dist,
+            "cur_id":  self._ad_cur_id,
+            "forward": self._ad_forward,
+        }
+        self._ad_history.append(snap)
+        if len(self._ad_history) > self._AD_HISTORY_MAX:
+            self._ad_history.pop(0)
+
     def _rewind(self):
-        self.dist = max(0, self.dist - 100)
+        if self._auto_drive:
+            new_dist = self._ad_dist - 100
+            if new_dist < 0 and self._ad_history:
+                if self._ad_history_idx < 0:
+                    self._ad_history_idx = len(self._ad_history) - 1
+                elif self._ad_history_idx > 0:
+                    self._ad_history_idx -= 1
+                if self._ad_history_idx >= 0:
+                    snap = self._ad_history[self._ad_history_idx]
+                    self._ad_cl      = snap["cl"]
+                    self._ad_total   = snap["total"]
+                    self._ad_dist    = 0.0
+                    self._ad_cur_id  = snap["cur_id"]
+                    self._ad_forward = snap["forward"]
+                    # カメラ方向を即時更新（次フレームを待たない）
+                    pos, fwd, _ = self._interp_cl(self._ad_cl, self._ad_dist)
+                    self._cur_pos = pos
+                    self._cur_fwd = fwd
+            else:
+                self._ad_dist = max(0.0, new_dist)
+        else:
+            self.dist = max(0, self.dist - 100)
 
     def _forward(self):
-        self.dist = min(self._total, self.dist + 100)
+        if self._auto_drive:
+            if self._ad_history_idx >= 0:
+                self._ad_history_idx += 1
+                if self._ad_history_idx >= len(self._ad_history):
+                    self._ad_history_idx = -1
+                else:
+                    snap = self._ad_history[self._ad_history_idx]
+                    self._ad_cl      = snap["cl"]
+                    self._ad_total   = snap["total"]
+                    self._ad_dist    = 0.0
+                    self._ad_cur_id  = snap["cur_id"]
+                    self._ad_forward = snap["forward"]
+                    # カメラ方向を即時更新
+                    pos, fwd, _ = self._interp_cl(self._ad_cl, self._ad_dist)
+                    self._cur_pos = pos
+                    self._cur_fwd = fwd
+            else:
+                self._ad_dist = min(self._ad_total, self._ad_dist + 100)
+        else:
+            self.dist = min(self._total, self.dist + 100)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -786,9 +1245,140 @@ def prepare_viewer_data(scene: Scene,
             if cl:
                 display_segs.append(cl)
 
+    # オートドライブ用: 全要素の端点グラフを構築
+    all_elems = []
+    for ln in scene.lines:
+        all_elems.extend(ln.segments)
+    for ci in scene.circles:
+        all_elems.extend(ci.arcs)
+    all_elems.extend(scene.clothoids)
+
+    # ── Clothoid の接点情報を収集（端点とClothoidの対応マップ）──────────────
+    # (x, y) → [(clothoid_id, "line"|"circle"), ...] のマップ
+    # 各端点がどのClothoidのどちら側の接点かを記録する
+    CLO_REF_TOL = 1e-4   # 接点との一致判定閾値 [m]
+    clo_ref_map = {}     # key: (round(x,4), round(y,4)) → list of (clo_id, side)
+
+    for clo in scene.clothoids:
+        if not clo.is_valid:
+            continue
+        for side, pt in [("line", clo._line_pt), ("circle", clo._circle_pt)]:
+            if pt is None:
+                continue
+            key = (round(pt.x, 3), round(pt.y, 3))
+            if key not in clo_ref_map:
+                clo_ref_map[key] = []
+            clo_ref_map[key].append({"clothoid_id": clo.id, "side": side})
+
+    def _lookup_clo_ref(x, y):
+        """座標 (x, y) に対応する Clothoid 接点参照を返す。なければ None。"""
+        key = (round(x, 3), round(y, 3))
+        refs = clo_ref_map.get(key)
+        return refs[0] if refs else None
+
+    elem_graph = []    # [{id, type, start, end, plan_length, heights, points_xy,
+                       #   start_clo_ref, end_clo_ref}, ...]
+    for obj in all_elems:
+        ep = next((e for e in scene.element_profiles
+                   if e.element_id == obj.id), None)
+        pl = ep.plan_length if ep else plan_length_of(obj)
+        pts = _elem_endpoints_xy(obj)
+        if pts is None:
+            continue
+        s, e = pts
+
+        # 縦断高さをサンプリング
+        n_h = max(2, int(pl * 0.2))
+        heights = []
+        if ep:
+            for i in range(n_h + 1):
+                d   = pl * i / n_h
+                elv = ep.elev_at(d)
+                heights.append([d, elv])
+        else:
+            heights = [[0.0, 0.0], [pl, 0.0]]
+
+        # 平面形状点列をサンプリング（要素の種類に応じて正確な曲線形状を生成）
+        n_pts = max(4, int(pl * 0.5))
+        points_xy = []   # [[x, y], ...] 正順（start→end）
+        if isinstance(obj, Segment):
+            for i in range(n_pts + 1):
+                t = i / n_pts
+                x = obj.start.x + (obj.end.x - obj.start.x) * t
+                y = obj.start.y + (obj.end.y - obj.start.y) * t
+                points_xy.append([x, y])
+        elif isinstance(obj, Arc):
+            ci = obj.circle
+            a0 = obj.angle_start
+            span = obj.arc_angle()   # 常に正（CCW）
+            for i in range(n_pts + 1):
+                ang = a0 + span * i / n_pts
+                x = ci.center.x + ci.radius * math.cos(ang)
+                y = ci.center.y + ci.radius * math.sin(ang)
+                points_xy.append([x, y])
+        elif isinstance(obj, Clothoid):
+            raw = obj.points   # Vec2 リスト
+            if raw:
+                cum = [0.0]
+                for k in range(1, len(raw)):
+                    dx = raw[k].x - raw[k-1].x
+                    dy = raw[k].y - raw[k-1].y
+                    cum.append(cum[-1] + math.hypot(dx, dy))
+                total = cum[-1]
+                for i in range(n_pts + 1):
+                    target = total * i / n_pts
+                    for k in range(len(cum) - 1):
+                        if cum[k] <= target <= cum[k+1]:
+                            t = ((target - cum[k]) / (cum[k+1] - cum[k])
+                                 if cum[k+1] > cum[k] else 0)
+                            x = raw[k].x + (raw[k+1].x - raw[k].x) * t
+                            y = raw[k].y + (raw[k+1].y - raw[k].y) * t
+                            points_xy.append([x, y])
+                            break
+                    else:
+                        points_xy.append([raw[-1].x, raw[-1].y])
+
+        if not points_xy:
+            points_xy = [[s.x, s.y], [e.x, e.y]]
+
+        # 端点に対応するClothoid接点参照を取得
+        start_clo_ref = _lookup_clo_ref(s.x, s.y)
+        end_clo_ref   = _lookup_clo_ref(e.x, e.y)
+
+        elem_graph.append({
+            "id":            obj.id,
+            "type":          type(obj).__name__,
+            "nickname":      scene.get_nickname(obj.id,
+                                 "seg" if isinstance(obj, Segment) else
+                                 "arc" if isinstance(obj, Arc) else "clothoid"),
+            "start":         [s.x, s.y],
+            "end":           [e.x, e.y],
+            "plan_length":   pl,
+            "heights":       heights,
+            "points_xy":     points_xy,
+            # どのClothoidのどちら側の接点が端点になっているか
+            # None: Clothoid接点ではない端点
+            # {"clothoid_id": int, "side": "line"|"circle"}: Clothoid接点
+            "start_clo_ref": start_clo_ref,
+            "end_clo_ref":   end_clo_ref,
+        })
+
+    # 走行チェーン先頭要素と方向を記録（オートドライブの起点）
+    start_info = None
+    if elements:
+        first = elements[0]
+        pts = _elem_endpoints_xy(first)
+        if pts:
+            if rev_flags[0]:
+                start_info = {"id": first.id, "forward": False}
+            else:
+                start_info = {"id": first.id, "forward": True}
+
     return {
         "centerline_3d":    build_centerline(elements, profiles, rev_flags),
         "display_segments": display_segs,
+        "elem_graph":       elem_graph,
+        "start_info":       start_info,
     }
 
 
@@ -796,15 +1386,24 @@ def launch_viewer(scene: Scene,
                   elements: list,
                   profiles: list,
                   rev_flags: list[bool],
-                  all_display: list = None):
+                  all_display: list = None,
+                  warp_boundary: float = None):
     """
     設計アプリのメインウィンドウから呼ぶ。別プロセスで Panda3D ウィンドウを起動する。
-    elements/profiles/rev_flags: 走行チェーン
-    all_display: 表示する全要素（線分・円弧・クロソイド）
+
+    Parameters
+    ----------
+    elements/profiles/rev_flags : 走行チェーン
+    all_display : 表示する全要素（線分・円弧・クロソイド）
+    warp_boundary : float, optional
+        オートドライブのワープ境界 [m]。None のとき RoadViewer.WARP_BOUNDARY(=500m)。
     """
     import subprocess, tempfile, os
 
     data = prepare_viewer_data(scene, elements, profiles, rev_flags, all_display)
+
+    # warp_boundary をデータに含める（デフォルトはクラス定数）
+    data["warp_boundary"] = warp_boundary  # None のとき RoadViewer がデフォルト値を使う
 
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", delete=False, encoding="utf-8")
@@ -823,12 +1422,18 @@ def _main_from_file(path: str):
     centerline   = [tuple(p) for p in data["centerline_3d"]]
     display_segs = [[tuple(p) for p in seg]
                     for seg in data.get("display_segments", [])]
+    elem_graph   = data.get("elem_graph", None)
+    start_info   = data.get("start_info", None)
+    warp_boundary = data.get("warp_boundary", None)
 
     if not centerline:
         print("No centerline data.")
         return
 
-    app = RoadViewer(centerline, display_segs)
+    app = RoadViewer(centerline, display_segs,
+                     elem_graph=elem_graph,
+                     start_info=start_info,
+                     warp_boundary=warp_boundary)
     app.run()
 
 
