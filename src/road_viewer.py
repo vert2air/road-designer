@@ -11,7 +11,7 @@ road_viewer.py  ―  Panda3D による道路 3D 走行ビューア
 メッシュ生成関数は ``_road_mesh`` モジュールに分離されている。
 """
 from __future__ import annotations
-import math, sys, json
+import math, sys, json, logging
 from typing import Optional
 
 # ─── Panda3D ──────────────────────────────────────────────────
@@ -508,7 +508,8 @@ class RoadViewer(ShowBase):
             scale = self.CAM_OVERVIEW_H * 0.8
             ox, oy = self._overview_pos
             self._overview_pos = (ox - dx * scale, oy + dy * scale)
-        except Exception:
+        except Exception as e:
+            logging.warning("_overview_pan error: %s", e)
             self._pan_prev_mouse = None
 
     def _overview_zoom_in(self):
@@ -1175,9 +1176,7 @@ def prepare_viewer_data(scene: Scene,
                        if e.element_id == obj.id), None)
             if ep is None:
                 ep = ElementProfile()
-                ep.plan_length = plan_length_of(obj)
-            else:
-                ep.plan_length = plan_length_of(obj)
+            ep.plan_length = plan_length_of(obj)
             if ep.plan_length < 0.001:
                 continue
             cl = build_centerline([obj], [ep], [False], n_per_m=0.5)

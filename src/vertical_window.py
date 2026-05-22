@@ -1516,7 +1516,7 @@ class VerticalAlignmentWindow(QMainWindow):
                 距離・標高を設定するセッター関数。
             end_type : str
                 'start' または 'end'。_snap_grade_lines に渡すスナップ方向。
-            """            """end_type: 'start' or 'end' — どちらの端点か"""
+            """
             lay.addWidget(QLabel(label))
             row_d = QHBoxLayout()
             row_e = QHBoxLayout()

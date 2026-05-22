@@ -67,7 +67,6 @@ def _elev_at_dist(dist: float, profiles: list,
     float
         標高 [m]。dist がチェーン全体を超える場合は 0.0。
     """
-    """チェーン累積距離 dist に対する標高を返す（縦断曲線優先）。"""
     n = len(profiles)
     for i, (ep, off) in enumerate(zip(profiles, offsets)):
         d_end = off + ep.plan_length
