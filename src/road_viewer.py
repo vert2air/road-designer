@@ -577,6 +577,7 @@ class RoadViewer(ShowBase):
     CAM_BEHIND    = 20.0   # 外部視点: 後方距離
     CAM_ABOVE     = 6.0    # 外部視点: 高さ
     CAM_EYE_H    = 1.5    # 車載視点: 目の高さ
+    CAM_OVERVIEW_H = 500.0 # 俯瞰視点: 高度 [m]
 
     #: ワープ境界 [m]。|x| または |y| がこの値を超えたら符号を反転してワープ
     WARP_BOUNDARY = 500.0
@@ -607,6 +608,9 @@ class RoadViewer(ShowBase):
         self.dist        = 0.0
         self.speed       = self.SPEED_DEFAULT
         self.view_mode   = "follow"
+        # 固定俯瞰視点のカメラ位置（overview_fixed モードで使用）
+        self._overview_pos = (0.0, 0.0)  # (x, y) ワールド座標
+        self._pan_prev_mouse = None       # パン操作の前フレームマウス位置
         self.paused      = False
         self._total      = centerline[-1][3] if centerline else 0.0
         self._auto_drive = (elem_graph is not None)  # True: オートドライブモード
@@ -998,6 +1002,55 @@ class RoadViewer(ShowBase):
         """台数増減キーハンドラ（特殊キー名で登録した分）。"""
         self._on_any_key(key_name)
 
+    def _overview_pan(self):
+        """固定俯瞰モードでのマウスパン・ホイールズーム処理。
+
+        右ボタンまたは中ボタンのドラッグで _overview_pos を移動する。
+        ホイールはキーでズームする（P/M と同様に overview 高度を変更）。
+        """
+        try:
+            mwn = self.mouseWatcherNode
+            if not mwn.hasMouse():
+                self._pan_prev_mouse = None
+                return
+
+            mx = mwn.getMouseX()
+            my = mwn.getMouseY()
+
+            from panda3d.core import MouseButton
+            right_down  = mwn.isButtonDown(MouseButton.two())
+            middle_down = mwn.isButtonDown(MouseButton.three())
+
+            if not (right_down or middle_down):
+                self._pan_prev_mouse = None
+                return
+
+            if self._pan_prev_mouse is None:
+                self._pan_prev_mouse = (mx, my)
+                return
+
+            px, py = self._pan_prev_mouse
+            dx = mx - px
+            dy = my - py
+            self._pan_prev_mouse = (mx, my)
+
+            # マウス移動量をワールド座標の移動量に変換
+            scale = self.CAM_OVERVIEW_H * 0.8
+            ox, oy = self._overview_pos
+            self._overview_pos = (ox - dx * scale, oy + dy * scale)
+        except Exception:
+            self._pan_prev_mouse = None
+
+    def _overview_zoom_in(self):
+        """俯瞰視点でカメラを近づける（I キー）。"""
+        if self.view_mode in ("overview", "overview_fixed"):
+            self.CAM_OVERVIEW_H = max(10.0, self.CAM_OVERVIEW_H * 0.8)
+
+    def _overview_zoom_out(self):
+        """俯瞰視点でカメラを遠ざける（K キー）。"""
+        if self.view_mode in ("overview", "overview_fixed"):
+            self.CAM_OVERVIEW_H = min(5000.0, self.CAM_OVERVIEW_H * 1.25)
+
     def _add_one_traffic(self):
         """周囲車両を 1 台追加する。
 
@@ -1066,6 +1119,7 @@ class RoadViewer(ShowBase):
     def _setup_keys(self):
         self.accept("escape",       sys.exit)
         self.accept("v",            self._toggle_view)
+        self.accept("o",            self._toggle_overview)
         self.accept("r",            self._toggle_surface)
         self.accept("space",        self._toggle_pause)
         self.accept("a",            self._toggle_auto_drive)
@@ -1076,6 +1130,9 @@ class RoadViewer(ShowBase):
         # 台数増減: p = plus（増やす）、m = minus（減らす）
         self.accept("p",            self._add_one_traffic)
         self.accept("shift-p",      self._remove_one_traffic)
+        # 俯瞰ズーム: i=近づく、k=遠ざかる（overview/overview_fixed で有効）
+        self.accept("i",            self._overview_zoom_in)
+        self.accept("k",            self._overview_zoom_out)
 
     def _on_bt_key(self, key_name: str):
         pass
@@ -1097,6 +1154,10 @@ class RoadViewer(ShowBase):
 
     # ─── 走行処理 ────────────────────────────────────────────
     def _move_task(self, task):
+        # 固定俯瞰視点のパン（右ドラッグまたは中ドラッグ）
+        if self.view_mode == "overview_fixed":
+            self._overview_pan()
+
         if not self.paused:
             dt = globalClock.get_dt()
             if self._auto_drive:
@@ -1402,15 +1463,22 @@ class RoadViewer(ShowBase):
                     self.CAM_ABOVE)
             cam_pos = LPoint3(pos[0]+back[0], pos[1]+back[1], pos[2]+back[2])
             self.camera.set_pos(cam_pos)
-            # 自車の少し前方を見ることで自車がカメラ視錐台の境界に入るのを防ぐ
             look_ahead = 5.0
             look = LPoint3(pos[0] + fwd[0]*look_ahead,
                            pos[1] + fwd[1]*look_ahead,
                            pos[2] + fwd[2]*look_ahead)
             self.camera.look_at(look)
+        elif self.view_mode == "overview":
+            # 自車追従俯瞰: 自車の真上を追従
+            self.camera.set_pos(LPoint3(pos[0], pos[1], pos[2] + self.CAM_OVERVIEW_H))
+            self.camera.set_hpr(0, -90, 0)
+        elif self.view_mode == "overview_fixed":
+            # 固定俯瞰: カメラ位置を固定（マウスホイールで高度変更可能）
+            ox, oy = self._overview_pos
+            self.camera.set_pos(LPoint3(ox, oy, self.CAM_OVERVIEW_H))
+            self.camera.set_hpr(0, -90, 0)
         else:
-            # 運転席視点: 自車の少し前方・目の高さにカメラを置く
-            # 自車底面中央から前方 2m + 高さ CAM_EYE_H の位置
+            # 運転席視点
             eye_forward = 2.0
             eye  = LPoint3(pos[0] + fwd[0]*eye_forward,
                            pos[1] + fwd[1]*eye_forward,
@@ -1449,7 +1517,9 @@ class RoadViewer(ShowBase):
 
     def _update_hud(self):
         import math
-        mode_str    = "Follow" if self.view_mode == "follow" else "Onboard"
+        mode_str    = {"follow": "Follow", "onboard": "Onboard",
+                       "overview": "Overview(track)",
+                       "overview_fixed": "Overview(fixed)"}.get(self.view_mode, self.view_mode)
         pause_str   = "[PAUSED]\n" if self.paused else ""
         surface_str = "ON" if self.ROAD_SURFACE else "OFF"
 
@@ -1501,7 +1571,7 @@ class RoadViewer(ShowBase):
             f"Dir: {bearing}  ({fwd_x:+.2f}, {fwd_y:+.2f})\n"
             f"Dist: {cur_dist:.0f} / {cur_total:.0f} m\n"
             f"Speed: {self.speed:.0f} m/s ({self.speed*3.6:.0f} km/h)\n"
-            f"View: {mode_str} [V]  Surface: {surface_str} [R]  Auto [A]\n"
+            f"View: {mode_str} [V/O]  Surface: {surface_str} [R]  Auto [A]\n"
             f"Up/Down:Speed  Left/Right:Jump  Space:Pause  Esc:Quit\n"
             f"Traffic: {len(self._traffic)} cars  P:Add  Shift-P:Remove"
         )
@@ -1537,6 +1607,25 @@ class RoadViewer(ShowBase):
     # ─── 操作 ────────────────────────────────────────────────
     def _toggle_view(self):
         self.view_mode = "onboard" if self.view_mode == "follow" else "follow"
+
+    def _toggle_overview(self):
+        """O キーで俯瞰視点をサイクルする。
+
+        follow / onboard → overview（自車追従）→ overview_fixed（カメラ固定）→ follow
+        """
+        if self.view_mode in ("follow", "onboard"):
+            # 現在の自車位置を固定俯瞰の初期位置として保存
+            cur_cl   = self._ad_cl if self._auto_drive else self.cl
+            cur_dist = self._ad_dist if self._auto_drive else self.dist
+            pos, _, _ = self._interp_cl(cur_cl, cur_dist)
+            self._overview_pos = (pos[0], pos[1])
+            self.view_mode = "overview"
+        elif self.view_mode == "overview":
+            # 追従俯瞰 → 固定俯瞰（現在のカメラ位置を固定）
+            self.view_mode = "overview_fixed"
+        else:
+            # 固定俯瞰 → 通常追従
+            self.view_mode = "follow"
 
     def _toggle_pause(self):
         self.paused = not self.paused
