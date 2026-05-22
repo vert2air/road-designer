@@ -9,15 +9,13 @@
 from __future__ import annotations
 import math
 import json as _json
-from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
     QDoubleSpinBox, QGroupBox, QFrame, QLineEdit,
     QCheckBox, QComboBox, QSizePolicy, QMenu, QApplication,
-    QSpinBox,
 )
 from PySide6.QtCore import Qt
-from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene)
+from models import (Vec2, Line, Segment, Circle, Arc, Clothoid)
 
 
 # ── クリップボード: 始点/終点ペア ─────────────────────────────────────────
@@ -275,6 +273,40 @@ class PropBuilderMixin:
     として多重継承し、``self.scene``・``self._prop_layout``・``self._selected``・
     ``self._block``・``self.request_*`` シグナル等を RightPanel 側から受け取る。
     """
+
+    # ─── snap チェックボックス共通ヘルパー ───────────────────
+    def _build_snap_checkboxes(self, clo, lay) -> None:
+        """クロソイドの snap 設定チェックボックス 2 つを lay に追加する。
+
+        ``_build_clothoid_props`` と ``_build_line_circle`` の両方から呼ばれる
+        共通実装。
+
+        Parameters
+        ----------
+        clo : Clothoid
+            snap 設定を読み書きするクロソイド。
+        lay : QVBoxLayout
+            チェックボックスを追加するレイアウト。
+        """
+        lay.addWidget(QLabel("snap 設定:"))
+        chk_seg = QCheckBox("線分との snap")
+        chk_arc = QCheckBox("円弧との snap")
+        chk_seg.setChecked(clo.snap_segment)
+        chk_arc.setChecked(clo.snap_arc)
+
+        def on_seg(v):
+            clo.snap_segment = bool(v)
+            clo.compute()
+            self.scene_changed.emit()
+        def on_arc(v):
+            clo.snap_arc = bool(v)
+            clo.compute()
+            self.scene_changed.emit()
+
+        chk_seg.stateChanged.connect(on_seg)
+        chk_arc.stateChanged.connect(on_arc)
+        lay.addWidget(chk_seg)
+        lay.addWidget(chk_arc)
 
     # ─── 単一図形プロパティ ──────────────────────────────────
     def _build_single(self, obj):
@@ -827,25 +859,7 @@ class PropBuilderMixin:
         lay.addWidget(_separator())
 
         # snap チェックボックス
-        lay.addWidget(QLabel("snap 設定:"))
-        chk_seg = QCheckBox("線分との snap")
-        chk_arc = QCheckBox("円弧との snap")
-        chk_seg.setChecked(clo.snap_segment)
-        chk_arc.setChecked(clo.snap_arc)
-
-        def on_seg(v):
-            clo.snap_segment = bool(v)
-            clo.compute()
-            self.scene_changed.emit()
-        def on_arc(v):
-            clo.snap_arc = bool(v)
-            clo.compute()
-            self.scene_changed.emit()
-
-        chk_seg.stateChanged.connect(on_seg)
-        chk_arc.stateChanged.connect(on_arc)
-        lay.addWidget(chk_seg)
-        lay.addWidget(chk_arc)
+        self._build_snap_checkboxes(clo, lay)
 
         lay.addWidget(_separator())
 
@@ -1602,25 +1616,7 @@ class PropBuilderMixin:
         if n == 1:
             clo = clothoids[0]
             lay.addWidget(_separator())
-            lay.addWidget(QLabel("snap 設定:"))
-            chk_seg = QCheckBox("線分との snap")
-            chk_arc = QCheckBox("円弧との snap")
-            chk_seg.setChecked(clo.snap_segment)
-            chk_arc.setChecked(clo.snap_arc)
-
-            def on_seg(v):
-                clo.snap_segment = bool(v)
-                clo.compute()
-                self.scene_changed.emit()
-            def on_arc(v):
-                clo.snap_arc = bool(v)
-                clo.compute()
-                self.scene_changed.emit()
-
-            chk_seg.stateChanged.connect(on_seg)
-            chk_arc.stateChanged.connect(on_arc)
-            lay.addWidget(chk_seg)
-            lay.addWidget(chk_arc)
+            self._build_snap_checkboxes(clo, lay)
 
         self._prop_layout.addWidget(grp)
 

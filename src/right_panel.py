@@ -8,9 +8,9 @@ Canvas での選択に連動してプロパティ表示・数値入力・接続�
 """
 from __future__ import annotations
 import math
-from typing import Optional, Callable
+from typing import Optional
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QDoubleSpinBox, QGroupBox, QScrollArea, QFrame, QLineEdit,
     QCheckBox, QComboBox, QSizePolicy, QMenu, QApplication,
 )

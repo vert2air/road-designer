@@ -14,9 +14,8 @@ from collections import deque
 from typing import Optional, Callable
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QPointF, QRectF, Signal
-from PySide6.QtGui import (QPainter, QPen, QBrush, QColor, QCursor,
-                          QPolygonF,
-                          QPainterPath, QFont)
+from PySide6.QtGui import (QPainter, QPen, QBrush, QColor,
+                           QPolygonF, QPainterPath)
 
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
                     LineConnection)

@@ -9,24 +9,29 @@ ProfileCanvas と VerticalAlignmentWindow の 2 クラスで構成される。
   に切り出して ElementProfile に書き戻す。
 """
 from __future__ import annotations
+import copy
 import math
 from collections import deque
-from typing import Optional, List
+from typing import Optional
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QDoubleSpinBox, QGroupBox, QScrollArea, QFrame,
     QSplitter, QSizePolicy
 )
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+from PySide6.QtCore import Qt, QPointF, Signal
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QFont
 
-from models import (Vec2, GradeLine, VerticalCurve, VerticalAlignment,
-                    Scene, Segment, Arc, Clothoid, new_id)
+from models import (Vec2, GradeLine, VerticalCurve, Scene, Segment, Arc, Clothoid)
+from _prop_builder import _separator
 
 
 def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
                   step: float = 1.0, decimals: int = 3) -> QDoubleSpinBox:
     """設定済みの QDoubleSpinBox を生成して返すファクトリ関数。
+
+    .. note::
+        ``_prop_builder._make_spinbox`` は ``_FlexSpinBox``（マウスホイール対応）を返すが、
+        こちらは素の ``QDoubleSpinBox`` を返す。縦断線形ウィンドウの操作感に合わせた意図的な差異。
 
     Parameters
     ----------
@@ -45,14 +50,6 @@ def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
     sb.setDecimals(decimals)
     sb.setValue(val)
     return sb
-
-
-def _separator() -> QFrame:
-    """右パネル内の水平区切り線（HLine）を返す。"""
-    line = QFrame()
-    line.setFrameShape(QFrame.Shape.HLine)
-    line.setFrameShadow(QFrame.Shadow.Sunken)
-    return line
 
 
 # ─── カラーバー色 ────────────────────────────────────────────
@@ -99,14 +96,14 @@ class ProfileCanvas(QWidget):
 
         # チェーン全体の勾配直線・縦断曲線（累積距離で管理）
         # これを直接編集し、保存時に要素単位に切り出す
-        self._grade_lines:     List[GradeLine]     = []
-        self._vertical_curves: List[VerticalCurve] = []
+        self._grade_lines:     list[GradeLine]     = []
+        self._vertical_curves: list[VerticalCurve] = []
         # Undo/Redo スタック
         self._undo_stack: deque = deque(maxlen=50)  # [(grade_lines_snapshot, vc_snapshot), ...]
         self._redo_stack: list  = []
 
         # 各要素の累積開始距離 [element_idx → dist_offset]
-        self._elem_offsets: List[float] = []
+        self._elem_offsets: list[float] = []
 
         # ビュー
         self._offset = Vec2(80, 300)
@@ -1082,7 +1079,6 @@ class ProfileCanvas(QWidget):
         保存するのは _grade_lines と _vertical_curves のディープコピー。
         操作後に Redo スタックはクリアされる。
         """
-        import copy
         snap = (copy.deepcopy(self._grade_lines),
                 copy.deepcopy(self._vertical_curves))
         self._undo_stack.append(snap)
@@ -1092,7 +1088,6 @@ class ProfileCanvas(QWidget):
         """直前の操作を取り消す。"""
         if not self._undo_stack:
             return
-        import copy
         # 現在の状態を Redo に保存
         self._redo_stack.append((copy.deepcopy(self._grade_lines),
                                   copy.deepcopy(self._vertical_curves)))
@@ -1109,7 +1104,6 @@ class ProfileCanvas(QWidget):
         """取り消した操作をやり直す。"""
         if not self._redo_stack:
             return
-        import copy
         self._undo_stack.append((copy.deepcopy(self._grade_lines),
                                   copy.deepcopy(self._vertical_curves)))
         gls, vcs = self._redo_stack.pop()
