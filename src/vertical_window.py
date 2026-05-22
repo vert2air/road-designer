@@ -10,6 +10,7 @@ ProfileCanvas と VerticalAlignmentWindow の 2 クラスで構成される。
 """
 from __future__ import annotations
 import math
+from collections import deque
 from typing import Optional, List
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -101,9 +102,8 @@ class ProfileCanvas(QWidget):
         self._grade_lines:     List[GradeLine]     = []
         self._vertical_curves: List[VerticalCurve] = []
         # Undo/Redo スタック
-        self._undo_stack: list = []   # [(grade_lines_snapshot, vc_snapshot), ...]
-        self._redo_stack: list = []
-        self._UNDO_MAX = 50
+        self._undo_stack: deque = deque(maxlen=50)  # [(grade_lines_snapshot, vc_snapshot), ...]
+        self._redo_stack: list  = []
 
         # 各要素の累積開始距離 [element_idx → dist_offset]
         self._elem_offsets: List[float] = []
@@ -1086,8 +1086,6 @@ class ProfileCanvas(QWidget):
         snap = (copy.deepcopy(self._grade_lines),
                 copy.deepcopy(self._vertical_curves))
         self._undo_stack.append(snap)
-        if len(self._undo_stack) > self._UNDO_MAX:
-            self._undo_stack.pop(0)
         self._redo_stack.clear()
 
     def _undo(self):

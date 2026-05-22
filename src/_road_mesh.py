@@ -445,45 +445,15 @@ def build_road_markings(centerline: list[tuple],
     """
     from panda3d.core import GeomLinestrips
 
-    fmt   = GeomVertexFormat.get_v3c4()
-    vdata = GeomVertexData("markings", fmt, Geom.UH_static)
-    vw    = GeomVertexWriter(vdata, "vertex")
-    cw    = GeomVertexWriter(vdata, "color")
+    fmt = GeomVertexFormat.get_v3c4()
 
     n = len(centerline)
     if n < 2:
         return GeomNode("markings")
 
-    white = LColor(1, 1, 1, 1)
+    white  = LColor(1, 1, 1, 1)
     EDGE_Z = 0.08  # 路面より少し上に描く
 
-    # 左右それぞれの白線
-    for side in (-1, 1):
-        ls = GeomLinestrips(Geom.UH_static)
-        base = vdata.get_num_rows()
-        for i, (x, y, z, _) in enumerate(centerline):
-            if i == 0:
-                tx = centerline[1][0]-x; ty = centerline[1][1]-y
-            elif i == n-1:
-                tx = x-centerline[n-2][0]; ty = y-centerline[n-2][1]
-            else:
-                tx = centerline[i+1][0]-centerline[i-1][0]
-                ty = centerline[i+1][1]-centerline[i-1][1]
-            ln = math.hypot(tx, ty)
-            if ln < 1e-9: tx, ty = 1, 0
-            else: tx /= ln; ty /= ln
-            nx_v, ny_v = ty, -tx
-            px = x + side * half_width * nx_v
-            py = y + side * half_width * ny_v
-            vw.add_data3(px, py, z + EDGE_Z)
-            cw.add_data4(white)
-            ls.add_vertex(base + i)
-        ls.close_primitive()
-        geom_ls = Geom(vdata)
-        geom_ls.add_primitive(ls)
-
-    geom_final = Geom(vdata)
-    # 左右の linestrip を両方追加するために node に複数 geom を追加
     node = GeomNode("markings")
 
     # 左右を別々に追加

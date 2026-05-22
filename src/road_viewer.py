@@ -41,6 +41,31 @@ from _road_mesh import (
 )
 
 
+def _elem_fwd_vec(elem: dict, forward: bool) -> tuple[float, float]:
+    """要素グラフノード `elem` を `forward` 方向に走行したときの先頭接線ベクトルを返す。
+
+    `points_xy` が存在する場合は点列端から、なければ start/end キーから接線を計算し
+    単位ベクトルに正規化して返す。
+
+    Parameters
+    ----------
+    elem : dict
+        `_elem_graph` のノード辞書（"points_xy", "start", "end" キーを持つ）。
+    forward : bool
+        True のとき始点→終点方向、False のとき終点→始点方向。
+    """
+    pts = elem.get("points_xy") or []
+    if len(pts) >= 2:
+        p0, p1 = (pts[0], pts[1]) if forward else (pts[-1], pts[-2])
+        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    else:
+        sx, sy  = elem["start"]
+        ex, ey  = elem["end"]
+        dx, dy  = (ex - sx, ey - sy) if forward else (sx - ex, sy - ey)
+    ln = math.hypot(dx, dy) or 1.0
+    return dx / ln, dy / ln
+
+
 class RoadViewer(ShowBase):
     SPEED_DEFAULT = 30.0   # m/s
     CAM_BEHIND    = 20.0   # 外部視点: 後方距離
@@ -248,18 +273,9 @@ class RoadViewer(ShowBase):
                 exit_clo_ref = cur_elem.get("end_clo_ref" if cur_fwd else "start_clo_ref")
 
             cands = self._find_next_candidates(cur_id, ex, ey, exit_clo_ref)
-            def _fwd_vec(elem, forward):
-                pts = elem.get("points_xy", [])
-                if len(pts) >= 2:
-                    p0, p1 = (pts[0], pts[1]) if forward else (pts[-1], pts[-2])
-                    dx, dy = p1[0]-p0[0], p1[1]-p0[1]
-                else:
-                    sx,sy = elem["start"]; ex2,ey2 = elem["end"]
-                    dx,dy = (ex2-sx, ey2-sy) if forward else (sx-ex2, sy-ey2)
-                ln2 = math.hypot(dx,dy) or 1
-                return dx/ln2, dy/ln2
-            cands = [(e,f) for e,f in cands
-                     if fwd_x*_fwd_vec(e,f)[0]+fwd_y*_fwd_vec(e,f)[1] >= 0]
+            cands = [(e, f) for e, f in cands
+                     if fwd_x * _elem_fwd_vec(e, f)[0]
+                      + fwd_y * _elem_fwd_vec(e, f)[1] >= 0]
             if not cands:
                 # ワープ
                 B = self._warp_boundary
@@ -431,20 +447,9 @@ class RoadViewer(ShowBase):
             exit_clo_ref = cur_elem.get("end_clo_ref" if car["forward"] else "start_clo_ref")
 
         cands = self._find_next_candidates(car["cur_id"], ex, ey, exit_clo_ref)
-
-        def _fwd_vec(elem, forward):
-            pts = elem.get("points_xy", [])
-            if len(pts) >= 2:
-                p0,p1 = (pts[0],pts[1]) if forward else (pts[-1],pts[-2])
-                dx,dy = p1[0]-p0[0], p1[1]-p0[1]
-            else:
-                sx,sy=elem["start"]; ex2,ey2=elem["end"]
-                dx,dy=(ex2-sx,ey2-sy) if forward else (sx-ex2,sy-ey2)
-            ln2=math.hypot(dx,dy) or 1
-            return dx/ln2, dy/ln2
-
-        cands = [(e,f) for e,f in cands
-                 if fwd_x*_fwd_vec(e,f)[0]+fwd_y*_fwd_vec(e,f)[1] >= 0]
+        cands = [(e, f) for e, f in cands
+                 if fwd_x * _elem_fwd_vec(e, f)[0]
+                  + fwd_y * _elem_fwd_vec(e, f)[1] >= 0]
 
         if cands:
             chosen_elem, chosen_fwd = random.choice(cands)
@@ -466,10 +471,6 @@ class RoadViewer(ShowBase):
             car["total"] = pl
             car["dist"]  = min(overflow, pl)
             car["cur_id"] = None
-
-    def _on_traffic_key(self, key_name: str):
-        """台数増減キーハンドラ（特殊キー名で登録した分）。"""
-        self._on_any_key(key_name)
 
     def _overview_pan(self):
         """固定俯瞰モードでのマウスパン・ホイールズーム処理。
@@ -603,24 +604,6 @@ class RoadViewer(ShowBase):
         self.accept("i",            self._overview_zoom_in)
         self.accept("k",            self._overview_zoom_out)
 
-    def _on_bt_key(self, key_name: str):
-        pass
-
-    def _on_raw_key(self, key_name: str, shifted: bool):
-        pass
-
-    def _on_any_key(self, key_name: str):
-        pass
-
-    def _setup_button_watcher(self):
-        pass
-
-    def _button_poll_task(self, task):
-        return task.cont
-
-    def _dispatch_key(self, key_name: str):
-        pass
-
     # ─── 走行処理 ────────────────────────────────────────────
     def _move_task(self, task):
         # 固定俯瞰視点のパン（右ドラッグまたは中ドラッグ）
@@ -750,34 +733,10 @@ class RoadViewer(ShowBase):
 
         # 進行方向フィルタ: 現在の進行方向と逆向きの候補を除外する
         # 候補の走行方向と現在の fwd の内積が負（逆向き）のものは除外
-        def _cand_fwd_vec(elem, forward):
-            """候補要素を forward 方向に走行したときの先頭接線ベクトルを返す。"""
-            pts = elem.get("points_xy")
-            if pts and len(pts) >= 2:
-                if forward:
-                    dx = pts[1][0] - pts[0][0]
-                    dy = pts[1][1] - pts[0][1]
-                else:
-                    dx = pts[-2][0] - pts[-1][0]
-                    dy = pts[-2][1] - pts[-1][1]
-            else:
-                sx, sy = elem["start"]
-                ex2, ey2 = elem["end"]
-                if forward:
-                    dx, dy = ex2 - sx, ey2 - sy
-                else:
-                    dx, dy = sx - ex2, sy - ey2
-            ln = math.hypot(dx, dy) or 1.0
-            return dx / ln, dy / ln
-
-        def _direction_filter(cands):
-            """進行方向と逆向きの候補を除外する。全除外時は元のリストを返す。"""
-            ok = [(e, f) for e, f in cands
-                  if (fwd_x * _cand_fwd_vec(e, f)[0]
-                      + fwd_y * _cand_fwd_vec(e, f)[1]) >= 0.0]
-            return ok if ok else cands
-
-        candidates = _direction_filter(candidates)
+        ok = [(e, f) for e, f in candidates
+              if (fwd_x * _elem_fwd_vec(e, f)[0]
+                  + fwd_y * _elem_fwd_vec(e, f)[1]) >= 0.0]
+        candidates = ok if ok else candidates
 
         # Clothoid接点参照フィルタ後に候補なしの場合、
         # 座標距離でフォールバックして同方向の候補を探す（0.97mギャップ等への対応）
@@ -920,9 +879,6 @@ class RoadViewer(ShowBase):
         heading = math.degrees(math.atan2(-fwd[0], fwd[1]))
         pitch   = math.degrees(math.atan2(fwd[2], math.hypot(fwd[0], fwd[1])))
         self.car_np.set_hpr(heading, pitch, 0)
-
-    def _update_camera(self):
-        self._update_camera_cl(self.cl, self.dist)
 
     def _update_camera_cl(self, cl: list, dist: float):
         pos, fwd, _ = self._interp_cl(cl, dist)

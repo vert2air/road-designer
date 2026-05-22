@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 import math
+from collections import deque
 from typing import Optional, Callable
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QPointF, QRectF, Signal
@@ -18,7 +19,7 @@ from PySide6.QtGui import (QPainter, QPen, QBrush, QColor, QCursor,
                           QPainterPath, QFont)
 
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
-                    LineConnection, new_id)
+                    LineConnection)
 
 # ─── 色定数 ────────────────────────────────────────────────────
 C_LINE_REF   = QColor(160, 160, 160)
@@ -106,7 +107,7 @@ class Canvas(QWidget):
         self._handles: list[Handle] = []
 
         # undo スタック (最大 500)
-        self._undo_stack: list[dict] = []
+        self._undo_stack: deque[dict] = deque(maxlen=500)
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -189,8 +190,6 @@ class Canvas(QWidget):
     def push_undo(self):
         state = self.scene.to_dict()
         self._undo_stack.append(state)
-        if len(self._undo_stack) > 500:
-            self._undo_stack.pop(0)
 
     def undo(self):
         if not self._undo_stack:
