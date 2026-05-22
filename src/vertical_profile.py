@@ -345,3 +345,12 @@ class VerticalCurve:
         return v
 
 
+def make_empty_profile() -> 'ElementProfile':
+    """空の ElementProfile を生成するファクトリ関数。
+
+    選択なしで縦断線形ウィンドウを開いたとき等、
+    平面線形要素と対応しないプロファイルが必要な場合に使う。
+    """
+    return ElementProfile()
+
+

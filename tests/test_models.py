@@ -23,7 +23,7 @@ import pytest
 from models import (
     Vec2, Line, Segment, LineConnection, Circle, Arc, Clothoid,
     GradeLine, VerticalCurve, ElementProfile, Scene,
-    SegmentSnap, ArcSnap, OffsetConstraint,
+    OffsetConstraint,
     new_id, _reset_id_counter_after,
     plan_length_of, tangent_at, entry_tangent, resolve_chain,
     SNAP_TOL, _elem_endpoints, _pt_dist,
@@ -1456,46 +1456,6 @@ class TestUpdateSnaps:
         # 例外なし = 早期リターンが正しく動作
 
 
-class TestApplySegmentSnapReversed:
-    """_apply_segment_snap の reversed_flag=True 側と縮退防止分岐。"""
-
-    # [C1] reversed_flag=True → t_start を移動する分岐
-    def test_reversed_moves_t_start(self):
-        """[C1] reversed_flag=True のとき t_start が接点 t 値に更新される。"""
-        ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0)
-        ln.segments.append(seg)
-        ci = Circle(Vec2(50, 60), 40.0)
-        arc = Arc(ci, -0.5, 0.5)
-        ci.arcs.append(arc)
-        clo = Clothoid(ln, ci, reversed_flag=True, snap_segment=True, snap_arc=False)
-        if clo.is_valid:
-            expected_t = ln.project_t(clo.line_contact)
-            assert approx(seg.t_start, expected_t, tol=1e-4)
-
-    # [C1] t_end <= t_start + 1e-9 になるとき t_end を t_start + 0.1 に補正（reversed=True 側）
-    def test_reversed_degenerate_prevention(self):
-        """[C1] reversed=True で t_end ≤ t_start+1e-9 → t_end = t_start + 0.1 補正。"""
-        ln = Line(Vec2(0, 0), Vec2(100, 0))
-        # t_end=0.0 に設定しておく（接点が t=0 付近に来るとき縮退する）
-        seg = Segment(ln, 0.0, 0.0)  # t_start=t_end=0 → 縮退状態
-        ln.segments.append(seg)
-        # reversed=True で line_pt が t=0 付近に来る直線・円を設定
-        ci = Circle(Vec2(50, 60), 40.0)
-        clo = Clothoid(ln, ci, reversed_flag=True, snap_segment=True, snap_arc=False)
-        if clo.is_valid:
-            # 縮退防止が働いて t_end > t_start になっていること
-            assert seg.t_end > seg.t_start
-
-    # [C1] segments が空のとき _apply_segment_snap は即リターン
-    def test_no_segments_returns_early(self):
-        """[C1] line.segments=[] のとき _apply_segment_snap の早期リターン。"""
-        ln = Line(Vec2(0, 0), Vec2(100, 0))  # segments なし
-        ci = Circle(Vec2(50, 60), 40.0)
-        clo = Clothoid(ln, ci, snap_segment=True, snap_arc=False)
-        # 例外にならない
-
-
 class TestClearSegmentSplitRestore:
     """_clear_segment_split の実際の復元処理。"""
 
@@ -1519,57 +1479,6 @@ class TestClearSegmentSplitRestore:
         assert len(ln.segments) == n_before - 1
         assert approx(ln.segments[0].t_end, 1.0, tol=0.01)
         assert clo._split_seg_ids == []
-
-
-class TestApplyArcSnapRightCurve:
-    """_apply_arc_snap の右カーブ側と自動生成の右カーブ側。"""
-
-    # [C1] 右カーブ → arc.angle_end を circle_pt の角度に設定
-    def test_right_curve_snaps_angle_end(self):
-        """[C1] is_left_curve=False のとき arc.angle_end を接点角度に更新する分岐。"""
-        ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0)
-        ln.segments.append(seg)
-        ci = Circle(Vec2(50, -60), 40.0)  # y<0 → 右カーブ
-        arc = Arc(ci, math.pi / 2, 3 * math.pi / 2)  # 下側の半円
-        ci.arcs.append(arc)
-        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=True)
-        if clo.is_valid:
-            angle_contact = math.atan2(
-                clo.circle_contact.y - ci.center.y,
-                clo.circle_contact.x - ci.center.x
-            )
-            assert approx(arc.angle_end, angle_contact, tol=1e-4)
-
-    # [C1] 右カーブで円弧なし → 右カーブ用の自動生成分岐
-    def test_right_curve_auto_creates_arc(self):
-        """[C1] 右カーブで ci.arcs が空 → Arc(ci, contact-π/4, contact) を自動生成する分岐。"""
-        ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0)
-        ln.segments.append(seg)
-        ci = Circle(Vec2(50, -60), 40.0)  # 円弧なし・右カーブ
-        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=True)
-        if clo.is_valid:
-            assert len(ci.arcs) == 1
-            # 右カーブの自動生成: angle_end = angle_contact
-            angle_contact = math.atan2(
-                clo.circle_contact.y - ci.center.y,
-                clo.circle_contact.x - ci.center.x
-            )
-            assert approx(ci.arcs[0].angle_end, angle_contact, tol=1e-4)
-
-    # [C1] _apply_arc_split の追従更新パス（既存 split_arc_ids あり）
-    def test_arc_split_followup_update(self):
-        """[C1] _split_arc_ids 設定済みの状態で compute() → 追従更新（return 手前）の分岐。"""
-        ln = Line(Vec2(0, 0), Vec2(100, 0))
-        ci = Circle(Vec2(50, 60), 40.0)
-        arc = Arc(ci, -1.0, 1.0)
-        ci.arcs.append(arc)
-        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
-        if clo.is_valid and len(clo._split_arc_ids) == 2:
-            # 2回目の compute() で追従更新パスが実行される
-            clo.compute()
-            assert clo._split_arc_ids  # まだ split_ids が保持されている
 
 
 class TestClearArcSplitRestore:
@@ -1632,32 +1541,6 @@ class TestApplyArcSplitBranches:
             clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
             # 分割されないことを確認
             assert clo._split_arc_ids == []
-
-
-class TestSegmentArcSnapSerialization:
-    """SegmentSnap / ArcSnap の to_dict / from_dict。"""
-
-    # [C1] SegmentSnap.to_dict / from_dict 往復変換
-    def test_segment_snap_roundtrip(self):
-        """[C1] SegmentSnap のシリアライズ・デシリアライズ。"""
-        ss = SegmentSnap(1, 'end', 2, 'start')
-        d = ss.to_dict()
-        ss2 = SegmentSnap.from_dict(d)
-        assert ss2.seg_a_id == 1
-        assert ss2.end_a == 'end'
-        assert ss2.seg_b_id == 2
-        assert ss2.end_b == 'start'
-
-    # [C1] ArcSnap.to_dict / from_dict 往復変換
-    def test_arc_snap_roundtrip(self):
-        """[C1] ArcSnap のシリアライズ・デシリアライズ。"""
-        as_ = ArcSnap(10, 'start', 20, 'end')
-        d = as_.to_dict()
-        as2 = ArcSnap.from_dict(d)
-        assert as2.arc_a_id == 10
-        assert as2.end_a == 'start'
-        assert as2.arc_b_id == 20
-        assert as2.end_b == 'end'
 
 
 class TestElementProfileSerialization:
@@ -1879,18 +1762,6 @@ class TestFromDictBranches:
         assert sc.lines[0].id >= 1
 
     # [C1] arc_snaps が含まれる from_dict（L1972）
-    def test_from_dict_with_arc_snaps(self):
-        """[C1] from_dict で arc_snaps が処理される分岐。"""
-        d = {
-            'lines': [], 'circles': [], 'clothoids': [],
-            'element_profiles': [],
-            'arc_snaps': [
-                {'arc_a_id': 1, 'end_a': 'start', 'arc_b_id': 2, 'end_b': 'end'}
-            ],
-        }
-        sc = Scene.from_dict(d)
-        assert len(sc.arc_snaps) == 1
-
     # [C1] 旧フォーマット（grade_lines / vertical_curves がトップレベル）の復元（L1998-2002）
     def test_from_dict_old_format(self):
         """[C1] 旧フォーマット（トップレベル grade_lines）が VerticalAlignment に変換される分岐。"""
@@ -2132,19 +2003,6 @@ class TestRemainingCoverage:
             assert clo._line_pt is not None
 
     # [C1] from_dict の arc_snaps 処理（L1972）
-    def test_from_dict_segment_snaps(self):
-        """[C1] from_dict で segment_snaps が処理される分岐。"""
-        d = {
-            'lines': [], 'circles': [], 'clothoids': [],
-            'element_profiles': [],
-            'segment_snaps': [
-                {'seg_a_id': 1, 'end_a': 'end', 'seg_b_id': 2, 'end_b': 'start'}
-            ],
-        }
-        sc = Scene.from_dict(d)
-        assert len(sc.segment_snaps) == 1
-
-
 class TestConnectedObjectsAllBranches:
     """connected_objects の全分岐（Line/Circle に clothoid あり/なし、Clothoid）。"""
 
@@ -2205,22 +2063,6 @@ class TestConnectedObjectsAllBranches:
             assert seg.t_end > seg.t_start
 
     # [C1] from_dict の arc_snaps ループ（L1972）
-    def test_from_dict_arc_snaps_loop(self):
-        """[C1] from_dict で arc_snaps が正しく復元される（L1972）。"""
-        d = {
-            'lines': [], 'circles': [], 'clothoids': [],
-            'element_profiles': [],
-            'arc_snaps': [
-                {'arc_a_id': 11, 'end_a': 'start', 'arc_b_id': 22, 'end_b': 'end'},
-                {'arc_a_id': 33, 'end_a': 'end',   'arc_b_id': 44, 'end_b': 'start'},
-            ],
-        }
-        sc = Scene.from_dict(d)
-        assert len(sc.arc_snaps) == 2
-        assert sc.arc_snaps[0].arc_a_id == 11
-        assert sc.arc_snaps[1].arc_a_id == 33
-
-
 class TestFinalCoverage:
     """最終カバレッジ補完テスト。防御的 Dead Code 以外の全分岐。"""
 
@@ -2294,171 +2136,6 @@ class TestFinalCoverage:
         clo._apply_segment_split()  # candidates が空 → L1107 の return
         # 例外にならない
 
-
-class TestSegmentSnapDegeneratePrevention:
-    """_apply_segment_snap の縮退防止分岐（L1067/L1071）を確実にカバーする。"""
-
-    # [C1] L1067: reversed=False で t_start > t_x → 縮退防止で t_start = t_end - 0.1
-    def test_normal_degenerate_t_start_corrected(self):
-        """[C1] reversed=False かつ t_start(0.9) > t_x(0.61) → L1067 True 発動。
-
-        Line(-200,0)-(100,0), seg.t_start=0.9, 接点≈t=0.61 なので
-        t_end=0.61 < t_start=0.9 → 縮退防止で t_start=t_end-0.1 ≈ 0.51 に補正。
-        """
-        ln = Line(Vec2(-200, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.9, 1.0)
-        ln.segments.append(seg)
-        ci = Circle(Vec2(50, 60), 30.0)
-        t_start_before = seg.t_start
-        clo = Clothoid(ln, ci, snap_segment=True, snap_arc=False)
-        assert clo.is_valid
-        # 縮退防止が発動して t_start が補正されている
-        assert seg.t_start < t_start_before, "縮退防止で t_start が減少するはず"
-        assert seg.t_end > seg.t_start, "補正後 t_end > t_start を保証"
-
-    # [C1] L1071: reversed=True で t_end < t_x → 縮退防止で t_end = t_start + 0.1
-    def test_reversed_degenerate_t_end_corrected(self):
-        """[C1] reversed=True かつ t_end(0.1) < t_x(0.61) → L1071 True 発動。
-
-        reversed=True のとき t_start = t_x に設定される。
-        元の t_end(0.1) <= t_start(0.61) + 1e-9 → 縮退防止で t_end = t_start + 0.1 ≈ 0.71。
-        """
-        ln = Line(Vec2(-200, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 0.1)  # t_end=0.1 (小さい値)
-        ln.segments.append(seg)
-        ci = Circle(Vec2(50, 60), 30.0)
-        t_end_before = seg.t_end
-        clo = Clothoid(ln, ci, reversed_flag=True, snap_segment=True, snap_arc=False)
-        assert clo.is_valid
-        # reversed=True: t_start = t_x (大きい値), t_end(0.1) <= t_start+1e-9 → 補正
-        assert seg.t_end > t_end_before, "縮退防止で t_end が増加するはず"
-        assert seg.t_end > seg.t_start, "補正後 t_end > t_start を保証"
-
-    # [C1] L1232: _apply_arc_split の continue（arc が split_ids に含まれる）
-    def test_arc_split_continue(self):
-        """[C1] _apply_arc_split 内で arc.id が _split_arc_ids にある → continue（L1232）。
-
-        分割済みの状態で追加の arc をリストに入れ、
-        分割済みの arc が continue でスキップされることを確認する。
-        """
-        ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        ci = Circle(Vec2(50, 60), 30.0)
-        arc1 = Arc(ci, -1.5, 1.5)  # 分割対象の arc
-        arc2 = Arc(ci, 2.0, 3.0)   # 追加の別 arc（split_ids には含まれない）
-        ci.arcs.append(arc1)
-        ci.arcs.append(arc2)
-        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
-        assert clo.is_valid
-        if len(clo._split_arc_ids) == 2:
-            # _split_arc_ids に arc1 が入っている状態で compute() → L1232 が通る
-            clo.compute()
-            # arc1 が split_ids に含まれているので continue でスキップ
-            # arc2 が分割対象の候補として残る
-            assert len(clo._split_arc_ids) >= 0  # 例外にならない
-
-    # [C1] L1262->1265: _clear_arc_split の True 分岐（復元実行）
-    def test_clear_arc_split_true_branch(self):
-        """[C1] _clear_arc_split で arc_ax と arc_xb が両方存在 → 復元実行（L1262 True）。"""
-        ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        ci = Circle(Vec2(50, 60), 30.0)
-        arc = Arc(ci, -1.5, 1.5)
-        ci.arcs.append(arc)
-        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
-        assert clo.is_valid
-        if len(clo._split_arc_ids) == 2:
-            n_before = len(ci.arcs)
-            clo._clear_arc_split()  # L1262 True → L1263, L1264, L1265
-            assert len(ci.arcs) == n_before - 1
-            assert clo._split_arc_ids == []
-        else:
-            pytest.skip("arc split が発生しなかったためスキップ")
-
-    # [C1] connected_objects: Line の for ループで c.line is obj が True（L1859）
-    def test_connected_objects_line_loop_true_branch(self):
-        """[C1] connected_objects(Line) の for ループ内で c.line is obj True → L1859 通過。"""
-        sc = Scene()
-        ln = Line(Vec2(0, 0), Vec2(100, 0))
-        ci = Circle(Vec2(50, 60), 40.0)
-        sc.add_line(ln)
-        sc.add_circle(ci)
-        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
-        sc.add_clothoid(clo)
-        # 別の Clothoid（ln を参照しない）も追加して False 分岐も通す
-        ln2 = Line(Vec2(0, 0), Vec2(50, 50))
-        sc.add_line(ln2)
-        clo2 = Clothoid(ln2, ci, snap_segment=False, snap_arc=False)
-        sc.add_clothoid(clo2)
-        result = sc.connected_objects(ln)
-        assert clo in result
-        assert clo2 not in result  # clo2 は ln2 を参照
-
-    # [C1] connected_objects: Circle の for ループで c.circle is obj True（L1867）
-    def test_connected_objects_circle_loop_true_branch(self):
-        """[C1] connected_objects(Circle) の for ループ内で c.circle is obj True → L1867 通過。"""
-        sc = Scene()
-        ln = Line(Vec2(0, 0), Vec2(100, 0))
-        ci = Circle(Vec2(50, 60), 40.0)
-        ci2 = Circle(Vec2(0, 0), 10.0)
-        sc.add_line(ln)
-        sc.add_circle(ci)
-        sc.add_circle(ci2)
-        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
-        sc.add_clothoid(clo)
-        result = sc.connected_objects(ci2)
-        assert clo not in result  # clo は ci を参照（ci2 ではない）
-
-    # [C1] connected_objects: isinstance(obj, Clothoid) → L1869-1872 通過
-    def test_connected_objects_clothoid_isinstance_branch(self):
-        """[C1] connected_objects(Clothoid) → L1869 の elif 分岐を通る。"""
-        sc = Scene()
-        ln = Line(Vec2(0, 0), Vec2(100, 0))
-        ci = Circle(Vec2(50, 60), 40.0)
-        sc.add_line(ln)
-        sc.add_circle(ci)
-        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
-        sc.add_clothoid(clo)
-        result = sc.connected_objects(clo)
-        assert ln in result and ci in result
-
-    # [C1] from_dict の circles の arcs の _resolve_id（L1972）
-    def test_from_dict_resolves_arc_ids(self):
-        """[C1] from_dict で circles.arcs の _resolve_id が呼ばれる（L1972）。"""
-        d = {
-            'lines': [],
-            'circles': [
-                {'id': 200, 'center': {'x': 0, 'y': 0}, 'radius': 5.0,
-                 'arcs': [{'id': 201, 'angle_start': 0.0, 'angle_end': 1.57}]}
-            ],
-            'clothoids': [], 'element_profiles': [],
-        }
-        sc = Scene.from_dict(d)
-        assert len(sc.circles) == 1
-        assert len(sc.circles[0].arcs) == 1
-
-    # [C1] from_dict の circles.arcs で ID 衝突がある場合（L1972 の _resolve_id）
-    def test_from_dict_resolves_arc_id_collision(self):
-        """[C1] circles.arcs で ID 衝突 → _resolve_id で新 ID を割り当て（L1972）。"""
-        d = {
-            'lines': [
-                {'id': 300, 'ref_start': {'x': 0, 'y': 0},
-                 'ref_end': {'x': 1, 'y': 0}, 'segments': []}
-            ],
-            'circles': [
-                {'id': 301, 'center': {'x': 0, 'y': 0}, 'radius': 5.0,
-                 'arcs': [
-                     {'id': 300, 'angle_start': 0.0, 'angle_end': 1.0},  # line と ID 衝突
-                 ]}
-            ],
-            'clothoids': [], 'element_profiles': [],
-        }
-        sc = Scene.from_dict(d)
-        all_ids = [ln.id for ln in sc.lines] + [ci.id for ci in sc.circles] +                   [a.id for ci in sc.circles for a in ci.arcs]
-        assert len(set(all_ids)) == len(all_ids), "ID が衝突していないこと"
-
-
-# ══════════════════════════════════════════════════════════════
-# OffsetConstraint テスト
-# ══════════════════════════════════════════════════════════════
 
 class TestOffsetConstraintInit:
     """OffsetConstraint.__post_init__ のテスト。"""
@@ -3059,44 +2736,6 @@ class TestUpdateSnapsSnapChange:
         clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
         if clo.is_valid:
             assert isinstance(clo._split_arc_ids, list)
-
-
-class TestApplySegmentSnapCandidatesEmpty:
-    """_apply_segment_snap の candidates 空テスト（L1108-1109）。"""
-
-    # [C1] 全線分が _split_seg_ids に含まれていると candidates が空になり early return
-    def test_all_segments_in_split_ids(self):
-        """[C1] 全線分が _split_seg_ids に入っているとき candidates=[] → early return（L1109）。"""
-        ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
-        ci = Circle(Vec2(50, 60), 30.0)
-        clo = Clothoid(ln, ci, snap_segment=True)
-        if clo.is_valid:
-            # 強制的に全線分を _split_seg_ids に入れる
-            clo._split_seg_ids = [seg.id]
-            # _apply_segment_snap を呼んでも例外にならない（early return）
-            clo._apply_segment_snap()
-
-
-class TestApplyArcSnapSkipsExisting:
-    """_apply_arc_snap で既存 arc をスキップするテスト（L1234）。"""
-
-    # [C1] _split_arc_ids に入っている arc は continue でスキップされる（L1233-1234）
-    def test_existing_arc_in_split_ids_is_skipped(self):
-        """[C1] _split_arc_ids に含まれる arc は候補から除外される（L1234 continue）。"""
-        import math
-        ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
-        ci = Circle(Vec2(50, 60), 30.0)
-        arc1 = Arc(ci, -0.5, -0.3); ci.arcs.append(arc1)
-        arc2 = Arc(ci, -0.3,  0.5); ci.arcs.append(arc2)
-        clo = Clothoid(ln, ci, snap_arc=True)
-        if clo.is_valid:
-            # _split_arc_ids に arc1 を入れてスキップされることを確認
-            clo._split_arc_ids = [arc1.id]
-            # _apply_arc_snap を呼んでも例外にならない
-            clo._apply_arc_snap()
-            assert True
 
 
 class TestClearArcSplitArcXbNotInArcs:

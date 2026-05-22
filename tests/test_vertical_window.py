@@ -26,7 +26,8 @@ from models import (
     Vec2, Line, Segment, Circle, Arc, Clothoid,
     ElementProfile, GradeLine, VerticalCurve, Scene,
 )
-from vertical_window import ProfileCanvas, _make_empty_profile
+from vertical_window import ProfileCanvas
+from vertical_profile import make_empty_profile as _make_empty_profile
 
 
 def approx(a, b, tol=1e-6):

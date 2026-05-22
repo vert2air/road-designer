@@ -1368,43 +1368,6 @@ class Clothoid:
         }
 
 
-# ─── 線分・円弧の端点接続 snap ──────────────────────────────
-@dataclass
-class SegmentSnap:
-    """2本の線分の端点を接続する snap 情報"""
-    seg_a_id: int
-    end_a:    str   # 'start' or 'end'
-    seg_b_id: int
-    end_b:    str
-
-    def to_dict(self):
-        return {"seg_a_id": self.seg_a_id, "end_a": self.end_a,
-                "seg_b_id": self.seg_b_id, "end_b": self.end_b}
-
-    @staticmethod
-    def from_dict(d) -> 'SegmentSnap':
-        return SegmentSnap(d["seg_a_id"], d["end_a"],
-                           d["seg_b_id"], d["end_b"])
-
-
-@dataclass
-class ArcSnap:
-    """2本の円弧の端点を接続する snap 情報"""
-    arc_a_id: int
-    end_a:    str   # 'start' or 'end'
-    arc_b_id: int
-    end_b:    str
-
-    def to_dict(self):
-        return {"arc_a_id": self.arc_a_id, "end_a": self.end_a,
-                "arc_b_id": self.arc_b_id, "end_b": self.end_b}
-
-    @staticmethod
-    def from_dict(d) -> 'ArcSnap':
-        return ArcSnap(d["arc_a_id"], d["end_a"],
-                       d["arc_b_id"], d["end_b"])
-
-
 @dataclass
 class OffsetConstraint:
     """直線 S を 2 円 A・B に対してオフセット拘束するデータクラス。
@@ -1662,10 +1625,6 @@ class Scene:
     シリアライズしてスタックに積む方式で実現する。そのため Scene は常に
     完全にシリアライズ可能でなければならない。
 
-    `segment_snaps`/`arc_snaps` は将来の拡張用フィールドで、現バージョンでは
-    Clothoid の `_split_seg_ids`/`_split_arc_ids` が内部で分割管理を行うため
-    実質未使用。
-
     Attributes
     ----------
     lines : list[Line]
@@ -1680,10 +1639,6 @@ class Scene:
         縦断線形データ（要素単位）。
     vertical_alignments : list[VerticalAlignment]
         旧フォーマット互換用。新規データは使用しない。
-    segment_snaps : list[SegmentSnap]
-        線分端点の接続情報（現バージョンでは実質未使用）。
-    arc_snaps : list[ArcSnap]
-        円弧端点の接続情報（現バージョンでは実質未使用）。
     nicknames : dict[int, str]
         ID → ニックネームの辞書。
     """
@@ -1694,8 +1649,6 @@ class Scene:
         self.clothoids: list[Clothoid]      = []
         self.vertical_alignments: list[VerticalAlignment] = []  # 旧フォーマット互換
         self.element_profiles: list[ElementProfile] = []         # 要素単位の縦断データ
-        self.segment_snaps: list[SegmentSnap] = []
-        self.arc_snaps:     list[ArcSnap]     = []
         self.offset_constraints: list['OffsetConstraint'] = []
         self.nicknames: dict[int, str] = {}   # id → nickname
 
@@ -1923,8 +1876,6 @@ class Scene:
             "offset_constraints":   [oc.to_dict() for oc in self.offset_constraints],
             "element_profiles":     [ep.to_dict() for ep in self.element_profiles],
             "vertical_alignments":  [va.to_dict() for va in self.vertical_alignments],
-            "segment_snaps":        [s.to_dict() for s in self.segment_snaps],
-            "arc_snaps":            [a.to_dict() for a in self.arc_snaps],
         }
 
     @staticmethod
@@ -2058,8 +2009,6 @@ class Scene:
             va.vertical_curves = [VerticalCurve.from_dict(v) for v in old_vcs]
             sc.vertical_alignments.append(va)
 
-        sc.segment_snaps = [SegmentSnap.from_dict(s) for s in d.get("segment_snaps", [])]
-        sc.arc_snaps     = [ArcSnap.from_dict(a)     for a in d.get("arc_snaps", [])]
         sc.offset_constraints = [
             OffsetConstraint.from_dict(oc, lines_by_id, circles_by_id)
             for oc in d.get("offset_constraints", [])

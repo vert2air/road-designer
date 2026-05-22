@@ -947,46 +947,13 @@ class Canvas(QWidget):
         for clo in self.scene.clothoids:
             if clo.line is ln:
                 clo.compute()
-        # SegmentSnap の追従
-        self._propagate_segment_snaps(ln)
         if not _updating_smooth:
             conn = ln.connection
             if conn and conn.kind == "smooth" and conn.circle is not None:
                 self._update_smooth_circle(conn)
 
-    def _propagate_segment_snaps(self, ln: Line):
-        """SegmentSnap で繋がれた線分の端点を追従させる"""
-        seg_map: dict[int, Segment] = {}
-        for line in self.scene.lines:
-            for s in line.segments:
-                seg_map[s.id] = s
-        for sn in self.scene.segment_snaps:
-            sa = seg_map.get(sn.seg_a_id)
-            sb = seg_map.get(sn.seg_b_id)
-            if not sa or not sb:
-                continue
-            if sa.line is ln or sb.line is ln:
-                # a が基準→ b を追従、または b が基準→ a を追従
-                pt_a = sa.start if sn.end_a == 'start' else sa.end
-                pt_b = sb.start if sn.end_b == 'start' else sb.end
-                # どちらが動いた直線上にあるか
-                if sa.line is ln:
-                    # a が動いた → b を追従
-                    t_new = sb.line.project_t(pt_a)
-                    if sn.end_b == 'start':
-                        sb.t_start = t_new
-                    else:
-                        sb.t_end = t_new
-                else:
-                    # b が動いた → a を追従
-                    t_new = sa.line.project_t(pt_b)
-                    if sn.end_a == 'start':
-                        sa.t_start = t_new
-                    else:
-                        sa.t_end = t_new
-
     def _propagate_circle(self, ci: Circle):
-        """円 ``ci`` の変形をクロソイド・ArcSnap・オフセット拘束に伝播する。
+        """円 ``ci`` の変形をクロソイド・オフセット拘束に伝播する。
 
         円の中心または半径が変更されたあとに呼ばれる。
         :meth:`_propagate_line` と対になる存在。
@@ -994,8 +961,7 @@ class Canvas(QWidget):
         伝播の順序:
 
         1. ``ci`` を参照する全クロソイドに :meth:`Clothoid.compute` を呼ぶ
-        2. :meth:`_propagate_arc_snaps` で ArcSnap 追従
-        3. :meth:`_propagate_offset_constraints` でオフセット拘束追従
+        2. :meth:`_propagate_offset_constraints` でオフセット拘束追従
 
         Parameters
         ----------
@@ -1005,8 +971,6 @@ class Canvas(QWidget):
         for clo in self.scene.clothoids:
             if clo.circle is ci:
                 clo.compute()
-        # ArcSnap の追従
-        self._propagate_arc_snaps(ci)
         # OffsetConstraint の追従
         self._propagate_offset_constraints(ci)
 
@@ -1034,33 +998,6 @@ class Canvas(QWidget):
                 self._propagate_line(oc.line)
                 self.scene_changed.emit()
                 self.update()
-
-    def _propagate_arc_snaps(self, ci: Circle):
-        """ArcSnap で繋がれた円弧の端点を追従させる"""
-        arc_map: dict[int, Arc] = {}
-        for circle in self.scene.circles:
-            for a in circle.arcs:
-                arc_map[a.id] = a
-        for sn in self.scene.arc_snaps:
-            aa = arc_map.get(sn.arc_a_id)
-            ab = arc_map.get(sn.arc_b_id)
-            if not aa or not ab:
-                continue
-            if aa.circle is ci or ab.circle is ci:
-                ang_a = aa.angle_start if sn.end_a == 'start' else aa.angle_end
-                ang_b = ab.angle_start if sn.end_b == 'start' else ab.angle_end
-                if aa.circle is ci:
-                    # a が動いた → b を追従
-                    if sn.end_b == 'start':
-                        ab.angle_start = ang_a
-                    else:
-                        ab.angle_end = ang_a
-                else:
-                    # b が動いた → a を追従
-                    if sn.end_a == 'start':
-                        aa.angle_start = ang_b
-                    else:
-                        aa.angle_end = ang_b
 
     def _update_smooth_circle(self, conn: 'LineConnection'):
         """

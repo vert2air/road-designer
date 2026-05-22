@@ -1199,7 +1199,6 @@ class TestBuildInitializedDict:
 
     def test_offset_constraints_preserved(self):
         """[仕様] オフセット拘束はそのまま維持される。"""
-        from models import SegmentSnap, ArcSnap
         w, ln, ci, clo = self._make_window_with_scene()
         orig_oc = len(w.scene.offset_constraints)
         data = w._build_initialized_dict()

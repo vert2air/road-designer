@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
-                    SegmentSnap, ArcSnap, tangent_at, entry_tangent, SNAP_TOL)
+                    tangent_at, entry_tangent, SNAP_TOL)
 from _prop_builder import (
     PropBuilderMixin,
     # backward-compat re-export（テストが right_panel から直接 import するため）

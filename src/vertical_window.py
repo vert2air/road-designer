@@ -1245,12 +1245,6 @@ class ProfileCanvas(QWidget):
         self.update()
 
 
-def _make_empty_profile():
-    """空の ElementProfile を生成する（選択なしで縦断線形を開いた場合）"""
-    from models import ElementProfile
-    return ElementProfile()
-
-
 class VerticalAlignmentWindow(QMainWindow):
     """縦断線形設計ウィンドウ。
 

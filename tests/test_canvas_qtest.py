@@ -416,24 +416,7 @@ class TestPropagate:
             c._propagate_line(a)
 
     # [C1] _propagate_segment_snaps: SegmentSnap の追従
-    def test_propagate_segment_snaps(self):
-        c, sc = make_canvas()
-        ln = Line(Vec2(0, 0), Vec2(100, 0))
-        sc.add_line(ln)
-        c._propagate_segment_snaps(ln)  # snap なしでも例外にならない
-
     # [C1] _propagate_arc_snaps: ArcSnap の追従
-    def test_propagate_arc_snaps(self):
-        c, sc = make_canvas()
-        ci = Circle(Vec2(0, 0), 30.0)
-        sc.add_circle(ci)
-        c._propagate_arc_snaps(ci)  # snap なしでも例外にならない
-
-
-# ══════════════════════════════════════════════════════════════
-# 5. QTest でのマウス・キー操作
-# ══════════════════════════════════════════════════════════════
-
 class TestMouseAndKey:
     # [仕様] 選択モードでのクリック → 図形が選択される
     def test_click_selects_line(self):
@@ -612,29 +595,6 @@ class TestRebuildHandlesDetail:
         assert 'arc_end' in tags
 
     # [C1] SegmentSnap（segment_snaps）を持つシーンでの rebuild
-    def test_rebuild_with_segment_snaps(self):
-        from models import SegmentSnap
-        c, sc = make_canvas()
-        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
-        ln2 = Line(Vec2(100, 0), Vec2(200, 0))
-        seg1 = Segment(ln1, 0.0, 1.0)
-        seg2 = Segment(ln2, 0.0, 1.0)
-        ln1.segments.append(seg1)
-        ln2.segments.append(seg2)
-        sc.add_line(ln1)
-        sc.add_line(ln2)
-        # SegmentSnap を追加
-        snap = SegmentSnap(seg1.id, 'end', seg2.id, 'start')
-        sc.segment_snaps.append(snap)
-        c.set_selection([ln1])
-        # 例外にならない
-        assert len(c._handles) >= 0
-
-
-# ══════════════════════════════════════════════════════════════
-# 7. _update_smooth_circle（直接呼び出し）
-# ══════════════════════════════════════════════════════════════
-
 class TestUpdateSmoothCircle:
     # [C1] smooth 接続後に _update_smooth_circle が例外なく動作する
     def test_update_smooth_circle_no_error(self):
@@ -960,73 +920,6 @@ class TestUpdateSmoothCircle:
         c._update_smooth_circle(conn)  # 例外にならない
 
 
-class TestPropagateArcSnaps:
-    """_propagate_arc_snaps の各分岐テスト（L1043-1062）。"""
-
-    # [C1] arc_snap で aa.circle is ci の場合 → b を追従（L1051-1056）
-    def test_arc_snap_a_moves_b_follows(self):
-        """[C1] arc_snap で aa.circle is ci の場合、ab が aa に追従する（L1051-1056）。"""
-        from models import Vec2, Circle, Arc, ArcSnap, Scene
-        from canvas import Canvas
-        import math
-        sc = Scene()
-        ci_a = Circle(Vec2(0, 0), 10.0)
-        arc_a = Arc(ci_a, 0.0, math.pi / 2)
-        ci_a.arcs.append(arc_a)
-        ci_b = Circle(Vec2(20, 0), 10.0)
-        arc_b = Arc(ci_b, 0.0, math.pi / 2)
-        ci_b.arcs.append(arc_b)
-        sc.add_circle(ci_a); sc.add_circle(ci_b)
-        snap = ArcSnap(arc_a.id, 'end', arc_b.id, 'start')
-        sc.arc_snaps.append(snap)
-        c = Canvas(sc)
-        # arc_a の angle_end を変更して伝播
-        arc_a.angle_end = math.pi / 3
-        c._propagate_arc_snaps(ci_a)
-        # arc_b.angle_start が arc_a.angle_end に追従する
-        assert abs(arc_b.angle_start - math.pi / 3) < 1e-9
-
-    # [C1] arc_snap で ab.circle is ci の場合 → a を追従（L1057-1062）
-    def test_arc_snap_b_moves_a_follows(self):
-        """[C1] arc_snap で ab.circle is ci の場合、aa が ab に追従する（L1057-1062）。"""
-        from models import Vec2, Circle, Arc, ArcSnap, Scene
-        from canvas import Canvas
-        import math
-        sc = Scene()
-        ci_a = Circle(Vec2(0, 0), 10.0)
-        arc_a = Arc(ci_a, 0.0, math.pi / 2)
-        ci_a.arcs.append(arc_a)
-        ci_b = Circle(Vec2(20, 0), 10.0)
-        arc_b = Arc(ci_b, 0.0, math.pi / 2)
-        ci_b.arcs.append(arc_b)
-        sc.add_circle(ci_a); sc.add_circle(ci_b)
-        snap = ArcSnap(arc_a.id, 'start', arc_b.id, 'end')
-        sc.arc_snaps.append(snap)
-        c = Canvas(sc)
-        # arc_b の angle_end を変更して伝播
-        arc_b.angle_end = math.pi / 4
-        c._propagate_arc_snaps(ci_b)
-        # arc_a.angle_start が arc_b.angle_end に追従
-        assert abs(arc_a.angle_start - math.pi / 4) < 1e-9
-
-    # [C1] arc_snap で対象の arc が存在しない → continue（L1046-1047）
-    def test_arc_snap_missing_arc_no_error(self):
-        """[C1] arc_snap の arc_a_id/arc_b_id に対応する Arc がない → continue（L1046-1047）。"""
-        from models import Vec2, Circle, ArcSnap, Scene
-        from canvas import Canvas
-        sc = Scene()
-        ci = Circle(Vec2(0, 0), 10.0)
-        sc.add_circle(ci)
-        snap = ArcSnap(9999, 'start', 8888, 'end')  # 存在しない ID
-        sc.arc_snaps.append(snap)
-        c = Canvas(sc)
-        c._propagate_arc_snaps(ci)  # 例外にならない
-
-
-# ══════════════════════════════════════════════════════════════
-# 追加価値の高い C1 カバレッジ向上テスト: canvas.py
-# ══════════════════════════════════════════════════════════════
-
 class TestMouseMoveEvent:
     """mouseMoveEvent の各分岐テスト（L682-714）。"""
 
@@ -1306,51 +1199,6 @@ class TestPropagateSmoothConnectAfterDrag:
         c._drag_tag = 'line_ref_start'
         c._do_drag(Vec2(-120, 5))
         # smooth circle が更新されている（例外にならない）
-        assert True
-
-
-class TestPropagateSegmentSnaps:
-    """_propagate_segment_snaps の各分岐テスト（L963-985）。"""
-
-    def test_snap_a_moves_b(self):
-        """[C1] a が動いたとき b が追従する（L972-978）。"""
-        from models import SegmentSnap
-        c, sc = make_canvas()
-        ln1 = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
-        ln2 = Line(Vec2(-100, 20), Vec2(100, 20))
-        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
-        sc.add_line(ln1); sc.add_line(ln2)
-        snap = SegmentSnap(seg1.id, 'end', seg2.id, 'start')
-        sc.segment_snaps.append(snap)
-        ln1.ref_end = Vec2(80, 0)  # 動かす
-        c._propagate_segment_snaps(ln1)
-        assert True  # 例外にならない
-
-    def test_snap_b_moves_a(self):
-        """[C1] b が動いたとき a が追従する（L980-985）。"""
-        from models import SegmentSnap
-        c, sc = make_canvas()
-        ln1 = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
-        ln2 = Line(Vec2(-100, 20), Vec2(100, 20))
-        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
-        sc.add_line(ln1); sc.add_line(ln2)
-        snap = SegmentSnap(seg1.id, 'start', seg2.id, 'end')
-        sc.segment_snaps.append(snap)
-        ln2.ref_end = Vec2(80, 20)  # b側を動かす
-        c._propagate_segment_snaps(ln2)
-        assert True  # 例外にならない
-
-    def test_snap_missing_segment_skip(self):
-        """[C1] snap に対応する Segment がない → continue で skip（L965-966）。"""
-        from models import SegmentSnap
-        c, sc = make_canvas()
-        ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        sc.add_line(ln)
-        snap = SegmentSnap(9999, 'start', 8888, 'end')  # 存在しない ID
-        sc.segment_snaps.append(snap)
-        c._propagate_segment_snaps(ln)  # 例外にならない
         assert True
 
 

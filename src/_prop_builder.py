@@ -17,8 +17,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
 )
 from PySide6.QtCore import Qt
-from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
-                    SegmentSnap, ArcSnap)
+from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene)
 
 
 # ── クリップボード: 始点/終点ペア ─────────────────────────────────────────
