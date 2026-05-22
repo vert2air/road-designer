@@ -415,8 +415,6 @@ class TestPropagate:
             a.ref_start = Vec2(-120, 0)
             c._propagate_line(a)
 
-    # [C1] _propagate_segment_snaps: SegmentSnap の追従
-    # [C1] _propagate_arc_snaps: ArcSnap の追従
 class TestMouseAndKey:
     # [仕様] 選択モードでのクリック → 図形が選択される
     def test_click_selects_line(self):
@@ -594,7 +592,6 @@ class TestRebuildHandlesDetail:
         assert 'arc_start' in tags
         assert 'arc_end' in tags
 
-    # [C1] SegmentSnap（segment_snaps）を持つシーンでの rebuild
 class TestUpdateSmoothCircle:
     # [C1] smooth 接続後に _update_smooth_circle が例外なく動作する
     def test_update_smooth_circle_no_error(self):

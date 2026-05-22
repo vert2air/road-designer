@@ -1613,6 +1613,7 @@ from vertical_profile import (  # noqa: F401, E402
     VerticalAlignment,
     GradeLine,
     VerticalCurve,
+    make_empty_profile,
 )
 
 
