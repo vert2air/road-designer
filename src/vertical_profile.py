@@ -87,8 +87,8 @@ class ElementProfile:
     reversed_flag: bool = False  # True なら終点→始点の向きで使われている
     elev_start:   float = 0.0   # 始端標高 [m]（正順の始点側）
     elev_end:     float = 0.0   # 終端標高 [m]（隣接要素と共有）
-    grade_lines:  list  = field(default_factory=list)   # list[GradeLine] 相対距離
-    vertical_curves: list = field(default_factory=list) # list[VerticalCurve]
+    grade_lines:     list['GradeLine']     = field(default_factory=list)
+    vertical_curves: list['VerticalCurve'] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """すべてのフィールドを含む辞書に変換する（JSON シリアライズ用）。"""
@@ -165,8 +165,8 @@ class VerticalAlignment:
     """
     id: int = field(default_factory=new_id)
     nickname: str = ""
-    grade_lines:     list = field(default_factory=list)
-    vertical_curves: list = field(default_factory=list)
+    grade_lines:     list['GradeLine']     = field(default_factory=list)
+    vertical_curves: list['VerticalCurve'] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {

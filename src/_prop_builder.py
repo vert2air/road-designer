@@ -22,8 +22,6 @@ from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
 
 
 # ── クリップボード: 始点/終点ペア ─────────────────────────────────────────
-import json as _json
-
 _CLIPBOARD_MIME = "application/x-road-designer-point-pair"
 
 

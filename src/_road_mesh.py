@@ -11,7 +11,7 @@ from typing import Optional
 # ─── Panda3D ──────────────────────────────────────────────────────────────
 from panda3d.core import (
     GeomVertexFormat, GeomVertexData, GeomVertexWriter,
-    Geom, GeomTriangles, GeomNode,
+    Geom, GeomTriangles, GeomLinestrips, GeomNode,
     LColor,
 )
 
@@ -22,6 +22,40 @@ from models import (
     Segment, Arc, Clothoid, ElementProfile,
 )
 
+
+
+def _tangent_normal_at(centerline: list, i: int) -> tuple[float, float, float, float]:
+    """中心線点列のインデックス i における接線・法線単位ベクトルを返す。
+
+    中差分（両端は前進/後退差分）で接線を計算し、右直交する法線を求める。
+
+    Parameters
+    ----------
+    centerline : list[tuple]
+        ``build_centerline`` が返す [(x, y, z, dist), ...] 形式の点列。
+    i : int
+        対象インデックス（0 ≦ i < len(centerline)）。
+
+    Returns
+    -------
+    (tx, ty, nx, ny) : tuple[float, float, float, float]
+        接線単位ベクトル (tx, ty) と右法線単位ベクトル (nx, ny)。
+    """
+    n = len(centerline)
+    x, y = centerline[i][0], centerline[i][1]
+    if i == 0:
+        dx, dy = centerline[1][0] - x, centerline[1][1] - y
+    elif i == n - 1:
+        dx, dy = x - centerline[n-2][0], y - centerline[n-2][1]
+    else:
+        dx = centerline[i+1][0] - centerline[i-1][0]
+        dy = centerline[i+1][1] - centerline[i-1][1]
+    ln = math.hypot(dx, dy)
+    if ln < 1e-9:
+        dx, dy = 1.0, 0.0
+    else:
+        dx /= ln; dy /= ln
+    return dx, dy, dy, -dx  # (tx, ty, nx, ny)  右法線 = (ty, -tx)
 
 
 def _elev_at_dist(dist: float, profiles: list,
@@ -65,8 +99,6 @@ def build_car_box(length: float = 4.0, width: float = 2.0,
     -------
     GeomNode
     """
-    from panda3d.core import (GeomVertexFormat, GeomVertexData, GeomVertexWriter,
-                               Geom, GeomTriangles, GeomNode, LColor)
     fmt  = GeomVertexFormat.get_v3n3c4()
     vdata = GeomVertexData("car_box", fmt, Geom.UH_static)
     vdata.setNumRows(24)
@@ -259,17 +291,7 @@ def build_road_mesh(centerline: list[tuple],
 
     for i in range(n):
         x, y, z, _ = centerline[i]
-        if i == 0:
-            tx = centerline[1][0] - x; ty = centerline[1][1] - y
-        elif i == n - 1:
-            tx = x - centerline[n-2][0]; ty = y - centerline[n-2][1]
-        else:
-            tx = centerline[i+1][0] - centerline[i-1][0]
-            ty = centerline[i+1][1] - centerline[i-1][1]
-        length = math.hypot(tx, ty)
-        if length < 1e-9: tx, ty = 1, 0
-        else: tx /= length; ty /= length
-        nx_v, ny_v = ty, -tx
+        _, _, nx_v, ny_v = _tangent_normal_at(centerline, i)
 
         for side in (-1, 1):
             px = x + side * half_width * nx_v
@@ -296,7 +318,7 @@ def build_road_mesh(centerline: list[tuple],
 def build_center_line_node(centerline: list[tuple],
                             color_override: LColor = None) -> GeomNode:
     """センターラインを GeomNode として返す"""
-    from panda3d.core import GeomLinestrips
+
     fmt   = GeomVertexFormat.get_v3c4()
     vdata = GeomVertexData("cl", fmt, Geom.UH_static)
     vw    = GeomVertexWriter(vdata, "vertex")
@@ -398,20 +420,8 @@ def build_piers(centerline: list[tuple], half_width: float,
         if dist < next_dist - 0.001:
             continue
 
-        # 接線方向
-        if i == 0:
-            tx = centerline[1][0]-x; ty = centerline[1][1]-y
-        elif i == n-1:
-            tx = x-centerline[n-2][0]; ty = y-centerline[n-2][1]
-        else:
-            tx = centerline[i+1][0]-centerline[i-1][0]
-            ty = centerline[i+1][1]-centerline[i-1][1]
-        ln = math.hypot(tx, ty)
-        if ln < 1e-9:
-            tx, ty = 1, 0
-        else:
-            tx /= ln; ty /= ln
-        nx_v, ny_v = ty, -tx  # 法線（右向き）
+        # 接線・法線
+        _, _, nx_v, ny_v = _tangent_normal_at(centerline, i)
 
         add_pier(x, y, z, nx_v, ny_v)
         next_dist = dist + interval
@@ -443,7 +453,7 @@ def build_road_markings(centerline: list[tuple],
     GeomNode
         左右 2 本の LineStrips を含む GeomNode。
     """
-    from panda3d.core import GeomLinestrips
+
 
     fmt = GeomVertexFormat.get_v3c4()
 
@@ -463,17 +473,7 @@ def build_road_markings(centerline: list[tuple],
         cw2    = GeomVertexWriter(vdata2, "color")
         ls2    = GeomLinestrips(Geom.UH_static)
         for i, (x, y, z, _) in enumerate(centerline):
-            if i == 0:
-                tx = centerline[1][0]-x; ty = centerline[1][1]-y
-            elif i == n-1:
-                tx = x-centerline[n-2][0]; ty = y-centerline[n-2][1]
-            else:
-                tx = centerline[i+1][0]-centerline[i-1][0]
-                ty = centerline[i+1][1]-centerline[i-1][1]
-            ln = math.hypot(tx, ty)
-            if ln < 1e-9: tx, ty = 1, 0
-            else: tx /= ln; ty /= ln
-            nx_v, ny_v = ty, -tx
+            _, _, nx_v, ny_v = _tangent_normal_at(centerline, i)
             px = x + side * half_width * nx_v
             py = y + side * half_width * ny_v
             vw2.add_data3(px, py, z + EDGE_Z)

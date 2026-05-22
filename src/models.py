@@ -529,8 +529,6 @@ class LineConnection:
         スムーズ接続専用。2 本のクロソイドが共有する中間円。
     bisector_dir : Vec2 or None
         スムーズ接続専用。折れ角の二等分線方向。円中心の移動拘束に使う。
-    line_j_reversed, line_k_reversed : bool
-        スムーズ接続専用。各クロソイドを生成した実効直線の反転フラグ。
     """
     kind: str
     line_a: 'Line'
@@ -540,8 +538,6 @@ class LineConnection:
     b_start_is_shared: bool = True
     circle: Optional['Circle'] = None
     bisector_dir: Optional[Vec2] = None
-    line_j_reversed: bool = False
-    line_k_reversed: bool = False
 
 
 # ─── 円 ──────────────────────────────────────────────────────

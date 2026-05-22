@@ -12,8 +12,7 @@ from typing import Optional, Callable
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
     QDoubleSpinBox, QGroupBox, QScrollArea, QFrame, QLineEdit,
-    QCheckBox, QComboBox, QSizePolicy, QMenu, QApplication, QSplitter,
-    QSpinBox,
+    QCheckBox, QComboBox, QSizePolicy, QMenu, QApplication,
 )
 from PySide6.QtCore import Qt, Signal
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
