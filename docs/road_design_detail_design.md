@@ -18,14 +18,18 @@
 
 ## 1. models.py — データモデルとユーティリティ
 
+アプリ全体の「Single Source of Truth」となるデータ定義ファイル。平面線形クラス（`Line`・`Segment`・`Circle`・`Arc`・`Clothoid`・`OffsetConstraint`・`Scene`）と、ファイル管理・接続・ユーティリティ関数を担う。
+
+縦断線形クラス（`ElementProfile`・`GradeLine`・`VerticalCurve` 等）は `vertical_profile.py` に定義されているが、既存コードの互換性のため `from vertical_profile import ...` で本モジュールから再エクスポートしている（2章参照）。
+
 ### 1.1 ID 管理（モジュールレベル）
 
 #### `new_id() -> int`
 
-グローバルカウンタ `_id_counter`（`itertools.count(1)` で初期化）から次の整数を取得して返す。
+グローバルカウンタ `_id_counter`（`itertools.count(1)` で初期化）から次の整数を取得して返す。全データクラスの `id` フィールドのデフォルト値として `field(default_factory=new_id)` の形で使われており、インスタンス生成のたびに自動採番される。
 
 - **戻り値の範囲**: 1 以上の整数（呼び出しごとに単調増加）
-- **スレッドセーフ**: `itertools.count` はアトミムなので Python GIL 下で安全
+- **スレッドセーフ**: `itertools.count` はアトミックなので Python GIL 下で安全
 - **エッジケース**: アプリ起動中は減少しない。ファイル読み込み後は `_reset_id_counter_after` で再設定される
 
 #### `_reset_id_counter_after(max_id: int)`
@@ -104,7 +108,7 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 
 #### `angle` プロパティ
 
-`math.atan2(dy, dx)` で方向角（ラジアン）を返す。範囲は `(-π, π]`。
+`math.atan2(dy, dx)` で方向角（ラジアン）を返す。範囲は `(-π, π]`。右パネルの直線プロパティパネルで「方向角」ラベルとして度数表示するためだけに使われる。
 
 #### `project_point(p: Vec2) -> Vec2`
 
@@ -204,12 +208,10 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 | `kind` | `str` | `"polyline"` または `"smooth"` |
 | `line_a`, `line_b` | `Line` | 接続される2直線 |
 | `shared_point` | `Vec2` | 共有参照点（交点）の座標 |
-| `a_end_is_shared` | `bool` | `True`: `line_a.ref_end` が共有点（折れ線接続でどちら側に交点があるかを記録）|
+| `a_end_is_shared` | `bool` | `True`: `line_a.ref_end` が共有点。`Canvas._do_drag("shared_ref")` がどちらの参照点を動かすかの判定に使う |
 | `b_start_is_shared` | `bool` | `True`: `line_b.ref_start` が共有点（同上） |
 | `circle` | `Circle \| None` | スムーズ接続時の中間円 |
 | `bisector_dir` | `Vec2 \| None` | 二等分線方向（スムーズ専用） |
-| `line_j_reversed` | `bool` | スムーズ接続の J 直線の反転フラグ |
-| `line_k_reversed` | `bool` | スムーズ接続の K 直線の反転フラグ |
 
 **ライフサイクル**:
 - 折れ線接続: `Canvas._connect_polyline()` で生成し、`line_a.connection = line_b.connection = conn` と設定する
@@ -546,8 +548,6 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 
 Undo 機能は `Canvas.push_undo()` が `scene.to_dict()` で Scene 全体を JSON にシリアライズしてスタックに積む方式で実現している。このため Scene は常に完全にシリアライズ可能でなければならない（循環参照を持たず、すべてのフィールドが JSON 変換可能）。
 
-`segment_snaps`/`arc_snaps` は将来の拡張用フィールドで、現バージョンでは `Clothoid` の `_split_seg_ids`/`_split_arc_ids` が内部で分割管理を行うため実質未使用。
-
 #### `__init__()`
 
 以下のフィールドを空リストで初期化する:
@@ -649,7 +649,7 @@ Undo 機能は `Canvas.push_undo()` が `scene.to_dict()` で Scene 全体を JS
 
 #### `__post_init__()`
 
-`_eps_a = 0`, `_eps_b = 0` に初期化する（0 は未設定を意味し、後方互換モードで動作する）。
+`_eps_a = 0`, `_eps_b = 0` に初期化する。0 は「未設定」を意味し、この状態で `solve()` が呼ばれると 4 通りの `(ε_a, ε_b)` を全探索する後方互換モードで動作する。通常は生成直後に `calc_offsets_from_current()` が呼ばれて `_eps_a`/`_eps_b` が確定するが、旧バージョンのファイルをロードした場合はこれらが保存されていないため 0 のまま `solve()` に入る。4 通りのうち現在の直線方向との整合性が最も高い解を採用することで、旧ファイルでも正しく追従する。
 
 #### `calc_offsets_from_current()`
 
@@ -759,7 +759,11 @@ n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
 
 ## 2. vertical_profile.py — 縦断線形データモデル
 
-`vertical_profile.py` は `models.py` から分離された縦断線形専用のモジュール。以下のクラス・関数を定義し、`models.py` が後方互換のために再エクスポートする。
+平面線形（`models.py`）と縦断線形の関心事を分離するために `models.py` から切り出したモジュール。縦断線形クラスは Panda3D にも Canvas にも依存しない純粋なデータモデルであり、別ファイルにすることでインポート依存を軽くし、テストが書きやすくなる。
+
+`vertical_profile.py` は `models.py` から `Segment`・`Arc`・`Clothoid`・`new_id` をインポートするが、`models.py` 側も `from vertical_profile import ...` で再エクスポートする（循環インポート）。Python は「`Segment` 等が定義された後に再エクスポート行が実行される」という初期化順序を保証するためこの構造が安全に機能する（詳細は基本設計書 2.3 節参照）。
+
+`vertical_profile.py` は以下のクラス・関数を定義し、`models.py` が後方互換のために再エクスポートする。
 
 - `plan_length_of(obj)`: 平面線形要素の平面長を返す（詳細は 1.10 節参照）
 - `ElementProfile`: 縦断線形データのブリッジクラス（詳細は 1.11 節参照）
@@ -779,6 +783,12 @@ n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
 ---
 
 ## 3. canvas.py — メイン編集キャンバス
+
+ユーザーが平面線形を視覚的に編集するメインキャンバス。`QWidget` を継承し、`paintEvent` でシーン全体を描画するとともに、マウス・ホイール・キー操作を受け付けて Scene を更新する。
+
+**他コンポーネントとの境界**: Canvas は図形の追加・削除・変形とアンドゥを担当し、プロパティ数値の表示・編集は `RightPanel` に委譲する。両者は `selection_changed` / `scene_changed` シグナルで疎結合に連携する。Canvas は RightPanel を直接参照しない。
+
+**ワールド座標とスクリーン座標**: すべての内部データはワールド座標（m 単位）で保持する。描画時にのみ `w2s()` でスクリーン座標へ変換する。ヒット判定もスクリーン座標で行い（`HIT_DIST` px 固定）、判定後にワールド座標へ逆変換する。
 
 ### 3.1 モジュールレベル定数
 
@@ -916,7 +926,7 @@ screen_y = -p.y * scale + offset.y   # y 反転
 4. 線分（線分近接）
 5. 直線（無限直線への距離）
 
-各リストを `reversed()` で走査するため、後から追加した図形が優先される。
+優先順位の根拠: クロソイドと円弧は線より細く、同一箇所にある場合は前者を選ぶ意図が明確なため上位に置く。直線（参照線）は画面全域に広がるため最下位にし、操作対象になりにくくする。各リストを `reversed()` で走査するため、同一優先度内では後から追加した図形が優先される。
 
 #### `_hit_polyline(pts, w, tol) -> bool`
 
@@ -1464,6 +1474,8 @@ ep = make_empty_profile()   # ElementProfile(grade_lines=[], vertical_curves=[])
 
 プロパティパネルの UI 構築ロジックを `PropBuilderMixin` として切り出したモジュール。`RightPanel` はこの Mixin を継承して使用する（`class RightPanel(PropBuilderMixin, QWidget)`）。
 
+切り出した理由: `right_panel.py` が肥大化したため、UI 構築メソッド（`_build_clothoid_props` 等）を別ファイルに分離して見通しをよくした。Mixin パターンを採用したのは、継承した `RightPanel` が `self.scene` や `self.scene_changed` 等を直接参照できるようにするためで、引数として渡す方式よりシグナル接続が自然に書ける。
+
 `PropBuilderMixin` のメソッドは以下のフィールドが `self` に存在することを前提とする:
 - `self.scene`: 現在の `Scene`
 - `self._prop_layout`: プロパティパネルのレイアウト (`QVBoxLayout`)
@@ -1548,6 +1560,8 @@ I/O なしで走行データを計算する純粋関数。
 tempfile から走行データを読み込み `RoadViewer` を起動するエントリーポイント。
 
 ### 6.2 `RoadViewer` クラス
+
+Panda3D の `ShowBase` を継承した走行ビューア。`ShowBase` はウィンドウ生成・OpenGL コンテキスト・イベントループ・タスクチェーンを一括管理する Panda3D の基底クラスであり、継承するだけで描画ウィンドウが立ち上がる。走行アニメーションは `taskMgr.add(_move_task)` で登録したタスク関数を毎フレーム呼び出すことで実現する（イベント駆動ではなくポーリング方式）。
 
 #### `__init__(centerline, display_segs=None)`
 
@@ -1647,6 +1661,8 @@ HUD テキストを現在の状態に更新する。
 ## 7. _road_mesh.py — 3D道路メッシュ生成
 
 `road_viewer.py` から分離した純粋なメッシュ生成モジュール。Panda3D の Geom API を直接使用する。`road_viewer.py` が `from _road_mesh import ...` でインポートして使用する。
+
+分離の理由は 2 つある。第一に、メッシュ生成は「座標列 → Panda3D GeomNode」という I/O のない純粋な変換であり、`RoadViewer`（ShowBase サブクラス、Panda3D ウィンドウを伴う）と同一ファイルに置くと単体テストが困難になるため。第二に、`build_centerline` は `prepare_viewer_data()` からも呼ばれるため、道路ビューア固有ロジックと切り離す方がモジュールの責務が明確になるため。
 
 ### 7.1 モジュールレベルユーティリティ
 
@@ -1787,9 +1803,11 @@ UIを構築する。構成（上から順）:
 3. **プロパティ表示エリア**: `QScrollArea` 内の `_prop_layout` に動的にウィジェットを追加・削除する
 
 初期状態:
-- `_block = False`: スピンボックスの値変更 → モデル更新 → スピンボックス値更新 の無限ループを防ぐフラグ
+- `_block = False`: スピンボックスの値変更 → モデル更新 → スピンボックス値更新 の無限ループを防ぐフラグ。`_refresh_seg_display()` 等でスピンボックスに `setValue()` する前に `True` にセットし、コールバックが走らないようにする
 - `_selected = []`: 選択中の図形リスト
 - `_nick_combos = []`: コンボボックスのリスト（`_add_nick_combo()` で初期2個を追加）
+
+**`_undo_pushed` パターン**: プロパティコールバック内では `_undo_pushed = [False]` というミュータブルリストをクロージャキャプチャして使う。同一編集セッション中の最初の変更のみ `request_push_undo.emit()` を発行し、連続した数値入力が 1 つの Undo 手順にまとまるようにする。クラスフィールドでなくリストを使うのは、ネストした内部関数から値を書き換えるための Python のイディオム。
 
 幅制約: `minimumWidth=260`, `maximumWidth=360`
 
@@ -2054,10 +2072,6 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 #### `scene` プロパティ
 
 `_canvas.scene` への委譲プロパティ。メインウィンドウ全体から `self.scene` で現在の Scene にアクセスするために使用する。
-
-#### `_get_or_create_ep(obj, rev) -> ElementProfile`
-
-既存 EP を返すか新規作成する。`element_type`・`plan_length`・`reversed_flag` を常に更新する。
 
 ---
 
