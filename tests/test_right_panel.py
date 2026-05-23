@@ -4254,3 +4254,132 @@ class TestSyncCombosNonLastRefresh:
         # コンボが 2 個確保され、i=0（非末尾）のとき L326->332 → L330 へ
         p._sync_combos_to_selection([seg1, seg2])
         assert len(p._nick_combos) >= 2, "2つの selected に対して 2 コンボ以上が必要"
+
+
+# ══════════════════════════════════════════════════════════════
+# _refresh_nick_combos — [道なり] 付き cur_text の distance fallback（L821-825）
+# ══════════════════════════════════════════════════════════════
+
+class TestRefreshNickCombosDistanceFallback:
+    """_refresh_nick_combos の distance fallback パス（L821-825）を検証する。
+
+    [道なり] プレフィックスは "[順] "/[逆]" の strip リストにないため、
+    base に残る。新コンボに "base"（距離なし）が存在しないので 4 種の
+    findText がすべて失敗し、_find_by_nick_label による逆引きに落ちる。
+    """
+
+    # [C1] [道なり] 付き cur_text で 4 種の findText が失敗 → L821-825 の fallback を通過
+    def test_road_follow_cur_text_triggers_find_by_nick_label_fallback(self):
+        """[C1] [道なり] プレフィックス + 別距離 の cur_text で L821-825 が実行され、
+        _find_by_nick_label で対象オブジェクトを逆引きして選択が復元される。"""
+        sc = Scene()
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
+        sc.add_line(ln1)
+
+        ln2 = Line(Vec2(100, 0), Vec2(200, 0))
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        sc.add_line(ln2)
+
+        p = RightPanel(sc)
+        cb1 = p._nick_combos[0]
+
+        # cb1 に seg1 を選択 → _on_combo_changed → _add_nick_combo → cb2 が作られる
+        seg1_label = p._label_for_obj(seg1)
+        idx = cb1.findText(seg1_label)
+        assert idx >= 0, "seg1 が cb1 に存在するはず"
+        cb1.setCurrentIndex(idx)  # _refresh_nick_combos を経て cb2 が構築される
+
+        assert len(p._nick_combos) >= 2, "cb1 で seg1 選択後に cb2 が作られるはず"
+        cb2 = p._nick_combos[1]
+
+        # cb2 に "[道なり] seg2_label  999.000 m" を挿入して選択
+        # → [道なり] プレフィックスは strip されず base に残る
+        # → 新コンボに "[道なり] seg2_label"（距離なし）が存在しないため 4 種全て失敗
+        # → _find_by_nick_label("[道なり] seg2_label  999.000 m") → seg2 を返す
+        # → L821-825: 新コンボ内で seg2 と一致するアイテムを探して found を設定
+        seg2_label = p._label_for_obj(seg2)
+        fake_text = "[道なり] " + seg2_label + "  999.000 m"
+
+        cb2.blockSignals(True)
+        cb2.insertItem(0, fake_text)
+        cb2.setCurrentIndex(0)
+        cb2.blockSignals(False)
+
+        p._refresh_nick_combos()
+
+        # fallback 後、seg2 に対応するアイテムが選択されているはず
+        found = p._find_by_nick_label(cb2.currentText())
+        assert found is seg2, \
+            f"_find_by_nick_label fallback で seg2 が選択されるはず（実際: {cb2.currentText()!r}）"
+
+
+# ══════════════════════════════════════════════════════════════
+# _prev_is_fwd_for_adj — Clothoid/Arc 分岐（L924-929, L932-939）
+# cand 端点が prev_obj の端点から遠い場合
+# ══════════════════════════════════════════════════════════════
+
+class TestPrevIsFwdForAdjFarCand:
+    """_prev_is_fwd_for_adj で cand 端点が遠く L913-921 を通過後の Clothoid/Arc
+    分岐（L924-929, L932-939）に到達するケースを検証する。"""
+
+    # [C1] prev_obj=有効 Clothoid, cand が遠い → L924-928 の isinstance/loop を通過（L924-929）
+    def test_clothoid_prev_cand_far_reaches_clothoid_branch(self):
+        """[C1] 有効 Clothoid が prev_obj で cand 端点が遠い →
+        L924-928 まで到達してデフォルト True を返す（L929 は dead-code）。"""
+        sc = Scene()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 60), 30.0)  # d_abs=60 > R=30 → valid
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        if not clo.is_valid or clo._circle_pt is None:
+            pytest.skip("Clothoid not valid for this geometry")
+        sc.add_clothoid(clo)
+
+        # cand: clo._line_pt / _circle_pt から SNAP_TOL(1.0m) より十分遠い位置に置く
+        ln2 = Line(Vec2(1000, 1000), Vec2(1100, 1000))
+        seg = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg)
+        sc.add_line(ln2)
+
+        p = RightPanel(sc)
+        # L913-921: cand 端点が prev_pts に近くない → return せず
+        # L924: isinstance(clo, Clothoid) and clo.is_valid → True ★ここを通過
+        # L925: clo._circle_pt → True
+        # L926-928: loop runs, no match
+        # L932: isinstance(seg, Clothoid) → False
+        # L941: return True
+        result = p._prev_is_fwd_for_adj(clo, seg)
+        assert result is True
+
+    # [C1] prev_obj=Arc, cand=有効 Clothoid で端点が遠い → L932-938 の isinstance/check を通過（L932-939）
+    def test_arc_prev_clothoid_cand_far_reaches_arc_clothoid_branch(self):
+        """[C1] Arc が prev_obj で有効 Clothoid が cand（端点が遠い）→
+        L932-938 まで到達してデフォルト True を返す（L936, L939 は dead-code）。"""
+        sc = Scene()
+        ci = Circle(Vec2(0, 0), 50.0)
+        arc = Arc(ci, 0, math.pi / 2)  # arc: start=(50,0), end=(0,50)
+        ci.arcs.append(arc)
+        sc.add_circle(ci)
+
+        # cand: Clothoid で _circle_pt が arc 端点から SNAP_TOL より遠い位置
+        ln = Line(Vec2(1000, 1000), Vec2(1100, 1000))
+        ci2 = Circle(Vec2(1050, 1060), 30.0)  # d_abs=60 > R=30 → valid
+        clo = Clothoid(ln, ci2, snap_segment=False, snap_arc=False)
+        if not clo.is_valid or clo._circle_pt is None:
+            pytest.skip("Clothoid not valid for this geometry")
+        sc.add_clothoid(clo)
+
+        p = RightPanel(sc)
+        # prev_pts=[arc.start=(50,0), arc.end=(0,50)]
+        # cand_pts=[clo._line_pt, clo._circle_pt] (すべて (1000,*) 付近)
+        # L913-921: no match → return せず
+        # L924: isinstance(arc, Clothoid) → False → skip
+        # L932: isinstance(clo, Clothoid) and clo.is_valid and isinstance(arc, Arc) → True ★
+        # L933: clo._circle_pt → True
+        # L934-936: _circle_pt が arc.end から遠い → no return True
+        # L937-939: _circle_pt が arc.start から遠い → no return False
+        # L941: return True
+        result = p._prev_is_fwd_for_adj(arc, clo)
+        assert result is True
