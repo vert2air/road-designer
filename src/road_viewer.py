@@ -905,7 +905,10 @@ class RoadViewer(ShowBase):
                     dist_cands.append((elem, True))
                 elif math.hypot(ex - ex2, ey - ey2) < self.AD_TOL:
                     dist_cands.append((elem, False))
-            candidates = _direction_filter(dist_cands)
+            ok = [(e, f) for e, f in dist_cands
+                  if (fwd_x * _elem_fwd_vec(e, f)[0]
+                      + fwd_y * _elem_fwd_vec(e, f)[1]) >= 0.0]
+            candidates = ok if ok else dist_cands
 
         if candidates:
             # 候補あり: 1つならそれ、複数ならランダム
