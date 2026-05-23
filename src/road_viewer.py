@@ -37,7 +37,7 @@ from models import (
 from _road_mesh import (
     build_centerline, build_road_mesh, build_car_box,
     build_center_line_node, build_piers, build_road_markings,
-    build_ground, _elev_at_dist, _elem_endpoints_xy,
+    build_ground, _elev_at_dist, _elem_endpoints_xy, _tangent_normal_at,
 )
 
 
