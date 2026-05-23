@@ -1294,3 +1294,53 @@ class TestDoDrag:
         c._drag_tag = "line_ref_start"
         c._do_drag(Vec2(1, 1))
         assert emitted
+
+    # [C1] LineConnection + a_end_is_shared=False → la.ref_start = w（L1284）
+    def test_drag_shared_pt_a_end_not_shared_updates_ref_start(self):
+        """[C1] a_end_is_shared=False のとき la.ref_start が w に更新される（L1284）。"""
+        c, sc = make_canvas()
+        # line a: ref_start=(0,0), ref_end=(10,0)
+        # line b: ref_start=(0,-5), ref_end=(0,5)
+        # intersection at (0,0)
+        a = Line(Vec2(0, 0), Vec2(10, 0))
+        b = Line(Vec2(0, -5), Vec2(0, 5))
+        sc.add_line(a); sc.add_line(b)
+        # 直接 LineConnection を生成して a_end_is_shared=False を設定
+        conn = LineConnection("polyline", a, b, Vec2(0, 0),
+                              a_end_is_shared=False, b_start_is_shared=True)
+        a.connection = conn
+        b.connection = conn
+        c._drag_obj = conn
+        c._drag_tag = "shared_pt"
+        c._do_drag(Vec2(2, 1))
+        # a_end_is_shared=False → la.ref_start = w（L1284）
+        assert vec_approx(a.ref_start, Vec2(2, 1)), \
+            f"a.ref_start は w=(2,1) になるはず: {a.ref_start}"
+        # b_start_is_shared=True → lb.ref_start = w（L1286）
+        assert vec_approx(b.ref_start, Vec2(2, 1)), \
+            f"b.ref_start は w=(2,1) になるはず: {b.ref_start}"
+
+    # [C1] LineConnection + b_start_is_shared=False → lb.ref_end = w（L1288）
+    def test_drag_shared_pt_b_start_not_shared_updates_ref_end(self):
+        """[C1] b_start_is_shared=False のとき lb.ref_end が w に更新される（L1288）。"""
+        c, sc = make_canvas()
+        # line a: ref_start=(-5,0), ref_end=(5,0)
+        # line b: ref_start=(0,0), ref_end=(0,10)
+        # intersection at (0,0)
+        a = Line(Vec2(-5, 0), Vec2(5, 0))
+        b = Line(Vec2(0, 0), Vec2(0, 10))
+        sc.add_line(a); sc.add_line(b)
+        # b_start_is_shared=False: lb.ref_end が共有点
+        conn = LineConnection("polyline", a, b, Vec2(0, 0),
+                              a_end_is_shared=True, b_start_is_shared=False)
+        a.connection = conn
+        b.connection = conn
+        c._drag_obj = conn
+        c._drag_tag = "shared_pt"
+        c._do_drag(Vec2(3, 3))
+        # a_end_is_shared=True → la.ref_end = w（L1282）
+        assert vec_approx(a.ref_end, Vec2(3, 3)), \
+            f"a.ref_end は w=(3,3) になるはず: {a.ref_end}"
+        # b_start_is_shared=False → lb.ref_end = w（L1288）
+        assert vec_approx(b.ref_end, Vec2(3, 3)), \
+            f"b.ref_end は w=(3,3) になるはず: {b.ref_end}"

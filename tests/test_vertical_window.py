@@ -2417,3 +2417,143 @@ class TestDrawColorbarBreak:
         c.update()
         QApplication.processEvents()
         assert True  # L617 break が例外なく実行された
+
+
+# ══════════════════════════════════════════════════════════════
+# on_dist / on_elev ボディの C1 カバレッジテスト（L1575-1603）
+# ══════════════════════════════════════════════════════════════
+
+class TestGradeSpinboxOnDistBody:
+    """on_dist の本体（L1579-1588）を網羅するテスト。"""
+
+    # [C1] on_dist が VC の pvi_dist を更新する（L1585-1586）
+    def test_on_dist_updates_matching_vc_pvi_dist(self):
+        """[C1] on_dist が呼ばれたとき pvi_dist が近い VC の pvi_dist が更新される（L1585-1586）。"""
+        from PySide6.QtWidgets import QDoubleSpinBox
+        win, sc, segs, profiles = make_vertical_window(1)
+        gl = make_gl(0.0, 0.0, 100.0, 5.0)
+        win._canvas._grade_lines = [gl]
+        # VC を pvi_dist=0.0 で追加（dist_start=0.0 と一致）
+        vc = VerticalCurve()
+        vc.pvi_dist = 0.0
+        vc.pvi_elev = 0.0
+        win._canvas._vertical_curves = [vc]
+        win._canvas._selected = gl
+        win._refresh_props()
+
+        sbs = win.findChildren(QDoubleSpinBox)
+        if not sbs:
+            return  # UI 非生成環境ではスキップ
+
+        # dist_start spinbox (sbs[0]) を 0.005 に変更
+        # abs(vc.pvi_dist - 0.005) = 0.005 < 0.01 → vc.pvi_dist が更新される
+        win._block_grade_sb = False
+        sbs[0].setValue(0.005)
+
+        assert abs(vc.pvi_dist - 0.005) < 1e-4, \
+            f"VC の pvi_dist が更新されているはず: {vc.pvi_dist}"
+
+    # [C1] on_dist の 2 回目の編集では push_undo が呼ばれない（L1579->1582 の False 分岐）
+    def test_on_dist_second_edit_no_extra_undo_push(self):
+        """[C1] 2 回目の dist 変更では _push_undo が呼ばれない（L1579->1582 の else 分岐）。"""
+        from PySide6.QtWidgets import QDoubleSpinBox
+        win, sc, segs, profiles = make_vertical_window(1)
+        gl = make_gl(0.0, 0.0, 100.0, 5.0)
+        win._canvas._grade_lines = [gl]
+        win._canvas._selected = gl
+        win._refresh_props()
+
+        sbs = win.findChildren(QDoubleSpinBox)
+        if not sbs:
+            return
+
+        win._block_grade_sb = False
+        # 1 回目の変更: push_undo が呼ばれてスタックが増える
+        sbs[0].setValue(2.0)
+        count1 = len(win._canvas._undo_stack)
+        # 2 回目の変更: 同じセッション内なので push_undo は呼ばれない
+        sbs[0].setValue(4.0)
+        count2 = len(win._canvas._undo_stack)
+
+        assert count1 >= 1, f"1 回目の変更で push_undo が呼ばれるはず: stack={count1}"
+        assert count2 == count1, \
+            f"2 回目の変更では push_undo は呼ばれないはず: {count1} → {count2}"
+
+
+class TestGradeSpinboxOnElevBody:
+    """on_elev の本体（L1590-1603）を網羅するテスト。"""
+
+    # [C1] on_elev が GL の elev_start を更新する（L1598）
+    def test_on_elev_updates_elev_start(self):
+        """[C1] on_elev が呼ばれたとき GL の elev_start が更新される（L1598）。"""
+        from PySide6.QtWidgets import QDoubleSpinBox
+        win, sc, segs, profiles = make_vertical_window(1)
+        gl = make_gl(0.0, 0.0, 100.0, 5.0)
+        win._canvas._grade_lines = [gl]
+        win._canvas._selected = gl
+        win._refresh_props()
+
+        sbs = win.findChildren(QDoubleSpinBox)
+        if len(sbs) < 2:
+            return  # spinbox が 2 個未満ならスキップ
+
+        win._block_grade_sb = False
+        # sbs[1] は elev_start spinbox
+        sbs[1].setValue(3.0)
+
+        assert abs(gl.elev_start - 3.0) < 1e-4, \
+            f"GL の elev_start が 3.0 に更新されているはず: {gl.elev_start}"
+
+    # [C1] on_elev が pvi_dist 一致の VC の pvi_elev を更新する（L1600-1601）
+    def test_on_elev_updates_matching_vc_pvi_elev(self):
+        """[C1] on_elev が呼ばれたとき pvi_dist が gl.dist_start に近い VC の pvi_elev が更新される（L1600-1601）。"""
+        from PySide6.QtWidgets import QDoubleSpinBox
+        win, sc, segs, profiles = make_vertical_window(1)
+        gl = make_gl(0.0, 0.0, 100.0, 5.0)
+        win._canvas._grade_lines = [gl]
+        # VC を pvi_dist=0.0 で追加（gl.dist_start=0.0 と一致）
+        vc = VerticalCurve()
+        vc.pvi_dist = 0.0
+        vc.pvi_elev = 0.0
+        win._canvas._vertical_curves = [vc]
+        win._canvas._selected = gl
+        win._refresh_props()
+
+        sbs = win.findChildren(QDoubleSpinBox)
+        if len(sbs) < 2:
+            return
+
+        win._block_grade_sb = False
+        # elev_start spinbox を 7.0 に変更
+        # on_elev 内: abs(vc.pvi_dist - get_dist()) = abs(0.0 - 0.0) = 0 < 0.01
+        # → vc.pvi_elev = 7.0（L1600-1601）
+        sbs[1].setValue(7.0)
+
+        assert abs(vc.pvi_elev - 7.0) < 1e-4, \
+            f"VC の pvi_elev が 7.0 に更新されているはず: {vc.pvi_elev}"
+
+    # [C1] on_elev の 2 回目の編集では push_undo が呼ばれない（L1594->1597 の False 分岐）
+    def test_on_elev_second_edit_no_extra_undo_push(self):
+        """[C1] 2 回目の elev 変更では _push_undo が呼ばれない（L1594->1597 の else 分岐）。"""
+        from PySide6.QtWidgets import QDoubleSpinBox
+        win, sc, segs, profiles = make_vertical_window(1)
+        gl = make_gl(0.0, 0.0, 100.0, 5.0)
+        win._canvas._grade_lines = [gl]
+        win._canvas._selected = gl
+        win._refresh_props()
+
+        sbs = win.findChildren(QDoubleSpinBox)
+        if len(sbs) < 2:
+            return
+
+        win._block_grade_sb = False
+        # 1 回目: push_undo が呼ばれてスタックが増える
+        sbs[1].setValue(3.0)
+        count1 = len(win._canvas._undo_stack)
+        # 2 回目: 同じセッション内なので push_undo は呼ばれない
+        sbs[1].setValue(6.0)
+        count2 = len(win._canvas._undo_stack)
+
+        assert count1 >= 1, f"1 回目の変更で push_undo が呼ばれるはず: stack={count1}"
+        assert count2 == count1, \
+            f"2 回目の変更では push_undo は呼ばれないはず: {count1} → {count2}"
