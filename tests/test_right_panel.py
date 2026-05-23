@@ -37,7 +37,7 @@ _app = QApplication.instance() or QApplication(sys.argv)
 
 from models import (
     Vec2, Line, Segment, Circle, Arc, Clothoid,
-    ElementProfile, GradeLine, Scene, SNAP_TOL,
+    ElementProfile, GradeLine, Scene, SNAP_TOL, LineConnection,
 )
 from right_panel import RightPanel
 
@@ -3083,3 +3083,280 @@ class TestArcAddButtons:
         assert len(received) == 1
         _, arcs = received[0]
         assert len(arcs) == 2
+
+
+# ══════════════════════════════════════════════════════════════
+# _road_follow（詳細設計書 §8）
+# ══════════════════════════════════════════════════════════════
+
+class TestRoadFollow:
+    """_road_follow の自動選択ルールのテスト（詳細設計書 §8）。"""
+
+    def _make_connected_pair(self):
+        """端点を共有する 2 本の線分と RightPanel を生成するヘルパー。
+
+        Note: Scene にオブジェクトを追加してから RightPanel を生成する。
+        パネル初期化時の _refresh_nick_combos でコンボに全アイテムが揃い、
+        後の update_selection/_sync_combos_to_selection が正しく動作する。
+        """
+        sc = Scene()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln, 0.0, 0.5)   # Vec2(0,0)..Vec2(50,0)
+        seg2 = Segment(ln, 0.5, 1.0)   # Vec2(50,0)..Vec2(100,0)
+        ln.segments.extend([seg1, seg2])
+        sc.add_line(ln)
+        p = RightPanel(sc)             # パネルはシーン構築後に生成
+        return p, sc, seg1, seg2
+
+    # [仕様] 高優先候補が 1 件のとき自動選択する（ルール1: L305-307）
+    def test_adj1_auto_selects(self):
+        """[仕様] 高優先候補が 1 件のとき _road_follow が唯一の候補を自動選択する
+        （詳細設計書 §8 ルール1: adj=1 → 自動選択）。"""
+        p, sc, seg1, seg2 = self._make_connected_pair()
+
+        # seg1 を選択 → combo2 に seg2 が高優先候補（1件）として表示される
+        p.update_selection([seg1], sc)
+
+        p._road_follow(1)
+
+        after_text = p._nick_combos[1].currentText()
+        after_obj = p._find_by_nick_label(after_text)
+        assert after_obj is seg2
+
+    # [仕様] 高優先候補複数・[順]が1件のとき [順] 候補を自動選択する（ルール2: L309-313）
+    def test_adj_multiple_one_fwd_auto_selects(self):
+        """[仕様] 高優先候補が複数件で [順] ラベルが 1 件のとき _road_follow が
+        その候補を自動選択する（詳細設計書 §8 ルール2: adj>1 かつ [順]=1）。"""
+        # seg1 の終点 (100,0) に seg2([順]) と seg3([逆]) が接続するシーン。
+        # _adjacent_from_obj は親が異なる線分に _directly_connected チェックを行うため、
+        # ln1→ln2 の LineConnection を設定して直接接点を確立する。
+        # seg3 (ln3 が (50,0)→(100,0)) も shared_point=(100,0) に端点を持つため
+        # 同 LineConnection 経由で directly_connected とみなされる。
+        # シーン構築後にパネルを生成して _sync_combos_to_selection が正しく動作するようにする。
+        sc = Scene()
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
+        sc.add_line(ln1)
+
+        ln2 = Line(Vec2(100, 0), Vec2(200, 0))   # 同方向で続く → [順]
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        sc.add_line(ln2)
+
+        ln3 = Line(Vec2(50, 0), Vec2(100, 0))    # 逆から来て終点で接続 → [逆]
+        seg3 = Segment(ln3, 0.0, 1.0)
+        ln3.segments.append(seg3)
+        sc.add_line(ln3)
+
+        # ln1 終端 → ln2 始端を折れ線接続（shared_point=(100,0) が seg3 終点とも一致 → 2件の adj）
+        conn = LineConnection(kind='polyline', line_a=ln1, line_b=ln2, shared_point=Vec2(100, 0))
+        ln1.connection = conn
+        ln2.connection = conn
+
+        p = RightPanel(sc)
+        p.update_selection([seg1], sc)
+        p._road_follow(1)
+
+        after_text = p._nick_combos[1].currentText()
+        after_obj = p._find_by_nick_label(after_text)
+        # [順] の seg2 が選ばれるはず（[逆] の seg3 は選ばれない）
+        assert after_obj is seg2
+
+    # [仕様] 高優先候補複数・[順]が2件のとき停止する（ルール3: L315-316）
+    def test_adj_multiple_two_fwd_stops(self):
+        """[仕様] 高優先候補が複数件で [順] ラベルが 2 件以上のとき _road_follow は
+        停止して選択を変更しない（詳細設計書 §8 ルール3: [순]=2 → 停止）。"""
+        # seg1 の終点 (100,0) から seg2（東方向）と seg3（北方向）が出ている → [순]=2。
+        # ln1→ln2 の LineConnection を設定し、seg3 (ln3 始点が (100,0)) も
+        # shared_point 経由で directly_connected とみなされるようにする。
+        # シーン構築後にパネルを生成して _sync_combos_to_selection が正しく動作するようにする。
+        sc = Scene()
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
+        sc.add_line(ln1)
+
+        ln2 = Line(Vec2(100, 0), Vec2(200, 0))   # 東方向 → [순]
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        sc.add_line(ln2)
+
+        ln3 = Line(Vec2(100, 0), Vec2(100, 100))  # 北方向 → dot=0 ≥ 0 → [순]
+        seg3 = Segment(ln3, 0.0, 1.0)
+        ln3.segments.append(seg3)
+        sc.add_line(ln3)
+
+        # ln1 終端 → ln2 始端を折れ線接続（shared_point=(100,0) が seg3 始点とも一致 → 2件の adj）
+        conn = LineConnection(kind='polyline', line_a=ln1, line_b=ln2, shared_point=Vec2(100, 0))
+        ln1.connection = conn
+        ln2.connection = conn
+
+        p = RightPanel(sc)
+        p.update_selection([seg1], sc)
+
+        p._road_follow(1)
+
+        # [순]=2 → 停止: combo2 は変更されないか "(なし)" のまま
+        after_text = p._nick_combos[1].currentText()
+        after_obj = p._find_by_nick_label(after_text)
+        # seg2 でも seg3 でもなく "(なし)" が選択されたまま
+        assert after_obj is None
+
+
+# ══════════════════════════════════════════════════════════════
+# _fill_adjacent_items — [道なり] アイテム生成（詳細設計書 §8）
+# ══════════════════════════════════════════════════════════════
+
+class TestFillAdjacentItemsRoadFollow:
+    """_fill_adjacent_items の [道なり] アイテム生成条件のテスト（詳細設計書 §8）。"""
+
+    # [仕様] 候補1件のとき [道なり] アイテムが追加される（L881-883）
+    def test_one_adj_adds_road_follow_item(self):
+        """[仕様] 高優先候補 1 件のとき [道なり] アイテムがコンボに追加される
+        （詳細設計書 §8: 候補1件 → [道なり] 生成）。"""
+        # シーン構築後にパネルを生成して _sync_combos_to_selection が正しく動作するようにする
+        sc = Scene()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln, 0.0, 0.5)
+        seg2 = Segment(ln, 0.5, 1.0)
+        ln.segments.extend([seg1, seg2])
+        sc.add_line(ln)
+        p = RightPanel(sc)
+
+        p.update_selection([seg1], sc)
+
+        cb2 = p._nick_combos[1]
+        texts = [cb2.itemText(i) for i in range(cb2.count())]
+        assert any(t.startswith("[道なり]") for t in texts), \
+            "候補1件のとき [道なり] アイテムが追加される"
+
+    # [仕様] 候補複数・[順]が1件のとき [道なり] アイテムが追加される（L884-888）
+    def test_multiple_adj_one_fwd_adds_road_follow(self):
+        """[仕様] 高優先候補複数件で [順] が 1 件のとき [道なり] アイテムがコンボに追加される
+        （詳細設計書 §8: 複数候補・[순]=1 → [道なり] 生成）。"""
+        # seg1 の終点 (100,0) に seg2([순]) と seg3([逆]) が接続するシーン。
+        # ln1→ln2 の LineConnection + seg3 終点が shared_point に一致 → 2件の adj を直接接点扱い。
+        # シーン構築後にパネルを生成して _sync_combos_to_selection が正しく動作するようにする。
+        sc = Scene()
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
+        sc.add_line(ln1)
+
+        ln2 = Line(Vec2(100, 0), Vec2(200, 0))   # [순]
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        sc.add_line(ln2)
+
+        ln3 = Line(Vec2(50, 0), Vec2(100, 0))    # [逆]
+        seg3 = Segment(ln3, 0.0, 1.0)
+        ln3.segments.append(seg3)
+        sc.add_line(ln3)
+
+        conn = LineConnection(kind='polyline', line_a=ln1, line_b=ln2, shared_point=Vec2(100, 0))
+        ln1.connection = conn
+        ln2.connection = conn
+
+        p = RightPanel(sc)
+        p.update_selection([seg1], sc)
+
+        cb2 = p._nick_combos[1]
+        texts = [cb2.itemText(i) for i in range(cb2.count())]
+        assert any(t.startswith("[道なり]") for t in texts), \
+            "候補複数・[순]=1 のとき [道なり] アイテムが追加される"
+
+    # [エッジ] 候補なし（adj=0）のとき [道なり] は追加されない（L880）
+    def test_no_adj_no_road_follow_item(self):
+        """[エッジ] 高優先候補が 0 件のとき [道なり] アイテムは追加されない
+        （詳細設計書 §8: 候補0件 → [道なり] 不生成）。"""
+        # シーン構築後にパネルを生成して _sync_combos_to_selection が正しく動作するようにする
+        sc = Scene()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg1)
+        sc.add_line(ln)
+        p = RightPanel(sc)
+
+        p.update_selection([seg1], sc)
+
+        # seg1 の隣接なし（単独線分）
+        cb2 = p._nick_combos[1]
+        texts = [cb2.itemText(i) for i in range(cb2.count())]
+        # 高優先候補（セパレータ前）に [道なり] はない
+        # ただし all_items の中にある可能性はゼロ（[道なり] は adj から生成される）
+        high_priority_road_follow = [
+            t for t in texts
+            if t.startswith("[道なり]")
+        ]
+        assert high_priority_road_follow == [], \
+            "候補0件のとき [道なり] アイテムは追加されない"
+
+
+# ══════════════════════════════════════════════════════════════
+# _on_combo_changed — [道なり] 選択時の処理（詳細設計書 §8）
+# ══════════════════════════════════════════════════════════════
+
+class TestOnComboChangedRoadFollow:
+    """_on_combo_changed の [道なり] 処理のテスト（詳細設計書 §8）。"""
+
+    # [仕様] [道なり] アイテムが選択されたとき、プレフィックスを除いた実ラベルに置換される（L355-363）
+    def test_road_follow_item_replaces_prefix(self):
+        """[仕様] [道なり] アイテムが選択されると [道なり] プレフィックスが除去された
+        実ラベルに置き換わる（詳細設計書 §8: [道なり] → 実ラベルに置換）。"""
+        # シーン構築後にパネルを生成して _sync_combos_to_selection が正しく動作するようにする
+        sc = Scene()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln, 0.0, 0.5)
+        seg2 = Segment(ln, 0.5, 1.0)
+        ln.segments.extend([seg1, seg2])
+        sc.add_line(ln)
+        p = RightPanel(sc)
+
+        p.update_selection([seg1], sc)
+
+        cb2 = p._nick_combos[1]
+
+        # [道なり] アイテムのインデックスを探す
+        road_idx = next(
+            (j for j in range(cb2.count()) if cb2.itemText(j).startswith("[道なり]")),
+            -1
+        )
+        assert road_idx >= 0, "候補1件のとき [道なり] アイテムが存在するはず"
+
+        # [道なり] アイテムを選択（signal を発火させる）
+        cb2.setCurrentIndex(road_idx)
+
+        # [道なり] プレフィックスが除去されているはず
+        assert not cb2.currentText().startswith("[道なり]"), \
+            "[道なり] 選択後は実ラベルに置換される"
+
+    # [仕様] [道なり] 選択後に _road_follow が発火して次のコンボも連鎖選択される（L375）
+    def test_road_follow_triggers_chain(self):
+        """[仕様] [道なり] アイテム選択後に _road_follow が発火し、
+        選択された図形が combo2 に反映される
+        （詳細設計書 §8: [道なり] → _road_follow 連鎖）。"""
+        # シーン構築後にパネルを生成して _sync_combos_to_selection が正しく動作するようにする
+        sc = Scene()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg1 = Segment(ln, 0.0, 0.5)
+        seg2 = Segment(ln, 0.5, 1.0)
+        ln.segments.extend([seg1, seg2])
+        sc.add_line(ln)
+        p = RightPanel(sc)
+
+        p.update_selection([seg1], sc)
+
+        cb2 = p._nick_combos[1]
+        road_idx = next(
+            (j for j in range(cb2.count()) if cb2.itemText(j).startswith("[道なり]")),
+            -1
+        )
+        assert road_idx >= 0, "候補1件のとき [道なり] アイテムが存在するはず"
+
+        cb2.setCurrentIndex(road_idx)
+
+        # _road_follow が呼ばれた結果、combo2 の実オブジェクトが seg2 になる
+        current_obj = p._find_by_nick_label(cb2.currentText())
+        assert current_obj is seg2, \
+            "[道なり] 選択後に _road_follow で seg2 が自動選択される"

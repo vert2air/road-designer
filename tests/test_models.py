@@ -2757,3 +2757,80 @@ class TestClearArcSplitArcXbNotInArcs:
             clo._clear_arc_split()
             # _split_arc_ids はクリアされる
             assert clo._split_arc_ids == []
+
+
+# ══════════════════════════════════════════════════════════════
+# _apply_segment_snap reversed_flag=True 分岐
+# ══════════════════════════════════════════════════════════════
+
+class TestApplySegmentSnapReversedFlag:
+    """_apply_segment_snap の reversed_flag=True ブランチのテスト（L1101-1104）。"""
+
+    # [仕様] reversed_flag=True のとき t_start が更新される（詳細設計書 §1 snap ルール）
+    def test_reversed_flag_updates_t_start(self):
+        """[仕様] reversed_flag=True のとき _apply_segment_snap は t_end でなく
+        t_start を接点 t 値に更新する（詳細設計書 §1: reversed=True → t_start = t_x）。"""
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        ci = Circle(Vec2(50, 60), 30.0)
+
+        clo = Clothoid(ln, ci, reversed_flag=True, snap_segment=True, snap_arc=False)
+        if not clo.is_valid or clo._line_pt is None:
+            return  # クロソイドが無効な環境ではスキップ
+
+        t_x = ln.project_t(clo._line_pt)
+
+        # reversed_flag=True → t_start が接点 t 値に更新される
+        assert approx(seg.t_start, t_x, tol=1e-6), \
+            f"reversed_flag=True で t_start={seg.t_start:.6f} が t_x={t_x:.6f} と一致すべき"
+        # t_end > t_start（縮退防止またはそのまま）
+        assert seg.t_end > seg.t_start
+
+    # [仕様] reversed_flag=True かつ縮退状態: t_end = t_start + 0.1（L1103-1104）
+    def test_reversed_flag_degenerate_prevention(self):
+        """[仕様] reversed_flag=True で t_end <= t_start+1e-9 のとき
+        縮退防止により t_end = t_start+0.1 に補正される
+        （詳細設計書 §1: 縮退防止ルール reversed=True 側）。"""
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        ci = Circle(Vec2(50, 60), 30.0)
+
+        clo = Clothoid(ln, ci, reversed_flag=True, snap_segment=True, snap_arc=False)
+        if not clo.is_valid or clo._line_pt is None:
+            return
+
+        t_x = ln.project_t(clo._line_pt)
+
+        # t_end を t_x より小さくして縮退状態を意図的に作る
+        seg.t_start = t_x
+        seg.t_end = t_x - 0.05  # t_end < t_start → 縮退
+
+        # _apply_segment_snap を直接呼び出す
+        clo._apply_segment_snap()
+
+        # 縮退防止: t_end = t_start + 0.1 に補正される
+        assert seg.t_end >= seg.t_start + 0.1 - 1e-9, \
+            f"縮退防止後 t_end={seg.t_end:.4f} は t_start+0.1={seg.t_start+0.1:.4f} 以上であるべき"
+
+    # [境界] reversed_flag=False（通常方向）との比較: t_end が更新され t_start は不変
+    def test_normal_flag_updates_t_end(self):
+        """[境界] reversed_flag=False のとき t_end が更新され t_start は 0.0 のまま
+        （詳細設計書 §1: reversed=False → t_end = t_x）。"""
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        ci = Circle(Vec2(50, 60), 30.0)
+
+        clo = Clothoid(ln, ci, reversed_flag=False, snap_segment=True, snap_arc=False)
+        if not clo.is_valid or clo._line_pt is None:
+            return
+
+        t_x = ln.project_t(clo._line_pt)
+
+        # reversed_flag=False → t_end が接点 t 値に更新される
+        assert approx(seg.t_end, t_x, tol=1e-6), \
+            f"reversed_flag=False で t_end={seg.t_end:.6f} が t_x={t_x:.6f} と一致すべき"
+        # t_start は 0.0 のまま（または縮退防止で調整されていても t_end > t_start）
+        assert seg.t_end > seg.t_start

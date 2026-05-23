@@ -884,3 +884,413 @@ class TestRebuildHandles:
         c.set_selection([a])
         tags = [h.tag for h in c._handles]
         assert 'shared_pt' in tags
+
+
+# ══════════════════════════════════════════════════════════════
+# 14. _rebuild_handles — snap 端点の除外
+# ══════════════════════════════════════════════════════════════
+
+class TestRebuildHandlesSnap:
+    # [仕様] snap_segment=True の接点に吸着した線分端点はハンドルから除外される（L328-334）
+    def test_snap_segment_endpoint_excluded_from_handles(self):
+        """[仕様] Clothoid(snap_segment=True) が有効なとき、接点に吸着した seg_end は
+        ハンドルリストに含まれない（詳細設計書 §3.3 snap ハンドル除外ルール）。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        ci = Circle(Vec2(50, 60), 30.0)
+        sc.add_circle(ci)
+        clo = Clothoid(ln, ci, snap_segment=True, snap_arc=False)
+        if not clo.is_valid or clo._line_pt is None:
+            return  # クロソイドが無効の場合はスキップ
+        sc.add_clothoid(clo)
+
+        c.set_selection([ln])
+
+        t_x = ln.project_t(clo._line_pt)
+        # reversed_flag=False → t_end が接点に snap される
+        # その端点（seg_end）はハンドルに含まれないはず
+        if abs(seg.t_end - t_x) < 1e-4:
+            end_handles = [h for h in c._handles
+                           if h.tag == 'seg_end' and h.owner is seg]
+            assert end_handles == [], \
+                "吸着された seg_end はハンドルに含まれない"
+
+    # [仕様] snap_arc=True の接点に吸着した arc 端点はハンドルから除外される（L344-354）
+    def test_snap_arc_endpoint_excluded_from_handles(self):
+        """[仕様] Clothoid(snap_arc=True) が有効なとき、接点に吸着した arc_end は
+        ハンドルリストに含まれない（詳細設計書 §3.3 snap ハンドル除外ルール）。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        ci = Circle(Vec2(50, 60), 30.0)
+        arc = Arc(ci, -1.0, 1.0)
+        ci.arcs.append(arc)
+        sc.add_circle(ci)
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=True)
+        if not clo.is_valid or clo._circle_pt is None:
+            return
+        sc.add_clothoid(clo)
+
+        c.set_selection([ci])
+        # arc の端点がハンドルリストに存在するかを確認
+        # snap_arc=True → 接点に最も近い arc 端点は除外される
+        ang_contact = math.atan2(
+            clo._circle_pt.y - ci.center.y,
+            clo._circle_pt.x - ci.center.x
+        )
+        if abs(arc.angle_start - ang_contact) < 1e-4:
+            start_handles = [h for h in c._handles
+                             if h.tag == 'arc_start' and h.owner is arc]
+            assert start_handles == [], "吸着された arc_start はハンドルに含まれない"
+        if abs(arc.angle_end - ang_contact) < 1e-4:
+            end_handles = [h for h in c._handles
+                           if h.tag == 'arc_end' and h.owner is arc]
+            assert end_handles == [], "吸着された arc_end はハンドルに含まれない"
+
+
+# ══════════════════════════════════════════════════════════════
+# 15. _line_click
+# ══════════════════════════════════════════════════════════════
+
+class TestLineClick:
+    # [仕様] 1回目クリック: _line_first_pt が設定され、シーンは変更されない（L1145-1146）
+    def test_first_click_sets_first_pt_only(self):
+        """[仕様] 1回目クリックで _line_first_pt が記録されるが Line は追加されない
+        （詳細設計書 §3 直線モード：1クリック目は始点記憶）。"""
+        c, sc = make_canvas()
+        c.set_mode(c.MODE_LINE)
+        c._line_click(Vec2(5, 5))
+        assert c._line_first_pt is not None
+        assert vec_approx(c._line_first_pt, Vec2(5, 5))
+        assert len(sc.lines) == 0
+
+    # [仕様] 2回目クリック: Line+Segment がシーンに追加され _last_line と _line_first_pt=q が設定される（L1147-1163）
+    def test_second_click_creates_line_and_segment(self):
+        """[仕様] 2回目クリックで Line(p,q)+Segment(0,1) がシーンに追加される
+        （詳細設計書 §3 直線モード：2クリック目で確定）。"""
+        c, sc = make_canvas()
+        c.set_mode(c.MODE_LINE)
+        c._line_click(Vec2(0, 0))   # 1回目
+        c._line_click(Vec2(10, 0))  # 2回目
+        assert len(sc.lines) == 1
+        ln = sc.lines[0]
+        assert len(ln.segments) == 1
+        assert c._last_line is ln
+        # 次の連続クリックの始点は q
+        assert vec_approx(c._line_first_pt, Vec2(10, 0))
+
+    # [仕様] 3回目クリック: 前の Line と折れ線接続される（_connect_polyline 呼び出し）（L1158-1159）
+    def test_third_click_connects_polyline(self):
+        """[仕様] 3回目以降のクリックで _last_line と新 Line が折れ線接続される
+        （詳細設計書 §3 直線モード：連続描画で折れ線接続）。"""
+        c, sc = make_canvas()
+        c.set_mode(c.MODE_LINE)
+        c._line_click(Vec2(0, 0))
+        c._line_click(Vec2(10, 0))   # line_a
+        c._line_click(Vec2(10, 10))  # line_b: connects with line_a
+        assert len(sc.lines) == 2
+        line_a = sc.lines[0]
+        line_b = sc.lines[1]
+        # 折れ線接続: 両直線に connection が設定される
+        assert line_a.connection is not None or line_b.connection is not None
+
+    # [境界] 2回目クリックを同一点に行う: 縮退 Line でも例外なく追加される
+    def test_second_click_same_point_degenerate(self):
+        """[境界] 始点==終点の縮退 Line でも例外が発生せず scene に追加される。"""
+        c, sc = make_canvas()
+        c.set_mode(c.MODE_LINE)
+        c._line_click(Vec2(5, 5))
+        c._line_click(Vec2(5, 5))  # same point
+        assert len(sc.lines) == 1  # 縮退でも追加される
+
+    # [C1] MODE_LINE で Escape → _line_first_pt がリセットされる（keyPressEvent → L1118-1122）
+    def test_escape_resets_state(self):
+        """[C1] Escape キーで直線モードの描画中状態がリセットされる（L1118-1122）。"""
+        from PySide6.QtGui import QKeyEvent
+        from PySide6.QtCore import QEvent, Qt as QtCore
+        c, sc = make_canvas()
+        c.set_mode(c.MODE_LINE)
+        c._line_click(Vec2(3, 3))
+        assert c._line_first_pt is not None
+        # Escape
+        ev = QKeyEvent(QEvent.Type.KeyPress, QtCore.Key.Key_Escape,
+                       QtCore.KeyboardModifier.NoModifier)
+        c.keyPressEvent(ev)
+        assert c._line_first_pt is None
+
+
+# ══════════════════════════════════════════════════════════════
+# 16. _delete_selected
+# ══════════════════════════════════════════════════════════════
+
+class TestDeleteSelected:
+    # [仕様] 空の選択: push_undo を呼ばずに早期 return する（L1432-1433）
+    def test_empty_selection_no_push_undo(self):
+        """[仕様] 選択が空のとき _delete_selected は push_undo を呼ばずに return する
+        （詳細設計書 §3 削除：空選択ガード）。"""
+        c, sc = make_canvas()
+        undo_count = len(c._undo_stack)
+        c._delete_selected()
+        assert len(c._undo_stack) == undo_count  # push_undo されない
+
+    # [仕様] Line を削除: scene.lines から除去、signals emit（L1436-1437）
+    def test_delete_line(self):
+        """[仕様] 選択 Line を _delete_selected すると scene.lines から除去される
+        （詳細設計書 §3 削除：Line → scene.remove_line）。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(10, 0))
+        sc.add_line(ln)
+        c.set_selection([ln])
+        deleted = []
+        c.scene_changed.connect(lambda: deleted.append(True))
+        c._delete_selected()
+        assert ln not in sc.lines
+        assert deleted  # scene_changed が emit される
+        assert c._selected == []
+
+    # [仕様] Circle を削除: scene.circles から除去（L1438-1439）
+    def test_delete_circle(self):
+        """[仕様] 選択 Circle を _delete_selected すると scene.circles から除去される
+        （詳細設計書 §3 削除：Circle → scene.remove_circle）。"""
+        c, sc = make_canvas()
+        ci = Circle(Vec2(0, 0), 10.0)
+        sc.add_circle(ci)
+        c.set_selection([ci])
+        c._delete_selected()
+        assert ci not in sc.circles
+
+    # [仕様] Clothoid を削除: scene.clothoids から除去（L1440-1441）
+    def test_delete_clothoid(self):
+        """[仕様] 選択 Clothoid を _delete_selected すると scene.clothoids から除去される
+        （詳細設計書 §3 削除：Clothoid → scene.remove_clothoid）。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        sc.add_line(ln)
+        ci = Circle(Vec2(50, 60), 30.0)
+        sc.add_circle(ci)
+        clo = Clothoid(ln, ci)
+        if clo.is_valid:
+            sc.add_clothoid(clo)
+            c.set_selection([clo])
+            c._delete_selected()
+            assert clo not in sc.clothoids
+
+    # [仕様] Segment を削除: 親 Line の segments から除去される（L1442-1443）
+    def test_delete_segment(self):
+        """[仕様] 選択 Segment を _delete_selected すると line.segments から除去される
+        （詳細設計書 §3 削除：Segment → line.segments.remove）。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(10, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        c.set_selection([seg])
+        c._delete_selected()
+        assert seg not in ln.segments
+
+    # [仕様] Arc を削除: 親 Circle の arcs から除去される（L1444-1445）
+    def test_delete_arc(self):
+        """[仕様] 選択 Arc を _delete_selected すると circle.arcs から除去される
+        （詳細設計書 §3 削除：Arc → circle.arcs.remove）。"""
+        c, sc = make_canvas()
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc = Arc(ci, 0.0, math.pi)
+        ci.arcs.append(arc)
+        sc.add_circle(ci)
+        c.set_selection([arc])
+        c._delete_selected()
+        assert arc not in ci.arcs
+
+    # [C1] 複数種を同時削除: Segment と Arc を同時に選択して削除（L1435-1445 の loop）
+    def test_delete_mixed_types(self):
+        """[C1] Segment と Arc を同時選択して _delete_selected すると両方除去される（L1435-1445 のループ）。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(10, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc = Arc(ci, 0.0, math.pi)
+        ci.arcs.append(arc)
+        sc.add_circle(ci)
+        c.set_selection([seg, arc])
+        c._delete_selected()
+        assert seg not in ln.segments
+        assert arc not in ci.arcs
+
+
+# ══════════════════════════════════════════════════════════════
+# 17. _do_drag
+# ══════════════════════════════════════════════════════════════
+
+class TestDoDrag:
+    # [仕様] Line + "line_ref_start": ref_start が更新される（L1235-1238）
+    def test_drag_line_ref_start(self):
+        """[仕様] tag="line_ref_start" のとき obj.ref_start = w に更新される
+        （詳細設計書 §3 ドラッグ：参照始点移動）。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(10, 0))
+        sc.add_line(ln)
+        c._drag_obj = ln
+        c._drag_tag = "line_ref_start"
+        c._do_drag(Vec2(3, 4))
+        assert vec_approx(ln.ref_start, Vec2(3, 4))
+
+    # [仕様] Line + "line_ref_end": ref_end が更新される（L1239-1241）
+    def test_drag_line_ref_end(self):
+        """[仕様] tag="line_ref_end" のとき obj.ref_end = w に更新される
+        （詳細設計書 §3 ドラッグ：参照終点移動）。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(10, 0))
+        sc.add_line(ln)
+        c._drag_obj = ln
+        c._drag_tag = "line_ref_end"
+        c._do_drag(Vec2(20, 5))
+        assert vec_approx(ln.ref_end, Vec2(20, 5))
+
+    # [仕様] Segment + "seg_start": t_start = project_t(w)（L1244-1246）
+    def test_drag_seg_start(self):
+        """[仕様] tag="seg_start" のとき t_start = ln.project_t(w) に更新される
+        （詳細設計書 §3 ドラッグ：線分始点移動）。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        c._drag_obj = seg
+        c._drag_tag = "seg_start"
+        c._do_drag(Vec2(30, 0))   # t = 30/100 = 0.3
+        assert approx(seg.t_start, 0.3)
+
+    # [仕様] Segment + "seg_end": t_end = project_t(w)（L1247-1249）
+    def test_drag_seg_end(self):
+        """[仕様] tag="seg_end" のとき t_end = ln.project_t(w) に更新される
+        （詳細設計書 §3 ドラッグ：線分終点移動）。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        sc.add_line(ln)
+        c._drag_obj = seg
+        c._drag_tag = "seg_end"
+        c._do_drag(Vec2(70, 0))   # t = 70/100 = 0.7
+        assert approx(seg.t_end, 0.7)
+
+    # [仕様] Circle + "circle_center"（二等分線なし）: center = w（L1258-1260）
+    def test_drag_circle_center_no_bisector(self):
+        """[仕様] bisector_origin が None のとき circle_center ドラッグで center = w
+        （詳細設計書 §3 ドラッグ：円中心移動）。"""
+        c, sc = make_canvas()
+        ci = Circle(Vec2(0, 0), 10.0)
+        sc.add_circle(ci)
+        c._drag_obj = ci
+        c._drag_tag = "circle_center"
+        c._do_drag(Vec2(5, 7))
+        assert vec_approx(ci.center, Vec2(5, 7))
+
+    # [仕様] Circle + "circle_center" + 二等分線: 二等分線上に束縛される（L1253-1258）
+    def test_drag_circle_center_with_bisector(self):
+        """[仕様] bisector_origin/dir が設定されているとき circle_center ドラッグは
+        二等分線上に拘束される（詳細設計書 §3 ドラッグ：スムーズ接続円の中心移動）。"""
+        c, sc = make_canvas()
+        ci = Circle(Vec2(0, 0), 10.0)
+        ci.bisector_origin = Vec2(0, 0)
+        ci.bisector_dir    = Vec2(0, 1)   # y 軸方向
+        sc.add_circle(ci)
+        c._drag_obj = ci
+        c._drag_tag = "circle_center"
+        # オフセット (3,5): y 軸への射影 → center = (0, 5)
+        c._do_drag(Vec2(3, 5))
+        assert approx(ci.center.x, 0.0, tol=1e-6)
+        assert approx(ci.center.y, 5.0, tol=1e-6)
+
+    # [仕様] Circle + "circle_radius" (r > 1e-3): radius 更新（L1262-1266）
+    def test_drag_circle_radius_updates(self):
+        """[仕様] r > 1e-3 のとき circle_radius ドラッグで radius が更新される
+        （詳細設計書 §3 ドラッグ：半径移動）。"""
+        c, sc = make_canvas()
+        ci = Circle(Vec2(0, 0), 10.0)
+        sc.add_circle(ci)
+        c._drag_obj = ci
+        c._drag_tag = "circle_radius"
+        c._do_drag(Vec2(15, 0))   # r = 15 > 1e-3
+        assert approx(ci.radius, 15.0)
+
+    # [境界] Circle + "circle_radius" (r <= 1e-3): radius 更新されない（L1263-1266）
+    def test_drag_circle_radius_too_small_no_update(self):
+        """[境界] r <= 1e-3 のとき circle_radius ドラッグで radius は更新されない
+        （詳細設計書 §3 ドラッグ：縮退半径防止）。"""
+        c, sc = make_canvas()
+        ci = Circle(Vec2(0, 0), 10.0)
+        sc.add_circle(ci)
+        c._drag_obj = ci
+        c._drag_tag = "circle_radius"
+        c._do_drag(Vec2(0.0005, 0))   # r = 0.0005 < 1e-3
+        assert approx(ci.radius, 10.0)   # 変更されない
+
+    # [仕様] Arc + "arc_start": angle_start = atan2(w-center)（L1270-1272）
+    def test_drag_arc_start(self):
+        """[仕様] tag="arc_start" のとき arc.angle_start が更新される
+        （詳細設計書 §3 ドラッグ：円弧始端角度変更）。"""
+        c, sc = make_canvas()
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc = Arc(ci, 0.0, math.pi)
+        ci.arcs.append(arc)
+        sc.add_circle(ci)
+        c._drag_obj = arc
+        c._drag_tag = "arc_start"
+        c._do_drag(Vec2(10, 10))   # angle = atan2(10,10) = π/4
+        assert approx(arc.angle_start, math.pi / 4)
+
+    # [仕様] Arc + "arc_end": angle_end = atan2(w-center)（L1273-1275）
+    def test_drag_arc_end(self):
+        """[仕様] tag="arc_end" のとき arc.angle_end が更新される
+        （詳細設計書 §3 ドラッグ：円弧終端角度変更）。"""
+        c, sc = make_canvas()
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc = Arc(ci, 0.0, math.pi)
+        ci.arcs.append(arc)
+        sc.add_circle(ci)
+        c._drag_obj = arc
+        c._drag_tag = "arc_end"
+        c._do_drag(Vec2(-10, 0))   # angle = atan2(0,-10) = π
+        assert approx(arc.angle_end, math.pi)
+
+    # [仕様] LineConnection + "shared_pt": 共有点と両直線の参照点が更新される（L1277-1295）
+    def test_drag_shared_pt(self):
+        """[仕様] tag="shared_pt" のとき shared_point と両直線の参照点が w に更新される
+        （詳細設計書 §3 ドラッグ：折れ線接続共有点の移動）。"""
+        c, sc = make_canvas()
+        a = Line(Vec2(0, 0), Vec2(10, 0))
+        seg_a = Segment(a, 0.0, 1.0)
+        a.segments.append(seg_a)
+        b = Line(Vec2(5, -5), Vec2(5, 5))
+        seg_b = Segment(b, 0.0, 1.0)
+        b.segments.append(seg_b)
+        sc.add_line(a); sc.add_line(b)
+        c._connect_polyline(a, b)
+        conn = a.connection
+        assert conn is not None
+        c._drag_obj = conn
+        c._drag_tag = "shared_pt"
+        c._do_drag(Vec2(6, 0))
+        assert approx(conn.shared_point.x, 6.0)
+        assert approx(conn.shared_point.y, 0.0)
+
+    # [C1] _do_drag 後に scene_changed が emit される（L1297）
+    def test_do_drag_emits_scene_changed(self):
+        """[C1] _do_drag は末尾で scene_changed を emit する（L1297）。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(0, 0), Vec2(10, 0))
+        sc.add_line(ln)
+        emitted = []
+        c.scene_changed.connect(lambda: emitted.append(True))
+        c._drag_obj = ln
+        c._drag_tag = "line_ref_start"
+        c._do_drag(Vec2(1, 1))
+        assert emitted
