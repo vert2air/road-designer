@@ -52,7 +52,24 @@ def qp(v: Vec2) -> QPointF:
 
 
 class Handle:
-    """ドラッグ可能なハンドル"""
+    """キャンバス上でドラッグ可能な図形操作ハンドル。
+
+    選択中の図形に対して :meth:`Canvas._rebuild_handles` が生成し、
+    ドラッグ操作の入力を :meth:`Canvas._do_drag` に橋渡しする。
+    ハンドルはキャンバス外部から直接操作せず、Canvas 内部でのみ使用する。
+
+    Attributes
+    ----------
+    pos : Vec2
+        ハンドルのワールド座標。描画位置とヒットテストの基準。
+    color : QColor
+        ハンドルの塗り色。役割ごとに異なる（端点=赤、参照点=灰、半径=緑、交点=橙）。
+    tag : str
+        役割識別文字列（例: ``"seg_start"``, ``"arc_end"``, ``"circle_radius"``）。
+        :meth:`Canvas._do_drag` がこの値でドラッグ処理を分岐する。
+    owner : Line or Segment or Circle or Arc or LineConnection
+        このハンドルが操作する図形オブジェクト。
+    """
     def __init__(self, pos: Vec2, color: QColor, tag: str, owner):
         self.pos   = pos
         self.color = color
@@ -61,6 +78,39 @@ class Handle:
 
 
 class Canvas(QWidget):
+    """道路線形の 2D 編集キャンバス。
+
+    PySide6 の QWidget を継承し、ワールド座標系でワールド図形（Line/Circle/Clothoid）を
+    描画・選択・ドラッグ編集する。Undo スタック（最大 500 件）を内蔵する。
+
+    座標変換:
+        ワールド → スクリーン: :meth:`w2s` （y 軸反転）
+        スクリーン → ワールド: :meth:`s2w`
+
+    Signals
+    -------
+    selection_changed : list
+        選択図形リストが変わったときに emit される。
+    scene_changed : ()
+        シーンの内容が変わったときに emit される（undo/redo/ドラッグ完了など）。
+    mouse_world_pos : (float, float)
+        マウス移動のたびにワールド座標 (x, y) を emit する。
+    hover_changed : object
+        ホバー対象の図形が変わったときに emit される。None は非ホバー。
+
+    Attributes
+    ----------
+    scene : Scene
+        編集対象のシーン。
+    mode : str
+        現在の編集モード。MODE_SELECT / MODE_LINE / MODE_CIRCLE のいずれか。
+    MODE_SELECT : str
+        選択・ドラッグ・パンモード。
+    MODE_LINE : str
+        直線描画モード。クリックで始点→終点を指定する。
+    MODE_CIRCLE : str
+        円描画モード。クリック+ドラッグで中心→半径を指定する。
+    """
     selection_changed = Signal(list)   # 選択図形リスト
     scene_changed     = Signal()       # シーン変更
     mouse_world_pos   = Signal(float, float)  # マウスのワールド座標
@@ -71,6 +121,15 @@ class Canvas(QWidget):
     MODE_CIRCLE = "circle"
 
     def __init__(self, scene: Scene, parent=None):
+        """キャンバスを初期化する。
+
+        Parameters
+        ----------
+        scene : Scene
+            編集対象のシーン。
+        parent : QWidget, optional
+            親ウィジェット。
+        """
         super().__init__(parent)
         self.scene = scene
         self.mode  = self.MODE_SELECT
@@ -149,7 +208,18 @@ class Canvas(QWidget):
                    -(y - self._offset.y) / self._scale)
 
     def s2w_qp(self, p: QPointF) -> Vec2:
-        """QPointF を受け取る s2w のラッパー。"""
+        """QPointF を受け取る :meth:`s2w` のラッパー。
+
+        Parameters
+        ----------
+        p : QPointF
+            スクリーン座標。
+
+        Returns
+        -------
+        Vec2
+            ワールド座標。
+        """
         return self.s2w(p.x(), p.y())
 
     def scale_w2s(self, d: float) -> float:
@@ -174,6 +244,15 @@ class Canvas(QWidget):
 
     # ─── モード変更 ──────────────────────────────────────────
     def set_mode(self, mode: str):
+        """編集モードを切り替える。
+
+        描画中の折れ線・円のラバー線状態をリセットし、カーソルを更新する。
+
+        Parameters
+        ----------
+        mode : str
+            MODE_SELECT / MODE_LINE / MODE_CIRCLE のいずれか。
+        """
         self.mode = mode
         self._line_first_pt = None
         self._last_line     = None
@@ -187,10 +266,21 @@ class Canvas(QWidget):
 
     # ─── Undo ────────────────────────────────────────────────
     def push_undo(self):
+        """現在のシーン状態を Undo スタックに積む。
+
+        破壊的操作（ドラッグ開始・図形追加・削除）の直前に呼ぶ。
+        スタックは最大 500 件で、超過分は古い方から自動削除される。
+        """
         state = self.scene.to_dict()
         self._undo_stack.append(state)
 
     def undo(self):
+        """直前の push_undo 時点へシーンを復元する。
+
+        スタックが空のとき何もしない。
+        復元後は選択・ハンドルをクリアして ``selection_changed`` と
+        ``scene_changed`` を emit する。
+        """
         if not self._undo_stack:
             return
         state = self._undo_stack.pop()
@@ -203,12 +293,27 @@ class Canvas(QWidget):
 
     # ─── 選択 ────────────────────────────────────────────────
     def set_selection(self, objs: list):
+        """選択リストを外部から設定する。
+
+        右パネル等、キャンバス外のコードから選択を変更したいときに使う。
+        ハンドルを再構築して ``selection_changed`` を emit する。
+
+        Parameters
+        ----------
+        objs : list
+            新しく選択する図形オブジェクトのリスト。
+        """
         self._selected = list(objs)
         self._rebuild_handles()
         self.selection_changed.emit(self._selected)
         self.update()
 
     def _rebuild_handles(self):
+        """選択図形に対応するハンドルを再構築して ``_handles`` リストを更新する。
+
+        クロソイドに吸着（snap）または分割（split）された端点はハンドルから除外する。
+        Line の接続共有点（``LineConnection.shared_point``）は重複して追加しない。
+        """
         self._handles.clear()
         seen_connections = set()
 
@@ -286,6 +391,18 @@ class Canvas(QWidget):
 
     # ─── ヒットテスト ─────────────────────────────────────────
     def _hit_handle(self, sw: Vec2) -> Optional[Handle]:
+        """スクリーン座標 sw に HIT_DIST (8px) 以内のハンドルを返す。
+
+        Parameters
+        ----------
+        sw : Vec2
+            スクリーン座標（ピクセル）。
+
+        Returns
+        -------
+        Handle or None
+            最初にヒットしたハンドル。なければ None。
+        """
         px = HIT_DIST
         for h in self._handles:
             sp = self.w2s(h.pos)
@@ -339,18 +456,83 @@ class Canvas(QWidget):
         return None
 
     def _hit_polyline(self, pts: list[Vec2], w: Vec2, tol: float) -> bool:
+        """折れ線（点列）が点 w から tol 以内を通るか判定する。
+
+        Parameters
+        ----------
+        pts : list[Vec2]
+            折れ線を構成するワールド座標の点列。
+        w : Vec2
+            判定するワールド座標。
+        tol : float
+            許容距離 [m]（ワールド単位）。
+
+        Returns
+        -------
+        bool
+            いずれかの線分が tol 以内に入れば True。
+        """
         for i in range(len(pts) - 1):
             if self._dist_point_segment(w, pts[i], pts[i+1]) < tol:
                 return True
         return False
 
     def _hit_segment_line(self, a: Vec2, b: Vec2, w: Vec2, tol: float) -> bool:
+        """線分 a-b が点 w から tol 以内か判定する。
+
+        Parameters
+        ----------
+        a, b : Vec2
+            線分の両端点（ワールド座標）。
+        w : Vec2
+            判定するワールド座標。
+        tol : float
+            許容距離 [m]（ワールド単位）。
+
+        Returns
+        -------
+        bool
+        """
         return self._dist_point_segment(w, a, b) < tol
 
     def _hit_infinite_line(self, ln: Line, w: Vec2, tol: float) -> bool:
+        """無限直線 ln が点 w から tol 以内か判定する。
+
+        Parameters
+        ----------
+        ln : Line
+            判定する直線。
+        w : Vec2
+            判定するワールド座標。
+        tol : float
+            許容距離 [m]（ワールド単位）。
+
+        Returns
+        -------
+        bool
+        """
         return ln.distance_to(w) < tol
 
     def _hit_arc(self, ci: Circle, arc: Arc, w: Vec2, tol: float) -> bool:
+        """円弧 arc が点 w から tol 以内か判定する。
+
+        円弧の半径方向距離と角度範囲の両方を確認する。
+
+        Parameters
+        ----------
+        ci : Circle
+            arc が属する円。
+        arc : Arc
+            判定する円弧。
+        w : Vec2
+            判定するワールド座標。
+        tol : float
+            半径方向の許容距離 [m]（ワールド単位）。
+
+        Returns
+        -------
+        bool
+        """
         d = math.hypot(w.x - ci.center.x, w.y - ci.center.y)
         if abs(d - ci.radius) > tol:
             return False
@@ -358,12 +540,41 @@ class Canvas(QWidget):
         return self._angle_in_arc(ang, arc.angle_start, arc.angle_end)
 
     def _angle_in_arc(self, ang: float, a_start: float, a_end: float) -> bool:
+        """角度 ang が [a_start, a_end] の CCW 弧範囲に含まれるか判定する。
+
+        Parameters
+        ----------
+        ang : float
+            判定する角度 [rad]。
+        a_start : float
+            弧の開始角度 [rad]（ワールド座標、反時計正）。
+        a_end : float
+            弧の終了角度 [rad]（ワールド座標、反時計正）。
+
+        Returns
+        -------
+        bool
+        """
         span = (a_end - a_start) % (2 * math.pi)
         diff = (ang - a_start) % (2 * math.pi)
         return diff <= span
 
     @staticmethod
     def _dist_point_segment(p: Vec2, a: Vec2, b: Vec2) -> float:
+        """点 p から線分 a-b への最短距離を返す。
+
+        Parameters
+        ----------
+        p : Vec2
+            判定する点。
+        a, b : Vec2
+            線分の両端点。
+
+        Returns
+        -------
+        float
+            最短距離 [m]。a == b のとき |p - a|。
+        """
         ab = b - a
         l2 = ab.dot(ab)
         if l2 < 1e-24:
@@ -454,6 +665,16 @@ class Canvas(QWidget):
         return base
 
     def _draw_grid(self, painter: QPainter):
+        """グリッドを描画する。
+
+        グリッド間隔はズームレベルに応じて 1/2/5/10 の系列から自動選択する
+        （スクリーン上で約 60px 以上の間隔を確保）。
+
+        Parameters
+        ----------
+        painter : QPainter
+            描画先のペインター。
+        """
         pen = QPen(QColor(50, 55, 60))
         pen.setWidth(1)
         painter.setPen(pen)
@@ -481,6 +702,17 @@ class Canvas(QWidget):
             y += grid
 
     def _draw_line_ref(self, painter: QPainter, ln: Line):
+        """直線参照線（破線）と参照点マーカー（小円）を描画する。
+
+        直線は画面端を超える大きなスケールで両端を求め、画面端まで引き伸ばす。
+
+        Parameters
+        ----------
+        painter : QPainter
+            描画先のペインター。
+        ln : Line
+            描画する直線。
+        """
         color = self._color_for(ln, C_LINE_REF)
         pen = QPen(color, 1, Qt.PenStyle.DashLine)
         painter.setPen(pen)
@@ -503,12 +735,32 @@ class Canvas(QWidget):
             painter.drawEllipse(sp, r, r)
 
     def _draw_segment(self, painter: QPainter, seg: Segment):
+        """線分を描画する。
+
+        Parameters
+        ----------
+        painter : QPainter
+            描画先のペインター。
+        seg : Segment
+            描画する線分。
+        """
         color = self._color_for(seg, C_SEGMENT)
         pen = QPen(color, 3)
         painter.setPen(pen)
         painter.drawLine(self.w2s(seg.start), self.w2s(seg.end))
 
     def _draw_circle(self, painter: QPainter, ci: Circle):
+        """円を描画する。
+
+        円弧を持つ円は薄い点線、持たない円は通常の実線で描画する。
+
+        Parameters
+        ----------
+        painter : QPainter
+            描画先のペインター。
+        ci : Circle
+            描画する円。
+        """
         has_arc = bool(ci.arcs)
         if has_arc:
             color = self._color_for(ci, C_CIRCLE_DIM)
@@ -523,6 +775,18 @@ class Canvas(QWidget):
         painter.drawEllipse(QRectF(c.x()-r, c.y()-r, 2*r, 2*r))
 
     def _draw_arc(self, painter: QPainter, arc: Arc):
+        """円弧を描画する。
+
+        Qt の ``drawArc`` はワールド座標（y 上向き、反時計正）の角度をそのまま使える。
+        w2s の y 反転と Qt の角度定義が打ち消し合うため、符号反転は不要。
+
+        Parameters
+        ----------
+        painter : QPainter
+            描画先のペインター。
+        arc : Arc
+            描画する円弧。
+        """
         ci = arc.circle
         color = self._color_for(arc, C_ARC)
         pen = QPen(color, 4)
@@ -541,6 +805,18 @@ class Canvas(QWidget):
                         int(round(span_ang_deg  * 16)))
 
     def _draw_clothoid(self, painter: QPainter, clo: Clothoid):
+        """クロソイド曲線と接点マーカー（菱形）を描画する。
+
+        ``is_valid=False`` または ``points`` が空のとき何も描画しない。
+        接点マーカーはドラッグ不可の表示専用で、ハンドルとは別に描画する。
+
+        Parameters
+        ----------
+        painter : QPainter
+            描画先のペインター。
+        clo : Clothoid
+            描画するクロソイド。
+        """
         if not clo.is_valid or not clo.points:
             return
         color = self._color_for(clo, C_CLOTHOID)
@@ -576,6 +852,16 @@ class Canvas(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)   # 後続の描画に影響しないようリセット
 
     def _draw_rubber(self, painter: QPainter):
+        """ラバー線（描画中の仮表示）を描画する。
+
+        直線モードでは始点から現在マウス位置への破線を、
+        円モードでは中心から現在半径の円を描画する。
+
+        Parameters
+        ----------
+        painter : QPainter
+            描画先のペインター。
+        """
         pen = QPen(QColor(200, 200, 200, 128), 1, Qt.PenStyle.DashLine)
         painter.setPen(pen)
         if self.mode == self.MODE_LINE and self._line_first_pt and self._rubber_end:
@@ -586,6 +872,13 @@ class Canvas(QWidget):
             painter.drawEllipse(QRectF(c.x()-r, c.y()-r, 2*r, 2*r))
 
     def _draw_handles(self, painter: QPainter):
+        """選択中の図形のハンドルを円として描画する。
+
+        Parameters
+        ----------
+        painter : QPainter
+            描画先のペインター。
+        """
         for h in self._handles:
             sp = self.w2s(h.pos)
             painter.setPen(QPen(QColor(0,0,0,180), 1))
@@ -673,6 +966,17 @@ class Canvas(QWidget):
                 self._rubber_radius  = 0.0
 
     def mouseMoveEvent(self, event):
+        """マウス移動イベントを処理する。
+
+        パン中はオフセットを更新する。ドラッグ中は移動量が 2px を超えた時点で
+        :meth:`_do_drag` を呼ぶ。直線/円モードのラバー線を更新し、
+        ホバー対象を更新して ``hover_changed`` と ``mouse_world_pos`` を emit する。
+
+        Parameters
+        ----------
+        event : QMouseEvent
+            PySide6 マウスイベント。
+        """
         pos = event.position()
         sw  = Vec2(pos.x(), pos.y())
         w   = self.s2w(sw.x, sw.y)
@@ -778,6 +1082,16 @@ class Canvas(QWidget):
             self._drag_start_screen = None
 
     def wheelEvent(self, event):
+        """マウスホイールによるズームを処理する。
+
+        ホイール上方向で 1.15 倍、下方向で 1/1.15 倍にスケールする。
+        マウスカーソル位置を中心にズームする（オフセットも更新）。
+
+        Parameters
+        ----------
+        event : QWheelEvent
+            PySide6 ホイールイベント。
+        """
         delta = event.angleDelta().y()
         factor = 1.15 if delta > 0 else 1/1.15
         pos = event.position()
@@ -789,6 +1103,17 @@ class Canvas(QWidget):
         self.update()
 
     def keyPressEvent(self, event):
+        """キー押下イベントを処理する。
+
+        * ``Escape``: 直線/円モードの描画中状態をリセットする。
+        * ``Delete``: 選択中の図形を削除する（:meth:`_delete_selected`）。
+        * ``Ctrl+Z``: Undo（:meth:`undo`）。
+
+        Parameters
+        ----------
+        event : QKeyEvent
+            PySide6 キーイベント。
+        """
         k = event.key()
         if k == Qt.Key.Key_Escape:
             self._line_first_pt = None
@@ -806,6 +1131,17 @@ class Canvas(QWidget):
 
     # ─── 直線モード ──────────────────────────────────────────
     def _line_click(self, w: Vec2):
+        """直線モードのクリック処理。
+
+        1 回目のクリックで始点を記憶し、2 回目のクリックで Line+Segment を生成する。
+        連続描画中（``_last_line`` が設定済み）は :meth:`_connect_polyline` で
+        前の直線と折れ線接続する。
+
+        Parameters
+        ----------
+        w : Vec2
+            クリック位置のワールド座標。
+        """
         if self._line_first_pt is None:
             self._line_first_pt = w
         else:
@@ -828,9 +1164,18 @@ class Canvas(QWidget):
             self.update()
 
     def _connect_polyline(self, a: Line, b: Line):
-        """
-        折れ線接続: 2直線の交点を共有参照点として双方を更新。
-        「a の終端側」と「b の始端側」を交点に合わせる。
+        """2直線を折れ線接続する。
+
+        2直線の交点を共有参照点として双方の参照点を更新し、
+        ``LineConnection(kind="polyline")`` を生成して両直線に設定する。
+        「a の交点に近い側」と「b の交点に近い側」を交点に合わせる。
+
+        Parameters
+        ----------
+        a : Line
+            接続する直線（前の直線）。
+        b : Line
+            接続する直線（次の直線）。
         """
         ix = a.intersect(b)
         if ix is None:
@@ -872,6 +1217,17 @@ class Canvas(QWidget):
 
     # ─── ドラッグ処理 ─────────────────────────────────────────
     def _do_drag(self, w: Vec2):
+        """ハンドルドラッグの各フレーム処理。
+
+        ``_drag_obj`` と ``_drag_tag`` の組み合わせでドラッグ対象を識別し、
+        ワールド座標 w に向けて図形を更新する。更新後は関連する Clothoid や
+        スムーズ接続の円にも変更を伝播し、``scene_changed`` を emit する。
+
+        Parameters
+        ----------
+        w : Vec2
+            現在のマウスのワールド座標。
+        """
         obj = self._drag_obj
         tag = self._drag_tag
 
@@ -942,7 +1298,19 @@ class Canvas(QWidget):
         self.update()
 
     def _propagate_line(self, ln: Line, _updating_smooth: bool = False):
-        """直線変更をクロソイドと、スムーズ接続の円に伝播"""
+        """直線 ln の変更をクロソイドとスムーズ接続の円に伝播する。
+
+        ``ln`` を参照する全クロソイドの ``compute()`` を呼び出す。
+        ``_updating_smooth=False`` のとき、スムーズ接続の円も
+        :meth:`_update_smooth_circle` で更新する（無限再帰を防ぐフラグ）。
+
+        Parameters
+        ----------
+        ln : Line
+            変更された直線。
+        _updating_smooth : bool, optional
+            True のとき smooth 円の更新をスキップする（内部再帰防止用）。
+        """
         for clo in self.scene.clothoids:
             if clo.line is ln:
                 clo.compute()
@@ -1053,6 +1421,14 @@ class Canvas(QWidget):
 
     # ─── 削除 ────────────────────────────────────────────────
     def _delete_selected(self):
+        """選択中の全図形を削除する。
+
+        :meth:`push_undo` で削除前の状態を保存してから削除する。
+        型に応じて Scene の適切な remove メソッドを呼ぶ（Line/Circle/Clothoid）か、
+        親コンテナから直接削除する（Segment→Line.segments、Arc→Circle.arcs）。
+        削除後は選択・ハンドルをクリアして ``selection_changed`` と
+        ``scene_changed`` を emit する。
+        """
         if not self._selected:
             return
         self.push_undo()

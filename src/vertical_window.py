@@ -89,6 +89,18 @@ class ProfileCanvas(QWidget):
     CB_H     = 26  # カラーバー高さ [px]
 
     def __init__(self, scene: Scene, parent=None):
+        """ProfileCanvas を初期化する。
+
+        ビュー変換パラメータ・Undo/Redo スタック・ドラッグ状態を初期化し、
+        マウス追跡を有効にする。実際のデータは :meth:`set_plan_elements` で設定する。
+
+        Parameters
+        ----------
+        scene : Scene
+            ニックネーム参照に使う現在の Scene オブジェクト。
+        parent : QWidget, optional
+            親ウィジェット。
+        """
         super().__init__(parent)
         self.scene = scene
         self._plan_elements: list = []
@@ -1433,11 +1445,26 @@ class VerticalAlignmentWindow(QMainWindow):
 
     # ─── 選択変更 ────────────────────────────────────────────
     def _on_selection_changed(self, obj):
+        """ProfileCanvas の selection_changed シグナルを受け取り、パネルを更新する。
+
+        キャンバスを再描画してからプロパティパネルを再構築する。
+
+        Parameters
+        ----------
+        obj : GradeLine or VerticalCurve or None
+            新しく選択された図形。None のとき選択解除。
+        """
         self._canvas.update()
         self._refresh_props()
 
     # ─── プロパティ表示 ──────────────────────────────────────
     def _clear_props(self):
+        """右パネルのプロパティレイアウト内の全ウィジェットを即時削除する。
+
+        ``setParent(None)`` でウィジェットツリーから切り離してから
+        ``deleteLater()`` を呼ぶことで、直後の ``_refresh_props`` での
+        ``findChildren`` が古いウィジェットを返す問題を防ぐ。
+        """
         while self._prop_layout.count():
             item = self._prop_layout.takeAt(0)
             w = item.widget()
@@ -1446,6 +1473,17 @@ class VerticalAlignmentWindow(QMainWindow):
                 w.deleteLater()
 
     def _refresh_props(self):
+        """プロパティパネルを選択状態に合わせて一から再構築する。
+
+        :meth:`_clear_props` で既存ウィジェットをすべて削除してから再生成する。
+        末尾では選択状態によらず常に :meth:`_build_grade_list` を呼ぶ。
+
+        選択図形に応じて呼ぶメソッドを切り替える:
+
+        * None: 「図形を選択してください」ラベルを表示。
+        * GradeLine: :meth:`_build_grade_props`。
+        * VerticalCurve: :meth:`_build_vc_props`。
+        """
         self._clear_props()
         sel = self._canvas._selected
 
@@ -1464,6 +1502,18 @@ class VerticalAlignmentWindow(QMainWindow):
         self._build_grade_list()
 
     def _build_grade_props(self, gl: GradeLine):
+        """選択された GradeLine のプロパティフォームを右パネルに構築する。
+
+        始点・終点の距離と標高をスピンボックスで編集できる。値変更時は
+        :meth:`ProfileCanvas._snap_grade_lines` と
+        :meth:`ProfileCanvas._recalc_vc_gradients` を連動して呼ぶ。
+        次の GradeLine が存在し縦断曲線がない場合は「縦断曲線を挿入」ボタンも表示する。
+
+        Parameters
+        ----------
+        gl : GradeLine
+            プロパティを表示する勾配直線。
+        """
         grp = QGroupBox("勾配直線プロパティ")
         lay = QVBoxLayout(grp)
         lay.addWidget(QLabel(f"ID: {gl.id}"))
@@ -1613,6 +1663,17 @@ class VerticalAlignmentWindow(QMainWindow):
         self._prop_layout.addWidget(grp)
 
     def _build_vc_props(self, vc: VerticalCurve):
+        """選択された VerticalCurve のプロパティフォームを右パネルに構築する。
+
+        PVI 距離・標高・前後勾配・勾配変化量・VPC/VPT 座標・K 値を表示する。
+        曲線長 L のスピンボックスで編集でき、変更時は前後 GradeLine の端点を
+        VPC/VPT に追従させる。「縦断曲線を削除」ボタンも提供する。
+
+        Parameters
+        ----------
+        vc : VerticalCurve
+            プロパティを表示する縦断曲線。
+        """
         grp = QGroupBox("縦断曲線プロパティ")
         lay = QVBoxLayout(grp)
 
@@ -1721,10 +1782,6 @@ class VerticalAlignmentWindow(QMainWindow):
         -----
         gl が最後の GradeLine（次の GradeLine がない）場合は何もしない。
         挿入後に選択をリセットして _refresh_props を呼ぶ。
-        """
-        """
-        勾配直線 gl の終点（= 次の勾配直線の始点 = PVI）に縦断曲線を挿入。
-        勾配直線の端点は変更しない。PVI は gl.dist_end / gl.elev_end。
         """
         idx = self._canvas._grade_lines.index(gl)
         if idx + 1 >= len(self._canvas._grade_lines):

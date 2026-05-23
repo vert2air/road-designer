@@ -62,6 +62,19 @@ def _elev_at_dist(dist: float, profiles: list,
                   offsets: list) -> float:
     """チェーン累積距離 dist に対する標高を返す（縦断曲線優先）。
 
+    ``build_centerline`` が生成した点列の z 値を参照するよりも、
+    任意の累積距離に対して標高を求める必要がある処理（将来の拡張用）向けに提供する。
+    現在は ``build_centerline`` 内部で ``ElementProfile.elev_at`` を直接呼んでいる。
+
+    Parameters
+    ----------
+    dist : float
+        チェーン始端からの累積距離 [m]。
+    profiles : list[ElementProfile]
+        チェーン順に並んだ ElementProfile のリスト。
+    offsets : list[float]
+        各 ElementProfile の始端累積距離 [m]。profiles と同じ長さ。
+
     Returns
     -------
     float
@@ -131,7 +144,19 @@ def build_car_box(length: float = 4.0, width: float = 2.0,
 
 
 def _elem_endpoints_xy(obj):
-    """obj の始点・終点の Vec2 タプルを返す。取得できない場合は None。"""
+    """obj の始点・終点の Vec2 タプルを返す。
+
+    Parameters
+    ----------
+    obj : Segment or Arc or Clothoid or any
+        始終点を取得する平面線形要素。
+
+    Returns
+    -------
+    tuple[Vec2, Vec2] or None
+        (始点, 終点) の Vec2 タプル。Clothoid で is_valid=False または
+        _line_pt/_circle_pt が未設定のとき、および非対応型のときは None。
+    """
     if isinstance(obj, Segment):
         return obj.start, obj.end
     if isinstance(obj, Arc):
@@ -316,7 +341,22 @@ def build_road_mesh(centerline: list[tuple],
 
 def build_center_line_node(centerline: list[tuple],
                             color_override: LColor = None) -> GeomNode:
-    """センターラインを GeomNode として返す"""
+    """中心線を LineStrips の GeomNode として返す。
+
+    路面メッシュとの Z-fighting を防ぐため、各点の z を +0.05m オフセットして描画する。
+
+    Parameters
+    ----------
+    centerline : list[tuple]
+        ``build_centerline`` が返す [(x, y, z, dist), ...] 形式の点列。
+    color_override : LColor, optional
+        線の色。None のとき黄色系 LColor(1, 0.9, 0.1, 1)。
+
+    Returns
+    -------
+    GeomNode
+        1 本の LineStrips を含む GeomNode。
+    """
 
     fmt   = GeomVertexFormat.get_v3c4()
     vdata = GeomVertexData("cl", fmt, Geom.UH_static)

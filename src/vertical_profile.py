@@ -91,7 +91,15 @@ class ElementProfile:
     vertical_curves: list['VerticalCurve'] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        """すべてのフィールドを含む辞書に変換する（JSON シリアライズ用）。"""
+        """すべてのフィールドを含む辞書に変換する（JSON シリアライズ用）。
+
+        Returns
+        -------
+        dict
+            id・element_id・element_type・plan_length・reversed_flag・
+            elev_start・elev_end・grade_lines・vertical_curves をキーとする辞書。
+            grade_lines / vertical_curves は各要素の to_dict() リスト。
+        """
         return {
             "id":              self.id,
             "element_id":      self.element_id,
@@ -106,6 +114,20 @@ class ElementProfile:
 
     @staticmethod
     def from_dict(d: dict) -> 'ElementProfile':
+        """辞書から ElementProfile を復元する（JSON デシリアライズ用）。
+
+        Parameters
+        ----------
+        d : dict
+            to_dict() が返した辞書、またはそれと互換のマッピング。
+            存在しないキーはデフォルト値（id=new_id(), element_id=-1 など）で補完する。
+
+        Returns
+        -------
+        ElementProfile
+            復元されたインスタンス。grade_lines / vertical_curves の各要素も
+            GradeLine.from_dict / VerticalCurve.from_dict で復元される。
+        """
         ep = ElementProfile()
         ep.id            = d.get("id", new_id())
         ep.element_id    = d.get("element_id", -1)
@@ -159,9 +181,21 @@ class ElementProfile:
 
 @dataclass
 class VerticalAlignment:
-    """
-    後方互換用: 旧フォーマットの grade_lines / vertical_curves を保持する。
+    """後方互換用の縦断線形データコンテナ。
+
+    旧フォーマットで保存された grade_lines / vertical_curves を読み込むためだけに使う。
     新規データは ElementProfile を使う。
+
+    Attributes
+    ----------
+    id : int
+        グローバルユニーク ID。
+    nickname : str
+        ユーザーが付けた任意の名前。
+    grade_lines : list[GradeLine]
+        勾配直線のリスト。
+    vertical_curves : list[VerticalCurve]
+        縦断曲線のリスト。
     """
     id: int = field(default_factory=new_id)
     nickname: str = ""
@@ -169,6 +203,14 @@ class VerticalAlignment:
     vertical_curves: list['VerticalCurve'] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        """すべてのフィールドを含む辞書に変換する（JSON シリアライズ用）。
+
+        Returns
+        -------
+        dict
+            id・nickname・grade_lines・vertical_curves をキーとする辞書。
+            grade_lines / vertical_curves は各要素の to_dict() リスト。
+        """
         return {
             "id":              self.id,
             "nickname":        self.nickname,
@@ -178,6 +220,19 @@ class VerticalAlignment:
 
     @staticmethod
     def from_dict(d: dict) -> 'VerticalAlignment':
+        """辞書から VerticalAlignment を復元する（JSON デシリアライズ用）。
+
+        Parameters
+        ----------
+        d : dict
+            to_dict() が返した辞書、またはそれと互換のマッピング。
+            存在しないキーはデフォルト値（id=new_id(), nickname='', リスト=[]）で補完する。
+
+        Returns
+        -------
+        VerticalAlignment
+            復元されたインスタンス。
+        """
         va = VerticalAlignment()
         va.id             = d.get("id", new_id())
         va.nickname       = d.get("nickname", "")
@@ -228,13 +283,35 @@ class GradeLine:
             return 0.0
         return (self.elev_end - self.elev_start) / dx * 100
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
+        """数値フィールドを含む辞書に変換する（JSON シリアライズ用）。
+
+        next_curve / prev_curve はメモリ上の参照のみで保存対象外。
+
+        Returns
+        -------
+        dict
+            id・dist_start・elev_start・dist_end・elev_end をキーとする辞書。
+        """
         return {"id": self.id,
                 "dist_start": self.dist_start, "elev_start": self.elev_start,
                 "dist_end": self.dist_end, "elev_end": self.elev_end}
 
     @staticmethod
-    def from_dict(d):
+    def from_dict(d: dict) -> 'GradeLine':
+        """辞書から GradeLine を復元する（JSON デシリアライズ用）。
+
+        Parameters
+        ----------
+        d : dict
+            to_dict() が返した辞書。id・dist_start・elev_start・
+            dist_end・elev_end キーが必須。
+
+        Returns
+        -------
+        GradeLine
+            復元されたインスタンス。next_curve / prev_curve は None のまま。
+        """
         g = GradeLine()
         g.id = d["id"]
         g.dist_start = d["dist_start"]; g.elev_start = d["elev_start"]
@@ -332,13 +409,34 @@ class VerticalCurve:
             return float('nan')
         return self.vpc_elev + self.g1 / 100 * x + (self.g2 - self.g1) / (2 * self.length) / 100 * x ** 2
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
+        """すべてのフィールドを含む辞書に変換する（JSON シリアライズ用）。
+
+        Returns
+        -------
+        dict
+            id・pvi_dist・pvi_elev・g1・g2・length・prev_line_id・
+            next_line_id をキーとする辞書。
+        """
         return {"id": self.id, "pvi_dist": self.pvi_dist, "pvi_elev": self.pvi_elev,
                 "g1": self.g1, "g2": self.g2, "length": self.length,
                 "prev_line_id": self.prev_line_id, "next_line_id": self.next_line_id}
 
     @staticmethod
-    def from_dict(d):
+    def from_dict(d: dict) -> 'VerticalCurve':
+        """辞書から VerticalCurve を復元する（JSON デシリアライズ用）。
+
+        Parameters
+        ----------
+        d : dict
+            to_dict() が返した辞書。辞書のキーをそのままインスタンス属性に
+            setattr で書き込む。存在しないキーはデフォルト値のまま残る。
+
+        Returns
+        -------
+        VerticalCurve
+            復元されたインスタンス。
+        """
         v = VerticalCurve()
         for k in d:
             setattr(v, k, d[k])
@@ -350,6 +448,12 @@ def make_empty_profile() -> 'ElementProfile':
 
     選択なしで縦断線形ウィンドウを開いたとき等、
     平面線形要素と対応しないプロファイルが必要な場合に使う。
+
+    Returns
+    -------
+    ElementProfile
+        すべてのフィールドがデフォルト値（element_id=-1、plan_length=0.0 など）の
+        新規インスタンス。
     """
     return ElementProfile()
 

@@ -53,6 +53,11 @@ def _elem_fwd_vec(elem: dict, forward: bool) -> tuple[float, float]:
         `_elem_graph` のノード辞書（"points_xy", "start", "end" キーを持つ）。
     forward : bool
         True のとき始点→終点方向、False のとき終点→始点方向。
+
+    Returns
+    -------
+    tuple[float, float]
+        進行方向の単位ベクトル (dx, dy)。
     """
     pts = elem.get("points_xy") or []
     if len(pts) >= 2:
@@ -67,6 +72,31 @@ def _elem_fwd_vec(elem: dict, forward: bool) -> tuple[float, float]:
 
 
 class RoadViewer(ShowBase):
+    """Panda3D による道路 3D 走行ビューア。
+
+    平面線形チェーンの 3D 中心線上を車が自動走行する。
+    オートドライブモード（``_auto_drive=True``）では ``elem_graph`` を参照して
+    交差点をランダムに選択しながら走行を継続する。
+    ワープ境界（WARP_BOUNDARY）を超えたとき、パックマン式のトーラス空間ワープで
+    対向端にテレポートして同方向に走行を続ける。
+
+    周囲車両（トラフィック）は自車と同じ elem_graph を走り、ランダムな速度係数で
+    個別に動く（``_traffic`` リスト）。
+
+    Attributes
+    ----------
+    cl : list[tuple]
+        走行チェーンの初期 3D 中心線 [(x, y, z, dist), ...]。
+    speed : float
+        走行速度 [m/s]。
+    view_mode : str
+        カメラモード。"follow"（追従）/ "onboard"（運転席）/
+        "overview"（追従俯瞰）/ "overview_fixed"（固定俯瞰）。
+    paused : bool
+        True のとき走行を一時停止する。
+    WARP_BOUNDARY : float
+        ワープ境界距離 [m]。|x| または |y| がこの値を超えたらワープする。
+    """
     SPEED_DEFAULT = 30.0   # m/s
     CAM_BEHIND    = 20.0   # 外部視点: 後方距離
     CAM_ABOVE     = 6.0    # 外部視点: 高さ
@@ -151,6 +181,13 @@ class RoadViewer(ShowBase):
     ROAD_SURFACE = True   # 路面表示の初期状態
 
     def _build_scene(self):
+        """3D シーンを構築する。
+
+        背景要素（``disp_segs``）と走行チェーン（``cl``）それぞれについて
+        道路メッシュ・中心線・白線・橋脚を生成して render に追加する。
+        全要素の重心を中心とした地面平板も追加する。
+        最後に自車直方体と周囲車両を初期配置する。
+        """
         self._surface_nodes = []   # 路面メッシュノードのリスト（on/off用）
 
         # 全要素の背景道路メッシュ（要素ごとに独立して生成）
@@ -347,7 +384,28 @@ class RoadViewer(ShowBase):
         self._update_traffic_car_pose(car_state)
 
     def _find_next_candidates(self, cur_id, ex, ey, exit_clo_ref):
-        """_ad_advance と同じ隣接候補探索を返す（(elem, forward) のリスト）。"""
+        """隣接する走行候補要素を検索して返す。
+
+        ``_ad_advance`` と同じロジックを共通化したメソッド。
+        周囲車両のチェーン遷移（:meth:`_step_traffic_car`、:meth:`_add_traffic_car`）
+        からも呼ばれる。
+
+        Parameters
+        ----------
+        cur_id : int or None
+            現在走行中の要素 ID（この要素は候補から除外する）。
+        ex, ey : float
+            現在チェーン末端のワールド座標。
+        exit_clo_ref : dict or None
+            現在要素の末端の Clothoid 接点参照。
+            ``{"clothoid_id": int, "side": "line"|"circle"}`` 形式。
+            None のとき座標距離（AD_TOL 以内）で接続判定する。
+
+        Returns
+        -------
+        list[tuple[dict, bool]]
+            ``(elem, forward)`` のタプルリスト。forward=True は正順走行。
+        """
         import math
         cands = []
         for elem in self._elem_graph:
@@ -372,7 +430,26 @@ class RoadViewer(ShowBase):
         return cands
 
     def _make_elem_cl(self, elem, forward):
-        """_ad_start_elem と同じロジックで (cl, total) を返す。"""
+        """要素辞書から 3D 中心線を生成して (cl, total) を返す。
+
+        :meth:`_ad_start_elem` と同じロジックを共通化したメソッド。
+        周囲車両のチェーン遷移（:meth:`_step_traffic_car`、:meth:`_add_traffic_car`）
+        からも呼ばれる。
+
+        Parameters
+        ----------
+        elem : dict
+            ``elem_graph`` のノード辞書
+            （``plan_length``, ``heights``, ``points_xy``, ``start``, ``end`` キー）。
+        forward : bool
+            True のとき正順（start→end）、False のとき逆順（end→start）で生成する。
+
+        Returns
+        -------
+        tuple[list[tuple], float]
+            ``(cl, total)`` のタプル。cl は [(x, y, z, dist), ...] 形式、
+            total は計画延長 [m]。
+        """
         import math
         pl = elem["plan_length"]
         heights = elem.get("heights", [[0.0,0.0],[pl,0.0]])
@@ -413,7 +490,16 @@ class RoadViewer(ShowBase):
         return new_cl, pl
 
     def _update_traffic_car_pose(self, car: dict):
-        """周囲車両 1 台の位置・姿勢を更新する。"""
+        """周囲車両 1 台の NodePath の位置・姿勢を更新する。
+
+        :meth:`_interp_cl` でチェーン上の位置・方向を求め、
+        Panda3D の座標系（heading/pitch/roll）に変換して setHpr する。
+
+        Parameters
+        ----------
+        car : dict
+            ``_traffic`` リストの要素。"np"・"cl"・"dist" キーを使う。
+        """
         import math
         pos, fwd, _ = self._interp_cl(car["cl"], car["dist"])
         np_root = car["np"]
@@ -423,7 +509,19 @@ class RoadViewer(ShowBase):
         np_root.setHpr(heading, pitch, 0)
 
     def _step_traffic_car(self, car: dict, dt: float):
-        """周囲車両 1 台を 1 フレーム進める。"""
+        """周囲車両 1 台を 1 フレーム分進める。
+
+        チェーン末端を超えたとき :meth:`_find_next_candidates` で次の要素を探し、
+        候補があればランダムに選択して :meth:`_make_elem_cl` で新しい中心線を生成する。
+        候補がない場合はワープ処理を行う。
+
+        Parameters
+        ----------
+        car : dict
+            ``_traffic`` リストの要素。
+        dt : float
+            フレーム経過時間 [s]。
+        """
         import math, random
 
         car["dist"] += self.speed * car.get("speed_mul", 1.0) * dt
@@ -560,6 +658,13 @@ class RoadViewer(ShowBase):
             car["np"].removeNode()
 
     def _apply_surface_visible(self, visible: bool):
+        """路面メッシュノードの表示/非表示を一括切り替える。
+
+        Parameters
+        ----------
+        visible : bool
+            True のとき show()、False のとき hide() を呼ぶ。
+        """
         for np in self._surface_nodes:
             if visible:
                 np.show()
@@ -567,10 +672,16 @@ class RoadViewer(ShowBase):
                 np.hide()
 
     def _toggle_surface(self):
+        """R キーで路面メッシュの表示/非表示を切り替える。"""
         self.ROAD_SURFACE = not self.ROAD_SURFACE
         self._apply_surface_visible(self.ROAD_SURFACE)
 
     def _setup_lighting(self):
+        """環境光と平行光（太陽光）をシーンに設定する。
+
+        環境光: 明度 0.45 のグレー（全方向一様照明）。
+        平行光: 明度 0.85 のやや暖色（HPR=45/-45/0 の斜め上方から照射）。
+        """
         alight = AmbientLight("ambient")
         alight.set_color(LColor(0.45, 0.45, 0.45, 1))
         self.render.set_light(self.render.attachNewNode(alight))
@@ -582,12 +693,29 @@ class RoadViewer(ShowBase):
         self.render.set_light(dlnp)
 
     def _setup_hud(self):
+        """速度・距離・方位などを表示する HUD テキストを初期化する。
+
+        ``OnscreenText`` を左上に配置し、``_update_hud`` でフレームごとに更新する。
+        """
         self.hud = OnscreenText(
             text="", pos=(-1.3, 0.9), scale=0.05,
             fg=(1,1,1,1), shadow=(0,0,0,1),
             align=TextNode.ALeft, mayChange=True)
 
     def _setup_keys(self):
+        """キーバインドを登録する。
+
+        * ``Escape``: アプリ終了
+        * ``V``: カメラモード切替（follow ↔ onboard）
+        * ``O``: 俯瞰視点サイクル（follow/onboard → overview → overview_fixed → follow）
+        * ``R``: 路面メッシュ表示切替
+        * ``Space``: 一時停止/再開
+        * ``A``: オートドライブモード切替
+        * ``↑``/``↓``: 速度 ±10 m/s
+        * ``←``/``→``: 100m 後退/前進
+        * ``P``/``Shift+P``: 周囲車両 1 台追加/削除
+        * ``I``/``K``: 俯瞰カメラ近づく/遠ざかる
+        """
         self.accept("escape",       sys.exit)
         self.accept("v",            self._toggle_view)
         self.accept("o",            self._toggle_overview)
@@ -607,6 +735,22 @@ class RoadViewer(ShowBase):
 
     # ─── 走行処理 ────────────────────────────────────────────
     def _move_task(self, task):
+        """毎フレーム呼ばれる Panda3D タスク関数。
+
+        一時停止でなければ走行距離を進める（オートドライブ: :meth:`_ad_step`、
+        通常: ``self.cl`` 上をループ）。
+        その後、自車・カメラ・周囲車両の位置姿勢を更新して HUD を描き直す。
+
+        Parameters
+        ----------
+        task : Task
+            Panda3D のタスクオブジェクト（戻り値は ``Task.cont`` で継続）。
+
+        Returns
+        -------
+        Task.cont
+            タスクを継続することを Panda3D に通知する定数。
+        """
         # 固定俯瞰視点のパン（右ドラッグまたは中ドラッグ）
         if self.view_mode == "overview_fixed":
             self._overview_pan()
@@ -642,7 +786,16 @@ class RoadViewer(ShowBase):
     AD_TOL = 1.0
 
     def _ad_step(self, dt: float):
-        """オートドライブの1フレーム処理。"""
+        """オートドライブの 1 フレーム処理。
+
+        ``_ad_dist`` を速度×経過時間だけ進め、チェーン末端を超えたとき
+        :meth:`_ad_advance` を呼んで次の要素に遷移する。
+
+        Parameters
+        ----------
+        dt : float
+            フレーム経過時間 [s]。
+        """
         if self._ad_total <= 0:
             return
         self._ad_dist += self.speed * dt
@@ -872,9 +1025,28 @@ class RoadViewer(ShowBase):
         self._ad_cur_id = None
 
     def _update_car_pose(self, dist: float):
+        """固定チェーン ``self.cl`` 上の dist での自車位置・姿勢を更新する（後方互換）。
+
+        Parameters
+        ----------
+        dist : float
+            チェーン上の累積距離 [m]。
+        """
         self._update_car_pose_cl(self.cl, dist)
 
     def _update_car_pose_cl(self, cl: list, dist: float):
+        """任意の中心線 cl 上の dist での自車位置・姿勢を更新する。
+
+        :meth:`_interp_cl` で位置・方向を求め、Panda3D の heading/pitch に変換して
+        ``car_np`` の位置・姿勢をセットする。
+
+        Parameters
+        ----------
+        cl : list[tuple]
+            中心線点列 [(x, y, z, dist), ...]。
+        dist : float
+            チェーン上の累積距離 [m]。
+        """
         pos, fwd, _ = self._interp_cl(cl, dist)
         self.car_np.set_pos(pos)
         heading = math.degrees(math.atan2(-fwd[0], fwd[1]))
@@ -882,6 +1054,20 @@ class RoadViewer(ShowBase):
         self.car_np.set_hpr(heading, pitch, 0)
 
     def _update_camera_cl(self, cl: list, dist: float):
+        """現在の view_mode に応じてカメラ位置・姿勢を更新する。
+
+        * ``"follow"``: 自車後方 CAM_BEHIND m・上方 CAM_ABOVE m から前方注視。
+        * ``"overview"``: 自車真上 CAM_OVERVIEW_H m から鉛直下向き。
+        * ``"overview_fixed"``: ``_overview_pos`` の真上から鉛直下向き（マウスパン可能）。
+        * ``"onboard"``: 運転席視点（前方 2m 、高さ CAM_EYE_H m）。
+
+        Parameters
+        ----------
+        cl : list[tuple]
+            中心線点列 [(x, y, z, dist), ...]。
+        dist : float
+            チェーン上の累積距離 [m]。
+        """
         pos, fwd, _ = self._interp_cl(cl, dist)
         if self.view_mode == "follow":
             back = (-fwd[0] * self.CAM_BEHIND,
@@ -942,6 +1128,12 @@ class RoadViewer(ShowBase):
         return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][idx]
 
     def _update_hud(self):
+        """HUD テキストを現在の走行状態で更新する。
+
+        表示内容: 一時停止状態・オートドライブ情報（走行要素名・方向・進捗）・
+        現在座標・方位・累積距離・速度・カメラモード・路面状態・周囲車両台数。
+        非 ASCII のニックネームは ASCII に安全なフォールバック形式で表示する。
+        """
         import math
         mode_str    = {"follow": "Follow", "onboard": "Onboard",
                        "overview": "Overview(track)",
@@ -1004,11 +1196,37 @@ class RoadViewer(ShowBase):
 
     # ─── 補間 ────────────────────────────────────────────────
     def _interp(self, dist: float):
-        """固定チェーン self.cl 上の dist に対する位置・方向を返す（後方互換）。"""
+        """固定チェーン ``self.cl`` 上の dist に対する位置・方向を返す（後方互換）。
+
+        Parameters
+        ----------
+        dist : float
+            ``self.cl`` 上の累積距離 [m]。
+
+        Returns
+        -------
+        tuple
+            ``(pos, fwd, right)`` のタプル。:meth:`_interp_cl` の戻り値と同じ形式。
+        """
         return self._interp_cl(self.cl, dist)
 
     def _interp_cl(self, cl: list, dist: float):
-        """任意の中心線 cl 上の累積距離 dist に対応する位置・方向を線形補間して返す。"""
+        """任意の中心線 cl 上の累積距離 dist に対応する位置・方向を線形補間して返す。
+
+        Parameters
+        ----------
+        cl : list[tuple]
+            中心線点列 [(x, y, z, dist), ...]。
+        dist : float
+            累積距離 [m]。cl の範囲外のとき末端の位置と (1,0,0) 方向を返す。
+
+        Returns
+        -------
+        tuple[tuple, tuple, tuple]
+            * pos (x, y, z): ワールド座標
+            * fwd (dx, dy, dz): 進行方向の単位ベクトル
+            * right (rx, ry, rz): 右方向の単位ベクトル（fwd の xy 平面直交）
+        """
         n = len(cl)
         if n == 0:
             return (0, 0, 0), (1, 0, 0), (0, -1, 0)
@@ -1032,6 +1250,7 @@ class RoadViewer(ShowBase):
 
     # ─── 操作 ────────────────────────────────────────────────
     def _toggle_view(self):
+        """V キーで follow ↔ onboard カメラモードを切り替える。"""
         self.view_mode = "onboard" if self.view_mode == "follow" else "follow"
 
     def _toggle_overview(self):
@@ -1054,6 +1273,7 @@ class RoadViewer(ShowBase):
             self.view_mode = "follow"
 
     def _toggle_pause(self):
+        """Space キーで走行の一時停止/再開を切り替える。"""
         self.paused = not self.paused
 
     def _toggle_auto_drive(self):
@@ -1068,6 +1288,13 @@ class RoadViewer(ShowBase):
             self._ad_forward = self._start_info["forward"]
 
     def _change_speed(self, delta: float):
+        """走行速度を変更する（最小 1.0 m/s でクランプ）。
+
+        Parameters
+        ----------
+        delta : float
+            速度の変化量 [m/s]。正で加速、負で減速。
+        """
         self.speed = max(1.0, self.speed + delta)
 
     def _ad_history_push(self):
@@ -1091,6 +1318,12 @@ class RoadViewer(ShowBase):
             self._ad_history.pop(0)
 
     def _rewind(self):
+        """← キーで 100m 後退する（オートドライブ時は履歴スタックを使う）。
+
+        オートドライブモードでは ``_ad_dist - 100`` がゼロ未満になると
+        ``_ad_history`` から前の要素を復元する。
+        非オートドライブでは ``self.dist`` を 100m 戻す（最小 0）。
+        """
         if self._auto_drive:
             new_dist = self._ad_dist - 100
             if new_dist < 0 and self._ad_history:
@@ -1115,6 +1348,13 @@ class RoadViewer(ShowBase):
             self.dist = max(0, self.dist - 100)
 
     def _forward(self):
+        """→ キーで 100m 前進する（オートドライブ履歴参照中は次の要素に進む）。
+
+        オートドライブの履歴参照中（``_ad_history_idx >= 0``）は
+        ``_ad_history`` の次エントリを復元する。
+        最新状態（``_ad_history_idx == -1``）になったらリアルタイム走行に戻る。
+        非オートドライブでは ``self.dist`` を 100m 進める（最大 total）。
+        """
         if self._auto_drive:
             if self._ad_history_idx >= 0:
                 self._ad_history_idx += 1
@@ -1326,13 +1566,23 @@ def launch_viewer(scene: Scene,
                   rev_flags: list[bool],
                   all_display: list = None,
                   warp_boundary: float = None):
-    """
-    設計アプリのメインウィンドウから呼ぶ。別プロセスで Panda3D ウィンドウを起動する。
+    """設計アプリのメインウィンドウから呼ぶ。別プロセスで Panda3D ウィンドウを起動する。
+
+    :func:`prepare_viewer_data` でデータを計算し、一時 JSON ファイルに書き出して
+    ``subprocess.Popen`` でこのスクリプト自身を別プロセスとして起動する。
 
     Parameters
     ----------
-    elements/profiles/rev_flags : 走行チェーン
-    all_display : 表示する全要素（線分・円弧・クロソイド）
+    scene : Scene
+        現在のシーン（背景表示用の ElementProfile 参照と elem_graph 構築に使う）。
+    elements : list[Segment | Arc | Clothoid]
+        走行チェーンの要素リスト（resolve_chain 済み）。
+    profiles : list[ElementProfile]
+        各走行要素に対応する縦断データ。
+    rev_flags : list[bool]
+        各走行要素の逆順フラグ。
+    all_display : list, optional
+        背景として表示する全要素のリスト。None のとき背景なし。
     warp_boundary : float, optional
         オートドライブのワープ境界 [m]。None のとき RoadViewer.WARP_BOUNDARY(=500m)。
     """
@@ -1354,6 +1604,16 @@ def launch_viewer(scene: Scene,
 
 
 def _main_from_file(path: str):
+    """JSON ファイルからビューアデータを読み込んで RoadViewer を起動する。
+
+    :func:`launch_viewer` が生成した一時 JSON ファイルを別プロセスで読み込む
+    エントリーポイント。``__main__`` ブロックから呼ばれる。
+
+    Parameters
+    ----------
+    path : str
+        :func:`prepare_viewer_data` の結果を JSON 形式で保存したファイルのパス。
+    """
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
 

@@ -243,6 +243,14 @@ class RightPanel(QWidget, PropBuilderMixin):
 
     # ─── ニックネームコンボ ──────────────────────────────────
     def _add_nick_combo(self):
+        """ニックネーム選択コンボボックスを 1 個追加する。
+
+        コンボをウィジェットツリーと ``_nick_combos`` リストに登録し、
+        ``currentIndexChanged`` を ``_on_combo_changed`` に接続してから
+        :meth:`_refresh_nick_combos` で選択肢を初期化する。
+        「+」ボタンと :meth:`_on_combo_changed` （末尾コンボに図形が選択された時）
+        から呼ばれる。
+        """
         cb = QComboBox()
         cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         cb.setMaximumWidth(240)
@@ -378,6 +386,11 @@ class RightPanel(QWidget, PropBuilderMixin):
         self._refresh_nick_combos()
 
     def _remove_nick_combo(self):
+        """末尾のニックネーム選択コンボボックスを 1 個削除する。
+
+        ``_nick_combos`` が 1 個しかない場合は何もしない（最低 1 個を保持する）。
+        「-」ボタンから呼ばれる。
+        """
         if len(self._nick_combos) > 1:
             cb = self._nick_combos.pop()
             self._nick_combo_area.removeWidget(cb)
@@ -626,10 +639,29 @@ class RightPanel(QWidget, PropBuilderMixin):
         return ["(なし)"] + lines_items + seg_items + circle_items + arc_items + clothoid_items
 
     def _compute_next_forward(self, prev_obj, prev_is_fwd, next_obj) -> bool:
-        """
-        前の図形の出口接線と、次の図形の「共有点→近傍点」ベクトルの内積で判定。
-        内積 < 0 → 逆方向（スムーズに繋がる）= [順]
-        内積 > 0 → 同方向（逆走）= [逆]
+        """前の図形の出口接線と次の図形の入口方向から [順]/[逆] ラベルを判定する。
+
+        コンボボックスの高優先候補に付ける ``[順]``/``[逆]`` ラベルの決定に使う。
+
+        Parameters
+        ----------
+        prev_obj : Segment or Arc or Clothoid
+            前の選択図形。
+        prev_is_fwd : bool
+            前の図形を正順（True）/ 逆順（False）で通過したか。
+        next_obj : Segment or Arc or Clothoid
+            次の選択候補図形。
+
+        Returns
+        -------
+        bool
+            True のとき next_obj を正順（[順]）で通過、
+            False のとき逆順（[逆]）で通過すると判定する。
+
+        Notes
+        -----
+        前の図形の出口接線 exit_tan と next_obj の共有点側入口方向 entry_tan の
+        内積を計算し、内積 >= 0 のとき正順（スムーズ接続）、< 0 のとき逆順とみなす。
         """
 
         prev_pts = self._endpoints_of(prev_obj)
@@ -695,10 +727,24 @@ class RightPanel(QWidget, PropBuilderMixin):
         return entry_tangent(obj, connect_at_start)
 
     def _next_is_forward(self, prev_obj, prev_is_fwd, next_obj) -> bool:
-        """
-        prev_obj → next_obj でチェーンを進むとき、next_obj の is_forward を返す。
-        共有点が next_obj の始点側 → is_forward=True（正順）
-        共有点が next_obj の終点側 → is_forward=False（逆順）
+        """prev_obj → next_obj でチェーンを進むとき next_obj の通過方向を返す。
+
+        ``_refresh_nick_combos`` が ``is_forward`` 配列を構築する際に使う。
+        ``_compute_next_forward`` と異なり接線内積ではなく純粋な端点位置で判定する。
+
+        Parameters
+        ----------
+        prev_obj : Segment or Arc or Clothoid
+            前の選択図形。
+        prev_is_fwd : bool
+            前の図形を正順（True）/ 逆順（False）で通過したか（現メソッドでは未使用）。
+        next_obj : Segment or Arc or Clothoid
+            次の選択候補図形。
+
+        Returns
+        -------
+        bool
+            共有点が next_obj の始点側のとき True（正順）、終点側のとき False（逆順）。
         """
         prev_pts = self._endpoints_of(prev_obj)
         next_pts = self._endpoints_of(next_obj)
@@ -856,11 +902,6 @@ class RightPanel(QWidget, PropBuilderMixin):
         bool
             prev_obj を正順（True）で通過してきたか、逆順（False）か。
         """
-        """
-        prev_obj の隣接図形 cand に繋がるとき、prev_obj をどちら向きで通過してきたかを返す。
-        - cand が prev_obj の終点側に接続 → prev_obj を正順(True)で通過してきた
-        - cand が prev_obj の始点側に接続 → prev_obj を逆順(False)で通過してきた
-        """
         prev_pts = self._endpoints_of(prev_obj)
         cand_pts = self._endpoints_of(cand)
         if not prev_pts or not cand_pts:
@@ -900,13 +941,33 @@ class RightPanel(QWidget, PropBuilderMixin):
         return True  # デフォルト
 
     def _adjacent_from_obj(self, obj, excludes=None) -> list:
-        """
-        obj の全端点に隣接する図形をすべて返す（2つ目のコンボ用）。
-        - 同じ直線上で端点を共有する線分
-        - 同じ円上で端点を共有する円弧
-        - obj が接点であるクロソイド
-        - 交点を共有する他の直線の線分
-        戻り値: [(cand, is_forward), ...] (重複なし)
+        """obj の全端点に隣接する図形をすべて返す（2 つ目のコンボ用）。
+
+        ``_refresh_nick_combos`` が 2 つ目コンボの高優先候補を生成する際に呼ばれる。
+        3 つ目以降のコンボでは出口端点を絞り込んだ :meth:`_adjacent_from_pt` を使う。
+
+        Parameters
+        ----------
+        obj : Segment or Arc or Clothoid
+            基準となる図形。
+        excludes : list, optional
+            除外するオブジェクトのリスト（選択済み図形を除くために使う）。
+
+        Returns
+        -------
+        list[tuple[object, bool]]
+            ``(cand, is_forward)`` の重複なしリスト。
+            ``is_forward=True``: cand の始点で接続（正順）、False: 終点で接続（逆順）。
+
+        Notes
+        -----
+        以下を隣接とみなす:
+
+        * 同じ直線上で端点を共有する線分（同一親 Line）
+        * 同じ円上で端点を共有する円弧（同一親 Circle）
+        * obj が接点（_line_pt / _circle_pt）であるクロソイド
+        * Arc の端点に _circle_pt で接続するクロソイド
+        * Segment の _line_pt に接するクロソイド（直線内部接点を含む）
         """
         exclude_set = set(id(e) for e in excludes if e is not None) if excludes else set()
         result = []
@@ -1126,6 +1187,11 @@ class RightPanel(QWidget, PropBuilderMixin):
         self.request_delete.emit(objs)
 
     def _apply_nick_select(self):
+        """コンボボックスの現在の選択を Canvas の選択状態に反映する。
+
+        各コンボで選択中の図形を収集し ``request_select`` シグナルで
+        MainWindow に委譲する。「選択を適用」ボタンから呼ばれる。
+        """
         selected = []
         for cb in self._nick_combos:
             txt = cb.currentText()
@@ -1135,6 +1201,21 @@ class RightPanel(QWidget, PropBuilderMixin):
         self.request_select.emit(selected)
 
     def _find_by_nick_label(self, label: str) -> Optional[object]:
+        """コンボラベル文字列から対応する図形オブジェクトを逆引きする。
+
+        ``[道なり] `` / ``[順] `` / ``[逆] `` プレフィックスと末尾の距離文字列
+        （例: ``  0.001 m``）を除去してから Scene 内の全図形と照合する。
+
+        Parameters
+        ----------
+        label : str
+            コンボボックスに表示されているラベル文字列。
+
+        Returns
+        -------
+        Line or Segment or Circle or Arc or Clothoid or None
+            一致する図形。見つからない場合は None。
+        """
         # [道なり] / [順] / [逆] プレフィックスを除去
         for prefix in ("[道なり] ", "[順] ", "[逆] "):
             if label.startswith(prefix):

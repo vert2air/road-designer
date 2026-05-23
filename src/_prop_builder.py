@@ -23,13 +23,37 @@ _CLIPBOARD_MIME = "application/x-road-designer-point-pair"
 
 
 def _encode_point_pair(start, end) -> str:
-    """始点・終点ペアを JSON 文字列にエンコードする。"""
+    """始点・終点ペアを JSON 文字列にエンコードする。
+
+    Parameters
+    ----------
+    start : Vec2
+        始点座標。
+    end : Vec2
+        終点座標。
+
+    Returns
+    -------
+    str
+        ``{"sx": ..., "sy": ..., "ex": ..., "ey": ...}`` 形式の JSON 文字列。
+    """
     return _json.dumps({"sx": start.x, "sy": start.y,
                         "ex": end.x,   "ey": end.y})
 
 
 def _decode_point_pair(text: str):
-    """JSON 文字列から (start_Vec2, end_Vec2) を返す。None: 解析失敗。"""
+    """JSON 文字列から (start_Vec2, end_Vec2) を復元する。
+
+    Parameters
+    ----------
+    text : str
+        ``_encode_point_pair`` が生成した JSON 文字列。
+
+    Returns
+    -------
+    tuple[Vec2, Vec2] or None
+        ``(start, end)`` のタプル。解析失敗のとき None。
+    """
     try:
         d = _json.loads(text)
         from models import Vec2
@@ -39,29 +63,58 @@ def _decode_point_pair(text: str):
 
 
 def _clipboard_has_point_pair() -> bool:
-    """クリップボードに始点/終点ペアが設定されているか判定する。"""
+    """クリップボードに始点/終点ペアが設定されているか判定する。
+
+    Returns
+    -------
+    bool
+        クリップボードのテキストが ``_decode_point_pair`` で解析できれば True。
+    """
     cb = QApplication.clipboard()
     return _decode_point_pair(cb.text()) is not None
 
 
 def _copy_point_pair(start, end) -> None:
-    """始点・終点ペアをクリップボードにコピーする。"""
+    """始点・終点ペアをクリップボードにコピーする。
+
+    Parameters
+    ----------
+    start : Vec2
+        始点座標。
+    end : Vec2
+        終点座標。
+    """
     QApplication.clipboard().setText(_encode_point_pair(start, end))
 
 
 def _paste_point_pair():
-    """クリップボードから (start_Vec2, end_Vec2) を取り出す。None: 失敗。"""
+    """クリップボードから (start_Vec2, end_Vec2) を取り出す。
+
+    Returns
+    -------
+    tuple[Vec2, Vec2] or None
+        ``(start, end)`` のタプル。クリップボードに有効なペアがなければ None。
+    """
     return _decode_point_pair(QApplication.clipboard().text())
 
 
 def _transform_pair(start, end, mode: str):
-    """始点・終点ペアを変換して返す。
+    """始点・終点ペアを回転または線対称変換して返す。
 
     Parameters
     ----------
+    start : Vec2
+        始点座標（原点基準で変換する）。
+    end : Vec2
+        終点座標（原点基準で変換する）。
     mode : str
-        "rot90" / "rot180" / "rot270" / "flip_y" / "flip_x" /
+        変換の種類。"rot90" / "rot180" / "rot270" / "flip_y" / "flip_x" /
         "flip_yx" / "flip_y_neg_x"
+
+    Returns
+    -------
+    tuple[Vec2, Vec2]
+        変換後の (start, end) タプル。
     """
     from models import Vec2
     import math
@@ -200,11 +253,25 @@ class _FlexSpinBox(QDoubleSpinBox):
     """
 
     def minimumSizeHint(self):
+        """最小サイズヒントを返す（幅を 40px に制限）。
+
+        Returns
+        -------
+        QSize
+            幅 40px、高さはデフォルト実装と同じ。
+        """
         sh = super().minimumSizeHint()
         from PySide6.QtCore import QSize
         return QSize(40, sh.height())
 
     def sizeHint(self):
+        """推奨サイズヒントを返す（幅を 60px に制限）。
+
+        Returns
+        -------
+        QSize
+            幅 60px、高さはデフォルト実装と同じ。
+        """
         sh = super().sizeHint()
         from PySide6.QtCore import QSize
         return QSize(60, sh.height())
@@ -310,6 +377,16 @@ class PropBuilderMixin:
 
     # ─── 単一図形プロパティ ──────────────────────────────────
     def _build_single(self, obj):
+        """単一の図形オブジェクトに対するプロパティパネルを構築する。
+
+        ニックネームエディタ → 型別プロパティ → 関連図形リスト →
+        縦断設計情報 の順で ``_prop_layout`` に追加する。
+
+        Parameters
+        ----------
+        obj : Line or Circle or Clothoid or Segment or Arc
+            プロパティを表示する図形オブジェクト。
+        """
         # ニックネーム（ID 表示を含む）
         self._add_nickname_editor(obj)
 
@@ -365,6 +442,18 @@ class PropBuilderMixin:
         self._prop_layout.addWidget(grp)
 
     def _add_nickname_editor(self, obj):
+        """ニックネーム / ID 入力グループを ``_prop_layout`` に追加する。
+
+        ID はラベルで読み取り専用表示し、ニックネームはテキストフィールドで
+        リアルタイム編集できる。テキスト変更は ``Scene.set_nickname`` に反映し、
+        ``_refresh_nick_combos`` でニックネームコンボを更新する。
+
+        Parameters
+        ----------
+        obj : any
+            ``id`` 属性を持つ図形オブジェクト。id がない場合はニックネームフィールドを
+            表示するが保存はしない。
+        """
         grp = QGroupBox("ニックネーム / ID")
         lay = QVBoxLayout(grp)
 
@@ -393,6 +482,17 @@ class PropBuilderMixin:
         self._prop_layout.addWidget(grp)
 
     def _add_related_objects(self, obj):
+        """obj に関連する図形の一覧グループを ``_prop_layout`` に追加する。
+
+        ``Scene.connected_objects(obj)`` で関連図形を取得し、各図形に対して
+        ニックネームラベル・「選択」ボタン・「選択追加」ボタンを表示する。
+        関連図形がない場合は何も追加しない。
+
+        Parameters
+        ----------
+        obj : Line or Circle or Clothoid or Segment or Arc
+            関連図形を検索する起点のオブジェクト。
+        """
         related = self.scene.connected_objects(obj)
         if not related:
             return
@@ -811,6 +911,19 @@ class PropBuilderMixin:
         self._prop_layout.addWidget(grp)
 
     def _build_clothoid_props(self, clo: Clothoid):
+        """クロソイドプロパティパネルを構築して ``_prop_layout`` に追加する。
+
+        有効なクロソイド (``is_valid=True``) の場合:
+        パラメータ A、全偏角 τ、線側接点・円側接点の座標、
+        円弧端点との一致距離を表示する。
+        snap チェックボックス 2 つ（線分との snap / 円弧との snap）は
+        常に表示し、反転ボタン・削除ボタンも追加する。
+
+        Parameters
+        ----------
+        clo : Clothoid
+            プロパティを表示するクロソイド。
+        """
         grp = QGroupBox("クロソイドプロパティ")
         lay = QVBoxLayout(grp)
 
@@ -1001,6 +1114,26 @@ class PropBuilderMixin:
         self._prop_layout.addWidget(grp)
 
     def _refresh_seg_display(self, sb_x, sb_y, sb_t, lbl_t, ln, get_t):
+        """線分端点の表示ウィジェットを現在値で更新する。
+
+        ``_block`` フラグを立てて ``valueChanged`` シグナルの再帰処理を防ぎながら
+        X/Y/t スピンボックスとラベルを書き換える。
+
+        Parameters
+        ----------
+        sb_x : QDoubleSpinBox
+            X 座標スピンボックス。
+        sb_y : QDoubleSpinBox
+            Y 座標スピンボックス。
+        sb_t : QDoubleSpinBox
+            t 値スピンボックス。
+        lbl_t : QLabel
+            t 値の読み取り専用ラベル。
+        ln : Line
+            端点が属する直線（``point_at(t)`` の呼び出しに使う）。
+        get_t : callable
+            現在の t 値を返すゲッター。
+        """
         from models import Vec2
         self._block = True
         pt = ln.point_at(get_t())
@@ -1153,6 +1286,20 @@ class PropBuilderMixin:
     # ─── 2線分の接続操作 ─────────────────────────────────────
     # ─── 2線分の結合操作 ─────────────────────────────────────
     def _build_two_segments(self, seg_a: Segment, seg_b: Segment):
+        """2線分の結合操作パネルを構築して ``_prop_layout`` に追加する。
+
+        同一直線上の線分同士でのみ結合を許可し、異なる直線の場合は
+        その旨のラベルを表示して終了する。結合候補の端点ペアを
+        :meth:`_candidate_seg_pairs` で列挙してコンボボックスに表示し、
+        「結合する」ボタンで :meth:`_merge_segments` を呼ぶ。
+
+        Parameters
+        ----------
+        seg_a : Segment
+            結合する線分 A。
+        seg_b : Segment
+            結合する線分 B。
+        """
         grp = QGroupBox("線分の結合")
         lay = QVBoxLayout(grp)
         la_nick = self.scene.get_nickname(seg_a.line.id, 'line')
@@ -1244,6 +1391,24 @@ class PropBuilderMixin:
         return False
 
     def _candidate_seg_pairs(self, seg_a: Segment, seg_b: Segment) -> list:
+        """2線分の全端点組み合わせ（4パターン）を距離昇順で返す。
+
+        各エントリには端点識別子・距離・束縛フラグ・表示ラベルを含む。
+        束縛フラグ（``blocked_a``/``blocked_b``）は :meth:`_seg_end_blocked` で判定する。
+
+        Parameters
+        ----------
+        seg_a : Segment
+            結合元の線分 A。
+        seg_b : Segment
+            結合元の線分 B。
+
+        Returns
+        -------
+        list[dict]
+            各要素は ``{'end_a', 'end_b', 'dist', 'blocked_a', 'blocked_b', 'label'}``
+            のキーを持つ辞書。束縛ありのペアが後ろ（距離昇順の次）に来るようソートされる。
+        """
         candidates = []
         for end_a, pt_a in [('start', seg_a.start), ('end', seg_a.end)]:
             for end_b, pt_b in [('start', seg_b.start), ('end', seg_b.end)]:
@@ -1259,8 +1424,24 @@ class PropBuilderMixin:
 
     def _merge_segments(self, seg_a: Segment, seg_b: Segment,
                          end_a: str, end_b: str):
-        """
+        """seg_b を seg_a に結合（吸収）する。
+
         seg_b を削除し、seg_a の end_a 側を seg_b の反対端まで延長する。
+
+        Parameters
+        ----------
+        seg_a : Segment
+            残す側の線分。end_a で指定した端を延長する。
+        seg_b : Segment
+            削除する側の線分。
+        end_a : str
+            seg_a の延長する端。'start' または 'end'。
+        end_b : str
+            seg_b の結合点側の端。'start' のとき seg_b.t_end（反対端）を使い、
+            'end' のとき seg_b.t_start を使う。
+
+        Notes
+        -----
         例: end_a='end', end_b='start' → seg_a.t_end = seg_b.t_end; del seg_b
         """
         far_t = seg_b.t_start if end_b == 'end' else seg_b.t_end
@@ -1274,6 +1455,20 @@ class PropBuilderMixin:
 
     # ─── 2円弧の結合操作 ─────────────────────────────────────
     def _build_two_arcs(self, arc_a: Arc, arc_b: Arc):
+        """2円弧の結合操作パネルを構築して ``_prop_layout`` に追加する。
+
+        同一円上の円弧同士でのみ結合を許可し、異なる円の場合は
+        その旨のラベルを表示して終了する。結合候補の端点ペアを
+        :meth:`_candidate_arc_pairs` で列挙してコンボボックスに表示し、
+        「結合する」ボタンで :meth:`_merge_arcs` を呼ぶ。
+
+        Parameters
+        ----------
+        arc_a : Arc
+            結合する円弧 A。
+        arc_b : Arc
+            結合する円弧 B。
+        """
         grp = QGroupBox("円弧の結合")
         lay = QVBoxLayout(grp)
         ca_nick = self.scene.get_nickname(arc_a.circle.id, 'circle')
@@ -1368,6 +1563,24 @@ class PropBuilderMixin:
         return False
 
     def _candidate_arc_pairs(self, arc_a: Arc, arc_b: Arc) -> list:
+        """2円弧の全端点組み合わせ（4パターン）を距離昇順で返す。
+
+        各エントリには端点識別子・距離・束縛フラグ・表示ラベルを含む。
+        束縛フラグ（``blocked_a``/``blocked_b``）は :meth:`_arc_end_blocked` で判定する。
+
+        Parameters
+        ----------
+        arc_a : Arc
+            結合元の円弧 A。
+        arc_b : Arc
+            結合元の円弧 B。
+
+        Returns
+        -------
+        list[dict]
+            各要素は ``{'end_a', 'end_b', 'dist', 'blocked_a', 'blocked_b', 'label'}``
+            のキーを持つ辞書。束縛ありのペアが後ろに来るようソートされる。
+        """
         candidates = []
         for end_a, ang_a, pt_a in [('start', arc_a.angle_start, arc_a.start),
                                      ('end',   arc_a.angle_end,   arc_a.end)]:
@@ -1384,8 +1597,24 @@ class PropBuilderMixin:
         return sorted(candidates, key=lambda c: (c['blocked_a'] or c['blocked_b'], c['dist']))
 
     def _merge_arcs(self, arc_a: Arc, arc_b: Arc, end_a: str, end_b: str):
-        """
+        """arc_b を arc_a に結合（吸収）する。
+
         arc_b を削除し、arc_a の end_a 側を arc_b の反対端まで延長する。
+
+        Parameters
+        ----------
+        arc_a : Arc
+            残す側の円弧。end_a で指定した端を延長する。
+        arc_b : Arc
+            削除する側の円弧。
+        end_a : str
+            arc_a の延長する端。'start' または 'end'。
+        end_b : str
+            arc_b の結合点側の端。'start' のとき arc_b.angle_end（反対端）を使い、
+            'end' のとき arc_b.angle_start を使う。
+
+        Notes
+        -----
         例: end_a='end', end_b='start' → arc_a.angle_end = arc_b.angle_end; del arc_b
         """
         far_angle = arc_b.angle_start if end_b == 'end' else arc_b.angle_end
@@ -1495,6 +1724,20 @@ class PropBuilderMixin:
                        f"(R+off={ci_b.radius + existing.off_b:.3f})"))
 
     def _build_two_lines(self, a: Line, b: Line):
+        """2直線の接続操作パネルを構築して ``_prop_layout`` に追加する。
+
+        現在の接続状態（折れ線/スムーズ/なし）を表示し、
+        「折れ線接続」「スムーズ接続」「接続解除」の各ボタンを追加する。
+        接続解除は、この 2 直線間の接続が存在するときのみ有効になる。
+        パネルの後ろに各直線のプロパティ（ニックネーム + 直線プロパティ）も表示する。
+
+        Parameters
+        ----------
+        a : Line
+            操作する直線 A。
+        b : Line
+            操作する直線 B。
+        """
         grp = QGroupBox("2直線の接続操作")
         lay = QVBoxLayout(grp)
 
@@ -1539,6 +1782,21 @@ class PropBuilderMixin:
 
     # ─── 直線+円 (クロソイド操作) ────────────────────────────
     def _build_line_circle(self, ln: Line, ci: Circle):
+        """直線と円が選択されたときのクロソイド操作パネルを構築する。
+
+        現在のクロソイド本数（0/1/2）に応じて状態を表示し、
+        「クロソイドを追加」「クロソイドを削除」「クロソイドを反転」の
+        各ボタンを有効/無効切り替えして追加する。
+        クロソイドが 1 本のときは snap チェックボックスも表示する。
+        パネルの後ろに直線・円それぞれのプロパティも表示する。
+
+        Parameters
+        ----------
+        ln : Line
+            操作する直線。
+        ci : Circle
+            操作する円。
+        """
         grp = QGroupBox("クロソイド操作（直線 + 円）")
         lay = QVBoxLayout(grp)
 
