@@ -71,6 +71,175 @@ def _elem_fwd_vec(elem: dict, forward: bool) -> tuple[float, float]:
     return dx / ln, dy / ln
 
 
+# ─── 純粋ロジック関数（Panda3D 不要・単体テスト可能）─────────────────
+
+def interp_cl(cl: list, dist: float):
+    """任意の中心線 cl 上の累積距離 dist に対応する位置・方向を線形補間して返す。
+
+    Parameters
+    ----------
+    cl : list[tuple]
+        中心線点列 ``[(x, y, z, dist), ...]``。
+    dist : float
+        累積距離 [m]。cl の範囲外のとき末端の位置と ``(1, 0, 0)`` 方向を返す。
+
+    Returns
+    -------
+    tuple[tuple, tuple, tuple]
+        * pos (x, y, z): ワールド座標
+        * fwd (dx, dy, dz): 進行方向の単位ベクトル
+        * right (rx, ry, rz): 右方向の単位ベクトル（fwd の xy 平面直交）
+    """
+    n = len(cl)
+    if n == 0:
+        return (0, 0, 0), (1, 0, 0), (0, -1, 0)
+    for i in range(n - 1):
+        d0 = cl[i][3]; d1 = cl[i + 1][3]
+        if d0 <= dist <= d1:
+            t  = (dist - d0) / (d1 - d0) if d1 > d0 else 0
+            x  = cl[i][0] + (cl[i + 1][0] - cl[i][0]) * t
+            y  = cl[i][1] + (cl[i + 1][1] - cl[i][1]) * t
+            z  = cl[i][2] + (cl[i + 1][2] - cl[i][2]) * t
+            dx = cl[i + 1][0] - cl[i][0]
+            dy = cl[i + 1][1] - cl[i][1]
+            dz = cl[i + 1][2] - cl[i][2]
+            ln = math.hypot(dx, dy, dz) or 1
+            fwd   = (dx / ln, dy / ln, dz / ln)
+            right = (fwd[1], -fwd[0], 0)
+            return (x, y, z), fwd, right
+    x, y, z, _ = cl[-1]
+    return (x, y, z), (1, 0, 0), (0, -1, 0)
+
+
+def bearing_str(fwd_x: float, fwd_y: float) -> str:
+    """進行方向ベクトル (fwd_x, fwd_y) を 8 方位文字列に変換する。
+
+    座標系: x=東, y=北（設計アプリのワールド座標系に準拠）。
+
+    Parameters
+    ----------
+    fwd_x, fwd_y : float
+        進行方向の単位ベクトル。
+
+    Returns
+    -------
+    str
+        ``"N"`` / ``"NE"`` / ``"E"`` / ``"SE"`` / ``"S"`` / ``"SW"`` /
+        ``"W"`` / ``"NW"`` のいずれか。
+    """
+    deg     = math.degrees(math.atan2(fwd_y, fwd_x))
+    brg     = (90.0 - deg) % 360.0
+    idx     = int((brg + 22.5) / 45.0) % 8
+    return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][idx]
+
+
+def make_elem_cl(elem: dict, forward: bool):
+    """要素辞書から 3D 中心線を生成して ``(cl, total)`` を返す。
+
+    Parameters
+    ----------
+    elem : dict
+        ``elem_graph`` のノード辞書
+        （``plan_length``, ``heights``, ``points_xy``, ``start``, ``end`` キー）。
+    forward : bool
+        True のとき正順（start→end）、False のとき逆順（end→start）で生成する。
+
+    Returns
+    -------
+    tuple[list[tuple], float]
+        ``(cl, total)``。cl は ``[(x, y, z, dist), ...]``、total は計画延長 [m]。
+    """
+    pl      = elem["plan_length"]
+    heights = elem.get("heights", [[0.0, 0.0], [pl, 0.0]])
+    pts_xy  = elem.get("points_xy", None)
+    if not forward:
+        if pts_xy:
+            pts_xy = list(reversed(pts_xy))
+        heights = [[pl - h[0], h[1]] for h in reversed(heights)]
+
+    def _elev(d):
+        if not heights:
+            return 0.0
+        if d <= heights[0][0]:
+            return heights[0][1]
+        for k in range(len(heights) - 1):
+            d0, z0 = heights[k]; d1, z1 = heights[k + 1]
+            if d0 <= d <= d1:
+                t = (d - d0) / (d1 - d0) if d1 > d0 else 0
+                return z0 + (z1 - z0) * t
+        return heights[-1][1]
+
+    new_cl = []
+    if pts_xy and len(pts_xy) >= 2:
+        cum = [0.0]
+        for k in range(1, len(pts_xy)):
+            dx = pts_xy[k][0] - pts_xy[k - 1][0]
+            dy = pts_xy[k][1] - pts_xy[k - 1][1]
+            cum.append(cum[-1] + math.hypot(dx, dy))
+        total = cum[-1]
+        scale = pl / total if total > 1e-9 else 1.0
+        for k, (xy, cd) in enumerate(zip(pts_xy, cum)):
+            d = cd * scale
+            new_cl.append((xy[0], xy[1], _elev(d), d))
+    else:
+        sx, sy = elem["start"] if forward else elem["end"]
+        ex, ey = elem["end"]   if forward else elem["start"]
+        n = max(2, int(pl * 0.5))
+        for i in range(n + 1):
+            t = i / n; d = pl * t
+            new_cl.append((sx + (ex - sx) * t, sy + (ey - sy) * t, _elev(d), d))
+    return new_cl, pl
+
+
+def find_next_candidates(elem_graph: list, cur_id, ex: float, ey: float,
+                         exit_clo_ref, ad_tol: float = 1.0) -> list:
+    """隣接する走行候補要素を検索して ``[(elem, forward), ...]`` を返す。
+
+    ``exit_clo_ref`` がある場合は Clothoid 接点の clothoid_id/side が一致する
+    要素を最優先で返す。ない場合は末端座標からの距離が ``ad_tol`` 以内の要素を返す。
+
+    Parameters
+    ----------
+    elem_graph : list[dict]
+        全要素グラフ。
+    cur_id : int or None
+        現在走行中の要素 ID（候補から除外）。
+    ex, ey : float
+        現在チェーン末端のワールド座標。
+    exit_clo_ref : dict or None
+        現在要素末端の Clothoid 接点参照
+        ``{"clothoid_id": int, "side": "line"|"circle"}`` 形式。
+    ad_tol : float
+        隣接判定の距離閾値 [m]（デフォルト 1.0 m）。
+
+    Returns
+    -------
+    list[tuple[dict, bool]]
+        ``(elem, forward)`` のタプルリスト。forward=True は正順走行。
+    """
+    cands = []
+    for elem in elem_graph:
+        if elem["id"] == cur_id:
+            continue
+        sx, sy   = elem["start"]
+        ex2, ey2 = elem["end"]
+        s_ref = elem.get("start_clo_ref")
+        e_ref = elem.get("end_clo_ref")
+        if exit_clo_ref is not None:
+            cid  = exit_clo_ref["clothoid_id"]
+            side = exit_clo_ref["side"]
+            if s_ref and s_ref["clothoid_id"] == cid and s_ref["side"] == side:
+                cands.append((elem, True)); continue
+            if e_ref and e_ref["clothoid_id"] == cid and e_ref["side"] == side:
+                cands.append((elem, False)); continue
+        else:
+            if math.hypot(ex - sx, ey - sy) < ad_tol:
+                cands.append((elem, True))
+            elif math.hypot(ex - ex2, ey - ey2) < ad_tol:
+                cands.append((elem, False))
+    return cands
+
+
 class RoadViewer(ShowBase):
     """Panda3D による道路 3D 走行ビューア。
 
@@ -384,110 +553,13 @@ class RoadViewer(ShowBase):
         self._update_traffic_car_pose(car_state)
 
     def _find_next_candidates(self, cur_id, ex, ey, exit_clo_ref):
-        """隣接する走行候補要素を検索して返す。
-
-        ``_ad_advance`` と同じロジックを共通化したメソッド。
-        周囲車両のチェーン遷移（:meth:`_step_traffic_car`、:meth:`_add_traffic_car`）
-        からも呼ばれる。
-
-        Parameters
-        ----------
-        cur_id : int or None
-            現在走行中の要素 ID（この要素は候補から除外する）。
-        ex, ey : float
-            現在チェーン末端のワールド座標。
-        exit_clo_ref : dict or None
-            現在要素の末端の Clothoid 接点参照。
-            ``{"clothoid_id": int, "side": "line"|"circle"}`` 形式。
-            None のとき座標距離（AD_TOL 以内）で接続判定する。
-
-        Returns
-        -------
-        list[tuple[dict, bool]]
-            ``(elem, forward)`` のタプルリスト。forward=True は正順走行。
-        """
-        import math
-        cands = []
-        for elem in self._elem_graph:
-            if elem["id"] == cur_id:
-                continue
-            sx, sy = elem["start"]
-            ex2, ey2 = elem["end"]
-            s_ref = elem.get("start_clo_ref")
-            e_ref = elem.get("end_clo_ref")
-            if exit_clo_ref is not None:
-                cid = exit_clo_ref["clothoid_id"]
-                side = exit_clo_ref["side"]
-                if s_ref and s_ref["clothoid_id"]==cid and s_ref["side"]==side:
-                    cands.append((elem, True)); continue
-                if e_ref and e_ref["clothoid_id"]==cid and e_ref["side"]==side:
-                    cands.append((elem, False)); continue
-            else:
-                if math.hypot(ex-sx, ey-sy) < self.AD_TOL:
-                    cands.append((elem, True))
-                elif math.hypot(ex-ex2, ey-ey2) < self.AD_TOL:
-                    cands.append((elem, False))
-        return cands
+        """モジュールレベルの :func:`find_next_candidates` に委譲する。"""
+        return find_next_candidates(
+            self._elem_graph, cur_id, ex, ey, exit_clo_ref, self.AD_TOL)
 
     def _make_elem_cl(self, elem, forward):
-        """要素辞書から 3D 中心線を生成して (cl, total) を返す。
-
-        :meth:`_ad_start_elem` と同じロジックを共通化したメソッド。
-        周囲車両のチェーン遷移（:meth:`_step_traffic_car`、:meth:`_add_traffic_car`）
-        からも呼ばれる。
-
-        Parameters
-        ----------
-        elem : dict
-            ``elem_graph`` のノード辞書
-            （``plan_length``, ``heights``, ``points_xy``, ``start``, ``end`` キー）。
-        forward : bool
-            True のとき正順（start→end）、False のとき逆順（end→start）で生成する。
-
-        Returns
-        -------
-        tuple[list[tuple], float]
-            ``(cl, total)`` のタプル。cl は [(x, y, z, dist), ...] 形式、
-            total は計画延長 [m]。
-        """
-        import math
-        pl = elem["plan_length"]
-        heights = elem.get("heights", [[0.0,0.0],[pl,0.0]])
-        pts_xy  = elem.get("points_xy", None)
-        if not forward:
-            if pts_xy: pts_xy = list(reversed(pts_xy))
-            heights = [[pl-h[0],h[1]] for h in reversed(heights)]
-
-        def _elev(d):
-            if not heights: return 0.0
-            if d <= heights[0][0]: return heights[0][1]
-            for k in range(len(heights)-1):
-                d0,z0 = heights[k]; d1,z1 = heights[k+1]
-                if d0 <= d <= d1:
-                    t = (d-d0)/(d1-d0) if d1>d0 else 0
-                    return z0+(z1-z0)*t
-            return heights[-1][1]
-
-        new_cl = []
-        if pts_xy and len(pts_xy) >= 2:
-            cum = [0.0]
-            for k in range(1, len(pts_xy)):
-                dx = pts_xy[k][0]-pts_xy[k-1][0]
-                dy = pts_xy[k][1]-pts_xy[k-1][1]
-                cum.append(cum[-1]+math.hypot(dx,dy))
-            total = cum[-1]
-            scale = pl/total if total > 1e-9 else 1.0
-            for k,(xy,cd) in enumerate(zip(pts_xy,cum)):
-                d = cd*scale
-                new_cl.append((xy[0],xy[1],_elev(d),d))
-        else:
-            sx,sy = elem["start"] if forward else elem["end"]
-            ex,ey = elem["end"]   if forward else elem["start"]
-            n = max(2,int(pl*0.5))
-            for i in range(n+1):
-                t = i/n; d = pl*t
-                new_cl.append((sx+(ex-sx)*t, sy+(ey-sy)*t, _elev(d), d))
-        return new_cl, pl
+        """モジュールレベルの :func:`make_elem_cl` に委譲する。"""
+        return make_elem_cl(elem, forward)
 
     def _update_traffic_car_pose(self, car: dict):
         """周囲車両 1 台の NodePath の位置・姿勢を更新する。
@@ -1105,30 +1177,10 @@ class RoadViewer(ShowBase):
             self.camera.look_at(look)
 
     @staticmethod
+    @staticmethod
     def _bearing_str(fwd_x: float, fwd_y: float) -> str:
-        """進行方向ベクトル (fwd_x, fwd_y) を 8 方位文字列に変換する。
-
-        座標系: x=東, y=北（設計アプリのワールド座標系に準拠）。
-
-        Parameters
-        ----------
-        fwd_x, fwd_y : float
-            進行方向の単位ベクトル。
-
-        Returns
-        -------
-        str
-            "N" / "NE" / "E" / "SE" / "S" / "SW" / "W" / "NW" のいずれか。
-        """
-        import math
-        # atan2(y, x) → 北(+y)=90°, 東(+x)=0° の角度
-        deg = math.degrees(math.atan2(fwd_y, fwd_x))
-        # -180〜+180 → 0〜360（北=90°を0°に補正して時計回りに）
-        # 方位角: 北=0°, 東=90°, 南=180°, 西=270°（時計回り）
-        bearing = (90.0 - deg) % 360.0
-        # 8方位に丸める（各方位 = 45° 幅）
-        idx = int((bearing + 22.5) / 45.0) % 8
-        return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][idx]
+        """モジュールレベルの :func:`bearing_str` に委譲する。"""
+        return bearing_str(fwd_x, fwd_y)
 
     def _update_hud(self):
         """HUD テキストを現在の走行状態で更新する。
@@ -1214,41 +1266,8 @@ class RoadViewer(ShowBase):
         return self._interp_cl(self.cl, dist)
 
     def _interp_cl(self, cl: list, dist: float):
-        """任意の中心線 cl 上の累積距離 dist に対応する位置・方向を線形補間して返す。
-
-        Parameters
-        ----------
-        cl : list[tuple]
-            中心線点列 [(x, y, z, dist), ...]。
-        dist : float
-            累積距離 [m]。cl の範囲外のとき末端の位置と (1,0,0) 方向を返す。
-
-        Returns
-        -------
-        tuple[tuple, tuple, tuple]
-            * pos (x, y, z): ワールド座標
-            * fwd (dx, dy, dz): 進行方向の単位ベクトル
-            * right (rx, ry, rz): 右方向の単位ベクトル（fwd の xy 平面直交）
-        """
-        n = len(cl)
-        if n == 0:
-            return (0, 0, 0), (1, 0, 0), (0, -1, 0)
-        for i in range(n - 1):
-            d0 = cl[i][3]; d1 = cl[i+1][3]
-            if d0 <= dist <= d1:
-                t  = (dist - d0) / (d1 - d0) if d1 > d0 else 0
-                x  = cl[i][0] + (cl[i+1][0] - cl[i][0]) * t
-                y  = cl[i][1] + (cl[i+1][1] - cl[i][1]) * t
-                z  = cl[i][2] + (cl[i+1][2] - cl[i][2]) * t
-                dx = cl[i+1][0] - cl[i][0]
-                dy = cl[i+1][1] - cl[i][1]
-                dz = cl[i+1][2] - cl[i][2]
-                ln = math.hypot(dx, dy, dz) or 1
-                fwd   = (dx/ln, dy/ln, dz/ln)
-                right = (fwd[1], -fwd[0], 0)
-                return (x, y, z), fwd, right
-        x, y, z, _ = cl[-1]
-        return (x, y, z), (1, 0, 0), (0, -1, 0)
+        """モジュールレベルの :func:`interp_cl` に委譲する。"""
+        return interp_cl(cl, dist)
 
 
     # ─── 操作 ────────────────────────────────────────────────

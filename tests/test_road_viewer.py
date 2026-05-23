@@ -670,3 +670,351 @@ class TestElemFwdVec:
         elem = {"points_xy": [(0.0, 0.0)], "start": (0.0, 0.0), "end": (1.0, 0.0)}
         dx, dy = _elem_fwd_vec(elem, True)
         assert approx(dx, 1.0) and approx(dy, 0.0)
+
+
+# ══════════════════════════════════════════════════════════════
+# interp_cl — 中心線上の線形補間
+# ══════════════════════════════════════════════════════════════
+
+class TestInterpCl:
+    """モジュールレベル関数 interp_cl の単体テスト。
+
+    Panda3D 不要。RoadViewer._interp_cl が委譲するロジック本体。
+    """
+    from road_viewer import interp_cl as _f  # クラス属性で import（各テストで再利用）
+
+    # [エッジ] 空リスト → フォールバック値
+    def test_empty_returns_default(self):
+        from road_viewer import interp_cl
+        pos, fwd, right = interp_cl([], 0.0)
+        assert pos == (0, 0, 0)
+        assert fwd == (1, 0, 0)
+
+    # [仕様] 単一区間の中点を補間
+    def test_midpoint_interpolation(self):
+        from road_viewer import interp_cl
+        cl = [(0.0, 0.0, 0.0, 0.0), (10.0, 0.0, 0.0, 10.0)]
+        pos, fwd, right = interp_cl(cl, 5.0)
+        assert approx(pos[0], 5.0) and approx(pos[1], 0.0) and approx(pos[2], 0.0)
+        assert approx(fwd[0], 1.0) and approx(fwd[1], 0.0)
+
+    # [仕様] Z 方向の補間（坂道）
+    def test_z_interpolation(self):
+        from road_viewer import interp_cl
+        cl = [(0.0, 0.0, 0.0, 0.0), (10.0, 0.0, 10.0, 10.0)]
+        pos, fwd, _ = interp_cl(cl, 5.0)
+        assert approx(pos[2], 5.0)
+        # fwd は (dx,dy,dz) を正規化: (10,0,10)/sqrt(200)
+        expected = 10.0 / math.hypot(10, 0, 10)
+        assert approx(fwd[0], expected)
+        assert approx(fwd[2], expected)
+
+    # [仕様] right ベクトルは fwd の xy 平面直交（z=0）
+    def test_right_vector_is_xy_perp(self):
+        from road_viewer import interp_cl
+        cl = [(0.0, 0.0, 0.0, 0.0), (10.0, 0.0, 0.0, 10.0)]
+        _, fwd, right = interp_cl(cl, 5.0)
+        # right は fwd を xy で 90° 回転: (fy, -fx, 0)
+        assert approx(right[0], fwd[1])
+        assert approx(right[1], -fwd[0])
+        assert approx(right[2], 0.0)
+
+    # [境界] dist がちょうど始点（d0）
+    def test_dist_at_segment_start(self):
+        from road_viewer import interp_cl
+        cl = [(0.0, 0.0, 0.0, 0.0), (10.0, 0.0, 0.0, 10.0)]
+        pos, _, _ = interp_cl(cl, 0.0)
+        assert approx(pos[0], 0.0)
+
+    # [境界] dist がちょうど終点（d1）
+    def test_dist_at_segment_end(self):
+        from road_viewer import interp_cl
+        cl = [(0.0, 0.0, 0.0, 0.0), (10.0, 0.0, 0.0, 10.0)]
+        pos, _, _ = interp_cl(cl, 10.0)
+        assert approx(pos[0], 10.0)
+
+    # [境界] dist が範囲外（末端を超える）→ 末端位置・デフォルト方向
+    def test_dist_beyond_end_returns_last_point(self):
+        from road_viewer import interp_cl
+        cl = [(0.0, 0.0, 0.0, 0.0), (10.0, 0.0, 0.0, 10.0)]
+        pos, fwd, _ = interp_cl(cl, 99.0)
+        assert approx(pos[0], 10.0)
+        assert fwd == (1, 0, 0)
+
+    # [仕様] 複数区間：正しい区間を補間
+    def test_multiple_segments(self):
+        from road_viewer import interp_cl
+        cl = [
+            (0.0,  0.0, 0.0,  0.0),
+            (10.0, 0.0, 0.0, 10.0),
+            (10.0, 5.0, 0.0, 15.0),
+        ]
+        pos, fwd, _ = interp_cl(cl, 12.5)
+        # 第2区間 dist=10→15 の中点 d=12.5 → t=0.5 → y=2.5
+        assert approx(pos[0], 10.0) and approx(pos[1], 2.5)
+
+    # [エッジ] 区間長ゼロ（d0==d1）→ t=0 で補間（先端座標）
+    def test_zero_length_segment(self):
+        from road_viewer import interp_cl
+        cl = [(5.0, 3.0, 1.0, 0.0), (5.0, 3.0, 1.0, 0.0), (10.0, 0.0, 0.0, 10.0)]
+        pos, _, _ = interp_cl(cl, 0.0)
+        assert approx(pos[0], 5.0) and approx(pos[1], 3.0)
+
+
+# ══════════════════════════════════════════════════════════════
+# bearing_str — 8 方位文字列
+# ══════════════════════════════════════════════════════════════
+
+class TestBearingStr:
+    """モジュールレベル関数 bearing_str の単体テスト（全 8 方位）。"""
+
+    def _bs(self, fx, fy):
+        from road_viewer import bearing_str
+        return bearing_str(fx, fy)
+
+    # [仕様] 北: fwd_y > 0, fwd_x ≈ 0
+    def test_north(self):  assert self._bs(0.0,  1.0) == "N"
+    # [仕様] 南: fwd_y < 0, fwd_x ≈ 0
+    def test_south(self):  assert self._bs(0.0, -1.0) == "S"
+    # [仕様] 東: fwd_x > 0, fwd_y ≈ 0
+    def test_east(self):   assert self._bs(1.0,  0.0) == "E"
+    # [仕様] 西: fwd_x < 0, fwd_y ≈ 0
+    def test_west(self):   assert self._bs(-1.0, 0.0) == "W"
+    # [仕様] 北東
+    def test_northeast(self):
+        v = math.sqrt(0.5)
+        assert self._bs(v,  v) == "NE"
+    # [仕様] 南東
+    def test_southeast(self):
+        v = math.sqrt(0.5)
+        assert self._bs(v, -v) == "SE"
+    # [仕様] 南西
+    def test_southwest(self):
+        v = math.sqrt(0.5)
+        assert self._bs(-v, -v) == "SW"
+    # [仕様] 北西
+    def test_northwest(self):
+        v = math.sqrt(0.5)
+        assert self._bs(-v,  v) == "NW"
+
+
+# ══════════════════════════════════════════════════════════════
+# make_elem_cl — 要素辞書から 3D 中心線を生成
+# ══════════════════════════════════════════════════════════════
+
+class TestMakeElemCl:
+    """モジュールレベル関数 make_elem_cl の単体テスト。"""
+
+    def _make(self, **kw):
+        from road_viewer import make_elem_cl
+        return make_elem_cl(kw["elem"], kw["forward"])
+
+    # [仕様] points_xy あり・正順: 始点→終点の xy を使用
+    def test_with_points_xy_forward(self):
+        from road_viewer import make_elem_cl
+        elem = {
+            "plan_length": 10.0,
+            "start": [0.0, 0.0], "end": [10.0, 0.0],
+            "heights": [[0.0, 0.0], [10.0, 5.0]],
+            "points_xy": [[0.0, 0.0], [5.0, 0.0], [10.0, 0.0]],
+        }
+        cl, total = make_elem_cl(elem, True)
+        assert approx(total, 10.0)
+        assert len(cl) == 3
+        assert approx(cl[0][0], 0.0)  # start x
+        assert approx(cl[-1][0], 10.0)  # end x
+
+    # [仕様] points_xy あり・逆順: 終点→始点（点列反転）
+    def test_with_points_xy_reverse(self):
+        from road_viewer import make_elem_cl
+        elem = {
+            "plan_length": 10.0,
+            "start": [0.0, 0.0], "end": [10.0, 0.0],
+            "heights": [[0.0, 0.0], [10.0, 0.0]],
+            "points_xy": [[0.0, 0.0], [5.0, 0.0], [10.0, 0.0]],
+        }
+        cl, total = make_elem_cl(elem, False)
+        assert approx(cl[0][0], 10.0)  # 逆順: 始点が end 側
+        assert approx(cl[-1][0], 0.0)
+
+    # [仕様] points_xy なし（フォールバック）・正順: start→end を直線補間
+    def test_fallback_forward(self):
+        from road_viewer import make_elem_cl
+        elem = {
+            "plan_length": 100.0,
+            "start": [0.0, 0.0], "end": [100.0, 0.0],
+            "heights": [[0.0, 0.0], [100.0, 10.0]],
+        }
+        cl, total = make_elem_cl(elem, True)
+        assert approx(total, 100.0)
+        # 先頭: start 付近
+        assert approx(cl[0][0], 0.0)
+        # 末尾: end 付近
+        assert approx(cl[-1][0], 100.0)
+        # 末尾の高さ: elev=10.0
+        assert approx(cl[-1][2], 10.0)
+
+    # [仕様] points_xy なし・逆順: end→start
+    def test_fallback_reverse(self):
+        from road_viewer import make_elem_cl
+        elem = {
+            "plan_length": 100.0,
+            "start": [0.0, 0.0], "end": [100.0, 0.0],
+            "heights": [[0.0, 0.0], [100.0, 0.0]],
+        }
+        cl, total = make_elem_cl(elem, False)
+        assert approx(cl[0][0], 100.0)
+        assert approx(cl[-1][0], 0.0)
+
+    # [仕様] heights デフォルト（キーなし）→ 全区間 elev=0
+    def test_no_heights_defaults_to_zero(self):
+        from road_viewer import make_elem_cl
+        elem = {
+            "plan_length": 50.0,
+            "start": [0.0, 0.0], "end": [50.0, 0.0],
+        }
+        cl, _ = make_elem_cl(elem, True)
+        for pt in cl:
+            assert approx(pt[2], 0.0)
+
+    # [仕様] heights の中間区間で線形補間
+    def test_height_linear_interpolation(self):
+        from road_viewer import make_elem_cl
+        elem = {
+            "plan_length": 10.0,
+            "start": [0.0, 0.0], "end": [10.0, 0.0],
+            "heights": [[0.0, 0.0], [10.0, 10.0]],
+            "points_xy": [[0.0, 0.0], [5.0, 0.0], [10.0, 0.0]],
+        }
+        cl, _ = make_elem_cl(elem, True)
+        # 中点 (5.0, 0.0) の dist ≈ 5.0 → elev ≈ 5.0
+        mid = cl[1]
+        assert approx(mid[2], 5.0, tol=0.1)
+
+    # [境界] plan_length と points_xy の累積長が異なる（スケール補正）
+    def test_scale_correction_when_pts_length_differs(self):
+        from road_viewer import make_elem_cl
+        # points_xy の合計長は 20.0 だが plan_length は 10.0 → scale=0.5
+        elem = {
+            "plan_length": 10.0,
+            "start": [0.0, 0.0], "end": [20.0, 0.0],
+            "heights": [[0.0, 0.0], [10.0, 0.0]],
+            "points_xy": [[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]],
+        }
+        cl, total = make_elem_cl(elem, True)
+        assert approx(total, 10.0)
+        # dist は plan_length にスケーリング: 末端 dist = 10.0
+        assert approx(cl[-1][3], 10.0)
+
+
+# ══════════════════════════════════════════════════════════════
+# find_next_candidates — 次の走行候補を検索
+# ══════════════════════════════════════════════════════════════
+
+def _mk_elem(eid, sx, sy, ex, ey, s_ref=None, e_ref=None):
+    """テスト用要素辞書を生成するヘルパー。"""
+    return {
+        "id": eid,
+        "plan_length": math.hypot(ex - sx, ey - sy),
+        "start": [sx, sy],
+        "end":   [ex, ey],
+        "start_clo_ref": s_ref,
+        "end_clo_ref":   e_ref,
+    }
+
+
+class TestFindNextCandidates:
+    """モジュールレベル関数 find_next_candidates の単体テスト。"""
+
+    # [仕様] 末端座標が一致（start 側）→ (elem, True) を返す
+    def test_coord_match_start_side(self):
+        from road_viewer import find_next_candidates
+        e1 = _mk_elem(1, 0.0, 0.0, 10.0, 0.0)
+        e2 = _mk_elem(2, 10.0, 0.0, 20.0, 0.0)
+        cands = find_next_candidates([e1, e2], cur_id=1, ex=10.0, ey=0.0,
+                                     exit_clo_ref=None)
+        assert len(cands) == 1
+        assert cands[0][0]["id"] == 2
+        assert cands[0][1] is True  # forward
+
+    # [仕様] 末端座標が一致（end 側）→ (elem, False) を返す
+    def test_coord_match_end_side(self):
+        from road_viewer import find_next_candidates
+        e1 = _mk_elem(1, 0.0, 0.0, 10.0, 0.0)
+        e2 = _mk_elem(2, 20.0, 0.0, 10.0, 0.0)  # end が (10,0)
+        cands = find_next_candidates([e1, e2], cur_id=1, ex=10.0, ey=0.0,
+                                     exit_clo_ref=None)
+        assert len(cands) == 1
+        assert cands[0][0]["id"] == 2
+        assert cands[0][1] is False  # reverse
+
+    # [仕様] cur_id の要素自身は除外される
+    def test_cur_id_excluded(self):
+        from road_viewer import find_next_candidates
+        e1 = _mk_elem(1, 0.0, 0.0, 10.0, 0.0)
+        cands = find_next_candidates([e1], cur_id=1, ex=10.0, ey=0.0,
+                                     exit_clo_ref=None)
+        assert cands == []
+
+    # [仕様] 距離が ad_tol を超える → 候補なし
+    def test_beyond_tolerance_no_match(self):
+        from road_viewer import find_next_candidates
+        e1 = _mk_elem(1, 0.0, 0.0, 10.0, 0.0)
+        e2 = _mk_elem(2, 10.5, 0.0, 20.0, 0.0)  # 0.5m 離れている
+        cands = find_next_candidates([e1, e2], cur_id=1, ex=10.0, ey=0.0,
+                                     exit_clo_ref=None, ad_tol=0.3)
+        assert cands == []
+
+    # [仕様] exit_clo_ref あり: start_clo_ref が一致 → (elem, True)
+    def test_clothoid_ref_start_match(self):
+        from road_viewer import find_next_candidates
+        ref = {"clothoid_id": 99, "side": "circle"}
+        e1 = _mk_elem(1, 0.0, 0.0, 10.0, 0.0)
+        e2 = _mk_elem(2, 10.0, 0.0, 20.0, 0.0, s_ref=ref)
+        cands = find_next_candidates([e1, e2], cur_id=1, ex=999.0, ey=999.0,
+                                     exit_clo_ref=ref)
+        assert len(cands) == 1
+        assert cands[0][0]["id"] == 2
+        assert cands[0][1] is True
+
+    # [仕様] exit_clo_ref あり: end_clo_ref が一致 → (elem, False)
+    def test_clothoid_ref_end_match(self):
+        from road_viewer import find_next_candidates
+        ref = {"clothoid_id": 88, "side": "line"}
+        e1 = _mk_elem(1, 0.0, 0.0, 10.0, 0.0)
+        e2 = _mk_elem(2, 20.0, 0.0, 10.0, 0.0, e_ref=ref)
+        cands = find_next_candidates([e1, e2], cur_id=1, ex=999.0, ey=999.0,
+                                     exit_clo_ref=ref)
+        assert len(cands) == 1
+        assert cands[0][0]["id"] == 2
+        assert cands[0][1] is False
+
+    # [仕様] exit_clo_ref あり: clothoid_id は一致するが side 不一致 → 候補なし
+    def test_clothoid_ref_side_mismatch_no_match(self):
+        from road_viewer import find_next_candidates
+        ref_exit = {"clothoid_id": 99, "side": "circle"}
+        ref_elem = {"clothoid_id": 99, "side": "line"}   # side が違う
+        e1 = _mk_elem(1, 0.0, 0.0, 10.0, 0.0)
+        e2 = _mk_elem(2, 10.0, 0.0, 20.0, 0.0, s_ref=ref_elem)
+        cands = find_next_candidates([e1, e2], cur_id=1, ex=10.0, ey=0.0,
+                                     exit_clo_ref=ref_exit)
+        # exit_clo_ref が指定されているので座標距離判定には落ちない → 候補なし
+        assert cands == []
+
+    # [エッジ] elem_graph が空 → 候補なし
+    def test_empty_graph(self):
+        from road_viewer import find_next_candidates
+        assert find_next_candidates([], cur_id=None, ex=0.0, ey=0.0,
+                                    exit_clo_ref=None) == []
+
+    # [C1] 複数候補が両方マッチ → 全部返す
+    def test_multiple_candidates(self):
+        from road_viewer import find_next_candidates
+        e1 = _mk_elem(1, 0.0, 0.0, 10.0, 0.0)
+        e2 = _mk_elem(2, 10.0, 0.0, 20.0, 0.0)
+        e3 = _mk_elem(3, 10.0, 0.0, 10.0, 20.0)
+        cands = find_next_candidates([e1, e2, e3], cur_id=1, ex=10.0, ey=0.0,
+                                     exit_clo_ref=None)
+        assert len(cands) == 2
+        ids = {c[0]["id"] for c in cands}
+        assert ids == {2, 3}
