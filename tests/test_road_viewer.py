@@ -157,19 +157,30 @@ class TestBuildCenterline:
         assert approx(pts[0][0], 10.0, tol=0.5)
         assert approx(pts[0][1], 20.0, tol=0.5)
 
-    # [仕様] plan_length < 0.001 の要素はスキップ
+    # [仕様] plan_length < 0.001 の要素はスキップ（L209）
     def test_tiny_element_skipped(self):
         from road_viewer import build_centerline
-        seg, ep = make_seg_elem(100.0)
-        ep_tiny = make_ep(0.0001)  # 極小要素
-        ln2 = Line(Vec2(100, 0), Vec2(150, 0))
+        # 長さ0.0001の tiny 要素を先頭に置く: build_centerline の L209 で continue される
+        ln_tiny = Line(Vec2(0, 0), Vec2(0.0001, 0))
+        seg_tiny = Segment(ln_tiny, 0.0, 1.0)
+        ln_tiny.segments.append(seg_tiny)
+        ep_tiny = make_ep(0.0001, [make_gl(0, 0, 0.0001, 0)])
+        ep_tiny.element_id   = seg_tiny.id
+        ep_tiny.element_type = 'segment'
+
+        ln2 = Line(Vec2(0.0001, 0), Vec2(50.0001, 0))
         seg2 = Segment(ln2, 0.0, 1.0)
         ln2.segments.append(seg2)
         ep2 = make_ep(50.0, [make_gl(0, 10, 50, 15)])
-        pts = build_centerline([seg, seg2], [ep, ep2], [False, False])
-        # 正常な2要素の点列が生成される（tiny はスキップ）
-        # skip後も ep2 の点が続く
+        ep2.element_id   = seg2.id
+        ep2.element_type = 'segment'
+
+        # ep_tiny は L < 0.001 なのでスキップされ、seg2 だけの点列が生成される
+        pts = build_centerline([seg_tiny, seg2], [ep_tiny, ep2], [False, False])
+        # tiny はスキップされるが ep2 から点が生成される
         assert len(pts) > 0
+        # dist は ep_tiny.plan_length (0.0001) から始まる(offsets[1]=0.0001)
+        # 実際には tiny 要素がスキップされて dist が continuouos になるはず
 
     # [仕様] 境界点（i=0, points非空）は前要素の末端 z を継承する（段差防止）
     def test_boundary_z_continuity(self):
@@ -471,3 +482,191 @@ class TestPrepareViewerDataBranches:
         )
         # 空の centerline は display_segments に追加されない
         assert all(len(s) > 0 for s in result['display_segments'])
+
+
+# ══════════════════════════════════════════════════════════════
+# 5. _tangent_normal_at
+# ══════════════════════════════════════════════════════════════
+
+@skip_panda3d
+class TestTangentNormalAt:
+    """_tangent_normal_at の全分岐を検証する。"""
+
+    # [仕様] i=0（先頭点）→ 前進差分
+    def test_first_point_forward_diff(self):
+        from road_viewer import _tangent_normal_at
+        cl = [(0.0, 0.0, 0.0, 0.0),
+              (3.0, 4.0, 0.0, 5.0),
+              (6.0, 8.0, 0.0, 10.0)]
+        tx, ty, nx, ny = _tangent_normal_at(cl, 0)
+        # (3,4) → 単位ベクトルは (0.6, 0.8)
+        assert approx(tx, 0.6) and approx(ty, 0.8)
+        # 右法線 = (ty, -tx) = (0.8, -0.6)
+        assert approx(nx, 0.8) and approx(ny, -0.6)
+
+    # [仕様] i=n-1（末尾点）→ 後退差分
+    def test_last_point_backward_diff(self):
+        from road_viewer import _tangent_normal_at
+        cl = [(0.0, 0.0, 0.0, 0.0),
+              (1.0, 0.0, 0.0, 1.0),
+              (2.0, 0.0, 0.0, 2.0)]
+        tx, ty, nx, ny = _tangent_normal_at(cl, 2)
+        # 後退差分: (2,0)-(1,0)=(1,0) → (1,0)
+        assert approx(tx, 1.0) and approx(ty, 0.0)
+        assert approx(nx, 0.0) and approx(ny, -1.0)
+
+    # [仕様] 中間点 → 中央差分（i-1 → i+1）
+    def test_middle_point_central_diff(self):
+        from road_viewer import _tangent_normal_at
+        cl = [(0.0, 0.0, 0.0, 0.0),
+              (1.0, 0.0, 0.0, 1.0),
+              (2.0, 0.0, 0.0, 2.0)]
+        tx, ty, nx, ny = _tangent_normal_at(cl, 1)
+        # 中央差分: (2,0)-(0,0)=(2,0) → 単位 (1,0)
+        assert approx(tx, 1.0) and approx(ty, 0.0)
+
+    # [エッジ] dx=dy=0（縮退点）→ デフォルト (1, 0)
+    def test_zero_length_segment_fallback(self):
+        from road_viewer import _tangent_normal_at
+        # i=0 で p0==p1 → dx=dy=0 → fallback
+        cl = [(0.0, 0.0, 0.0, 0.0),
+              (0.0, 0.0, 0.0, 0.0),
+              (1.0, 0.0, 0.0, 1.0)]
+        tx, ty, nx, ny = _tangent_normal_at(cl, 0)
+        assert approx(tx, 1.0) and approx(ty, 0.0)
+
+    # [境界] 2点リストでも正常動作
+    def test_two_point_centerline(self):
+        from road_viewer import _tangent_normal_at
+        cl = [(0.0, 0.0, 0.0, 0.0),
+              (0.0, 1.0, 0.0, 1.0)]
+        # i=0 (先頭)
+        tx0, ty0, _, _ = _tangent_normal_at(cl, 0)
+        assert approx(tx0, 0.0) and approx(ty0, 1.0)
+        # i=1 (末尾)
+        tx1, ty1, _, _ = _tangent_normal_at(cl, 1)
+        assert approx(tx1, 0.0) and approx(ty1, 1.0)
+
+    # [仕様] 右法線は接線の右直交
+    def test_normal_perpendicular_and_right(self):
+        from road_viewer import _tangent_normal_at
+        # 接線が (0,1) のとき右法線は (1,0)
+        cl = [(0.0, 0.0, 0.0, 0.0),
+              (0.0, 1.0, 0.0, 1.0),
+              (0.0, 2.0, 0.0, 2.0)]
+        tx, ty, nx, ny = _tangent_normal_at(cl, 1)
+        assert approx(tx, 0.0) and approx(ty, 1.0)
+        # 右法線 = (ty, -tx) = (1, 0)
+        assert approx(nx, 1.0) and approx(ny, 0.0)
+
+
+# ══════════════════════════════════════════════════════════════
+# 6. _elem_endpoints_xy
+# ══════════════════════════════════════════════════════════════
+
+@skip_panda3d
+class TestElemEndpointsXy:
+    """_elem_endpoints_xy の全型分岐を検証する。"""
+
+    # [仕様] Segment → (start, end) を返す
+    def test_segment(self):
+        from road_viewer import _elem_endpoints_xy
+        ln = Line(Vec2(1, 2), Vec2(5, 6))
+        seg = Segment(ln, 0.0, 1.0)
+        result = _elem_endpoints_xy(seg)
+        assert result is not None
+        s, e = result
+        assert approx(s.x, 1.0) and approx(s.y, 2.0)
+        assert approx(e.x, 5.0) and approx(e.y, 6.0)
+
+    # [仕様] Arc → (start, end) を返す
+    def test_arc(self):
+        from road_viewer import _elem_endpoints_xy
+        ci = Circle(Vec2(0, 0), 10.0)
+        arc = Arc(ci, 0.0, math.pi / 2)
+        ci.arcs.append(arc)
+        result = _elem_endpoints_xy(arc)
+        assert result is not None
+        assert len(result) == 2
+
+    # [仕様] 有効な Clothoid → (_line_pt, _circle_pt) を返す
+    def test_clothoid_valid(self):
+        from road_viewer import _elem_endpoints_xy
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 60), 30.0)
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        if not clo.is_valid:
+            pytest.skip("Clothoid not valid for this geometry")
+        result = _elem_endpoints_xy(clo)
+        assert result is not None
+        assert len(result) == 2
+
+    # [仕様] 無効な Clothoid → None を返す
+    def test_clothoid_invalid_returns_none(self):
+        from road_viewer import _elem_endpoints_xy
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        ci = Circle(Vec2(50, 10), 30.0)  # d < R → 無効
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        assert not clo.is_valid
+        assert _elem_endpoints_xy(clo) is None
+
+    # [エッジ] 非対応型 → None を返す
+    def test_unknown_type_returns_none(self):
+        from road_viewer import _elem_endpoints_xy
+        assert _elem_endpoints_xy("not_an_element") is None
+        assert _elem_endpoints_xy(42) is None
+
+
+# ══════════════════════════════════════════════════════════════
+# 7. _elem_fwd_vec
+# ══════════════════════════════════════════════════════════════
+
+@skip_panda3d
+class TestElemFwdVec:
+    """_elem_fwd_vec の全分岐を検証する。"""
+
+    # [仕様] points_xy >= 2点 & forward=True → 先頭2点から接線
+    def test_forward_with_points_xy(self):
+        from road_viewer import _elem_fwd_vec
+        elem = {"points_xy": [(0.0, 0.0), (3.0, 4.0), (6.0, 8.0)],
+                "start": (0.0, 0.0), "end": (6.0, 8.0)}
+        dx, dy = _elem_fwd_vec(elem, True)
+        assert approx(dx, 0.6) and approx(dy, 0.8)
+
+    # [仕様] points_xy >= 2点 & forward=False → 末尾2点から接線（逆方向）
+    def test_backward_with_points_xy(self):
+        from road_viewer import _elem_fwd_vec
+        elem = {"points_xy": [(0.0, 0.0), (3.0, 4.0), (6.0, 8.0)],
+                "start": (0.0, 0.0), "end": (6.0, 8.0)}
+        dx, dy = _elem_fwd_vec(elem, False)
+        # pts[-1]→pts[-2]: (6,8)→(3,4) → diff=(-3,-4) → 単位 (-0.6, -0.8)
+        assert approx(dx, -0.6) and approx(dy, -0.8)
+
+    # [仕様] points_xy が空 & forward=True → start→end から接線
+    def test_forward_without_points_xy(self):
+        from road_viewer import _elem_fwd_vec
+        elem = {"points_xy": [], "start": (0.0, 0.0), "end": (3.0, 4.0)}
+        dx, dy = _elem_fwd_vec(elem, True)
+        assert approx(dx, 0.6) and approx(dy, 0.8)
+
+    # [仕様] points_xy が None & forward=False → end→start から接線
+    def test_backward_without_points_xy(self):
+        from road_viewer import _elem_fwd_vec
+        elem = {"points_xy": None, "start": (0.0, 0.0), "end": (3.0, 4.0)}
+        dx, dy = _elem_fwd_vec(elem, False)
+        assert approx(dx, -0.6) and approx(dy, -0.8)
+
+    # [境界] 零ベクトル（start==end かつ points_xy なし）→ (1/1, 0/1) = (1, 0)
+    def test_degenerate_zero_vector(self):
+        from road_viewer import _elem_fwd_vec
+        elem = {"points_xy": [], "start": (0.0, 0.0), "end": (0.0, 0.0)}
+        dx, dy = _elem_fwd_vec(elem, True)
+        # math.hypot(0,0) or 1.0 → ln=1.0 → dx=0, dy=0
+        assert approx(dx, 0.0) and approx(dy, 0.0)
+
+    # [C1] points_xy に 1点だけ → フォールバックして start/end を使う
+    def test_single_point_falls_back_to_start_end(self):
+        from road_viewer import _elem_fwd_vec
+        elem = {"points_xy": [(0.0, 0.0)], "start": (0.0, 0.0), "end": (1.0, 0.0)}
+        dx, dy = _elem_fwd_vec(elem, True)
+        assert approx(dx, 1.0) and approx(dy, 0.0)
