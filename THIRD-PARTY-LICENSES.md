@@ -17,31 +17,12 @@ Links to the project homepages or PyPI entries are provided for full license tex
 These packages are the official Qt for Python bindings provided by The Qt Company.
 They are licensed under the **GNU Lesser General Public License v3.0 (LGPL-3.0-only)**.
 
----
-
-## Scientific / Utility Libraries
-
-### NumPy (BSD-3-Clause)
-- **numpy** — https://pypi.org/project/numpy/
-
-### SciPy (BSD-3-Clause)
-- **scipy** — https://pypi.org/project/scipy/
-
-### Packaging (Apache-2.0)
-- **packaging** — https://pypi.org/project/packaging/
-
-### Colorama (BSD-3-Clause)
-- **colorama** — https://pypi.org/project/colorama/
-
-### Pygments (BSD-2-Clause)
-- **pygments** — https://pypi.org/project/Pygments/
-
 ### Panda3D (BSD-3-Clause)
 - **panda3d** — https://pypi.org/project/panda3d/
 
 ---
 
-## Testing Tools
+## Development / Testing Dependencies
 
 ### pytest (MIT)
 - **pytest** — https://pypi.org/project/pytest/
@@ -49,20 +30,32 @@ They are licensed under the **GNU Lesser General Public License v3.0 (LGPL-3.0-o
 ### pytest-cov (MIT)
 - **pytest-cov** — https://pypi.org/project/pytest-cov/
 
+### pytest-qt (MIT)
+- **pytest-qt** — https://pypi.org/project/pytest-qt/
+
 ### coverage (Apache-2.0)
 - **coverage** — https://pypi.org/project/coverage/
 
-### iniconfig (MIT)
-- **iniconfig** — https://pypi.org/project/iniconfig/
+---
 
-### pluggy (MIT)
-- **pluggy** — https://pypi.org/project/pluggy/
+## Indirect / Transitive Dependencies
+
+The following packages are installed automatically as dependencies of the above packages.
+They are not imported directly by this project's source code.
+
+| Package | License | Pulled in by |
+|---|---|---|
+| colorama | BSD-3-Clause | pytest |
+| iniconfig | MIT | pytest |
+| packaging | Apache-2.0 | pytest |
+| pluggy | MIT | pytest |
+| pygments | BSD-2-Clause | pytest |
+| typing-extensions | PSF-2.0 | pytest-qt |
 
 ---
 
 ## Notes
 
-- This file lists only **runtime and development dependencies installed in the environment**.
-- License texts are not reproduced here; refer to each package’s homepage for the full license.
-- No modifications have been made to these third-party packages.
-
+- Numerical computation uses the Python standard library only (numpy / scipy are not used).
+- License texts are not reproduced here; refer to each package's homepage for the full license.
+- No modifications have been made to any third-party packages.

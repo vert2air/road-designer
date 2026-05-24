@@ -5,24 +5,31 @@
 ## 目次
 
 1. [models.py — データモデルとユーティリティ](#1-modelspy--データモデルとユーティリティ)
-2. [canvas.py — メイン編集キャンバス](#2-canvaspy--メイン編集キャンバス)
-3. [vertical_window.py — 縦断線形設計ウィンドウ](#3-vertical_windowpy--縦断線形設計ウィンドウ)
-4. [road_viewer.py — 3D走行ビューア](#4-road_viewerpy--3d走行ビューア)
-5. [right_panel.py — 右パネル](#5-right_panelpy--右パネル)
-6. [main_window.py — メインウィンドウ](#6-main_windowpy--メインウィンドウ)
+2. [vertical_profile.py — 縦断線形データモデル](#2-vertical_profilepy--縦断線形データモデル)
+3. [canvas.py — メイン編集キャンバス](#3-canvaspy--メイン編集キャンバス)
+4. [vertical_window.py — 縦断線形設計ウィンドウ](#4-vertical_windowpy--縦断線形設計ウィンドウ)
+5. [_prop_builder.py — プロパティパネル UI 構築 Mixin](#5-_prop_builderpy--プロパティパネル-ui-構築-mixin)
+6. [road_viewer.py — 3D走行ビューア](#6-road_viewerpy--3d走行ビューア)
+7. [_road_mesh.py — 3D道路メッシュ生成](#7-_road_meshpy--3d道路メッシュ生成)
+8. [right_panel.py — 右パネル](#8-right_panelpy--右パネル)
+9. [main_window.py — メインウィンドウ](#9-main_windowpy--メインウィンドウ)
 
 ---
 
 ## 1. models.py — データモデルとユーティリティ
 
+アプリ全体の「Single Source of Truth」となるデータ定義ファイル。平面線形クラス（`Line`・`Segment`・`Circle`・`Arc`・`Clothoid`・`OffsetConstraint`・`Scene`）と、ファイル管理・接続・ユーティリティ関数を担う。
+
+縦断線形クラス（`ElementProfile`・`GradeLine`・`VerticalCurve` 等）は `vertical_profile.py` に定義されているが、既存コードの互換性のため `from vertical_profile import ...` で本モジュールから再エクスポートしている（2章参照）。
+
 ### 1.1 ID 管理（モジュールレベル）
 
 #### `new_id() -> int`
 
-グローバルカウンタ `_id_counter`（`itertools.count(1)` で初期化）から次の整数を取得して返す。
+グローバルカウンタ `_id_counter`（`itertools.count(1)` で初期化）から次の整数を取得して返す。全データクラスの `id` フィールドのデフォルト値として `field(default_factory=new_id)` の形で使われており、インスタンス生成のたびに自動採番される。
 
 - **戻り値の範囲**: 1 以上の整数（呼び出しごとに単調増加）
-- **スレッドセーフ**: `itertools.count` はアトミムなので Python GIL 下で安全
+- **スレッドセーフ**: `itertools.count` はアトミックなので Python GIL 下で安全
 - **エッジケース**: アプリ起動中は減少しない。ファイル読み込み後は `_reset_id_counter_after` で再設定される
 
 #### `_reset_id_counter_after(max_id: int)`
@@ -101,7 +108,7 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 
 #### `angle` プロパティ
 
-`math.atan2(dy, dx)` で方向角（ラジアン）を返す。範囲は `(-π, π]`。
+`math.atan2(dy, dx)` で方向角（ラジアン）を返す。範囲は `(-π, π]`。右パネルの直線プロパティパネルで「方向角」ラベルとして度数表示するためだけに使われる。
 
 #### `project_point(p: Vec2) -> Vec2`
 
@@ -201,12 +208,10 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 | `kind` | `str` | `"polyline"` または `"smooth"` |
 | `line_a`, `line_b` | `Line` | 接続される2直線 |
 | `shared_point` | `Vec2` | 共有参照点（交点）の座標 |
-| `a_end_is_shared` | `bool` | `True`: `line_a.ref_end` が共有点（折れ線接続でどちら側に交点があるかを記録）|
+| `a_end_is_shared` | `bool` | `True`: `line_a.ref_end` が共有点。`Canvas._do_drag("shared_ref")` がどちらの参照点を動かすかの判定に使う |
 | `b_start_is_shared` | `bool` | `True`: `line_b.ref_start` が共有点（同上） |
 | `circle` | `Circle \| None` | スムーズ接続時の中間円 |
 | `bisector_dir` | `Vec2 \| None` | 二等分線方向（スムーズ専用） |
-| `line_j_reversed` | `bool` | スムーズ接続の J 直線の反転フラグ |
-| `line_k_reversed` | `bool` | スムーズ接続の K 直線の反転フラグ |
 
 **ライフサイクル**:
 - 折れ線接続: `Canvas._connect_polyline()` で生成し、`line_a.connection = line_b.connection = conn` と設定する
@@ -454,6 +459,8 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 
 ### 1.10 `plan_length_of(obj) -> float`（モジュールレベル関数）
 
+> **定義**: `vertical_profile.py`（`models.py` から後方互換のため再エクスポート）
+
 平面線形要素の平面長（道路上の長さ）を型に依らず統一インターフェースで取得するユーティリティ。`ElementProfile.plan_length` の設定（`_get_or_create_ep()`）、3D 中心線生成（`build_centerline()`）、縦断線形ウィンドウの累積距離計算（`set_plan_elements()`）など、型を問わず要素を扱う処理で広く使われる。
 
 | 入力型 | 計算式 |
@@ -466,6 +473,8 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 ---
 
 ### 1.11 `ElementProfile` データクラス
+
+> **定義**: `vertical_profile.py`（`models.py` から後方互換のため再エクスポート）
 
 平面線形要素（`Segment`/`Arc`/`Clothoid`）と縦断線形データを 1 対 1 で対応させるブリッジ。平面線形はワールド座標で定義され縦断線形は「平面距離に対する標高」で定義されるという異なる座標系を、`ElementProfile` が橋渡しする。
 
@@ -494,6 +503,8 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 
 ### 1.12 `GradeLine` データクラス
 
+> **定義**: `vertical_profile.py`（`models.py` から後方互換のため再エクスポート）
+
 勾配直線（一定勾配の直線区間）を表す。`dist_start`〜`dist_end` の距離範囲と `elev_start`〜`elev_end` の標高で定義する。隣接する `GradeLine` の端点は `_snap_grade_lines()` によって強制一致させる（隙間ゼロを保証）。
 
 `next_curve`/`prev_curve` フィールドは隣接する `VerticalCurve` への参照だが、ファイルには保存されない（メモリ上の参照のみ）。縦断曲線の g1/g2 を再計算する `_recalc_vc_gradients()` がこの参照の代わりに `pvi_dist` で勾配直線を検索する。
@@ -505,6 +516,8 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 ---
 
 ### 1.13 `VerticalCurve` データクラス
+
+> **定義**: `vertical_profile.py`（`models.py` から後方互換のため再エクスポート）
 
 #### 派生プロパティ
 
@@ -535,8 +548,6 @@ Fresnel 条件 `ye(τ) = d_abs − R·cos(τ)` を満たす全偏角 `τ` を二
 
 Undo 機能は `Canvas.push_undo()` が `scene.to_dict()` で Scene 全体を JSON にシリアライズしてスタックに積む方式で実現している。このため Scene は常に完全にシリアライズ可能でなければならない（循環参照を持たず、すべてのフィールドが JSON 変換可能）。
 
-`segment_snaps`/`arc_snaps` は将来の拡張用フィールドで、現バージョンでは `Clothoid` の `_split_seg_ids`/`_split_arc_ids` が内部で分割管理を行うため実質未使用。
-
 #### `__init__()`
 
 以下のフィールドを空リストで初期化する:
@@ -548,9 +559,7 @@ Undo 機能は `Canvas.push_undo()` が `scene.to_dict()` で Scene 全体を JS
 | `clothoids` | `list[Clothoid]` | 全クロソイド |
 | `offset_constraints` | `list[OffsetConstraint]` | オフセット拘束 |
 | `element_profiles` | `list[ElementProfile]` | 縦断線形データ（要素単位） |
-| `vertical_alignments` | `list[VerticalAlignment]` | 旧フォーマット互換用 |
-| `segment_snaps` | `list[SegmentSnap]` | 線分端点の接続情報 |
-| `arc_snaps` | `list[ArcSnap]` | 円弧端点の接続情報 |
+| `vertical_alignments` | `list[VerticalAlignment]` | 旧フォーマット互換用（`from_dict` 時のみ読み込む、新規作成では常に空） |
 | `nicknames` | `dict[int, str]` | ID → ニックネーム |
 
 #### `get_nickname(obj_id, prefix="") -> str`
@@ -640,7 +649,7 @@ Undo 機能は `Canvas.push_undo()` が `scene.to_dict()` で Scene 全体を JS
 
 #### `__post_init__()`
 
-`_eps_a = 0`, `_eps_b = 0` に初期化する（0 は未設定を意味し、後方互換モードで動作する）。
+`_eps_a = 0`, `_eps_b = 0` に初期化する。0 は「未設定」を意味し、この状態で `solve()` が呼ばれると 4 通りの `(ε_a, ε_b)` を全探索する後方互換モードで動作する。通常は生成直後に `calc_offsets_from_current()` が呼ばれて `_eps_a`/`_eps_b` が確定するが、旧バージョンのファイルをロードした場合はこれらが保存されていないため 0 のまま `solve()` に入る。4 通りのうち現在の直線方向との整合性が最も高い解を採用することで、旧ファイルでも正しく追従する。
 
 #### `calc_offsets_from_current()`
 
@@ -748,9 +757,40 @@ n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
 
 ---
 
-## 2. canvas.py — メイン編集キャンバス
+## 2. vertical_profile.py — 縦断線形データモデル
 
-### 2.1 モジュールレベル定数
+平面線形（`models.py`）と縦断線形の関心事を分離するために `models.py` から切り出したモジュール。縦断線形クラスは Panda3D にも Canvas にも依存しない純粋なデータモデルであり、別ファイルにすることでインポート依存を軽くし、テストが書きやすくなる。
+
+`vertical_profile.py` は `models.py` から `Segment`・`Arc`・`Clothoid`・`new_id` をインポートするが、`models.py` 側も `from vertical_profile import ...` で再エクスポートする（循環インポート）。Python は「`Segment` 等が定義された後に再エクスポート行が実行される」という初期化順序を保証するためこの構造が安全に機能する（詳細は基本設計書 2.3 節参照）。
+
+`vertical_profile.py` は以下のクラス・関数を定義し、`models.py` が後方互換のために再エクスポートする。
+
+- `plan_length_of(obj)`: 平面線形要素の平面長を返す（詳細は 1.10 節参照）
+- `ElementProfile`: 縦断線形データのブリッジクラス（詳細は 1.11 節参照）
+- `GradeLine`: 勾配直線（詳細は 1.12 節参照）
+- `VerticalCurve`: 縦断曲線（詳細は 1.13 節参照）
+- `VerticalAlignment`: 旧フォーマット互換クラス（`from_dict` で旧 `.rdjson` を読み込む際に使用）
+- `make_empty_profile()`: 空の `ElementProfile` を生成するファクトリ関数
+
+### 2.1 `VerticalAlignment` クラス
+
+旧フォーマット互換のデータクラス。古い `.rdjson` ファイルでは縦断線形データがトップレベルの `vertical_alignments` キーに格納されており、`Scene.from_dict()` がこのクラスで読み込んで `element_profiles` に変換する。新規作成の Scene には含まれない。
+
+### 2.2 `make_empty_profile() -> ElementProfile`
+
+`grade_lines=[]`・`vertical_curves=[]` の空の `ElementProfile` を生成して返す。`ProfileCanvas.set_plan_elements()` で対応する EP が存在しない要素のダミーとして使用する。`models.py` からも `make_empty_profile` として再エクスポートされる。
+
+---
+
+## 3. canvas.py — メイン編集キャンバス
+
+ユーザーが平面線形を視覚的に編集するメインキャンバス。`QWidget` を継承し、`paintEvent` でシーン全体を描画するとともに、マウス・ホイール・キー操作を受け付けて Scene を更新する。
+
+**他コンポーネントとの境界**: Canvas は図形の追加・削除・変形とアンドゥを担当し、プロパティ数値の表示・編集は `RightPanel` に委譲する。両者は `selection_changed` / `scene_changed` シグナルで疎結合に連携する。Canvas は RightPanel を直接参照しない。
+
+**ワールド座標とスクリーン座標**: すべての内部データはワールド座標（m 単位）で保持する。描画時にのみ `w2s()` でスクリーン座標へ変換する。ヒット判定もスクリーン座標で行い（`HIT_DIST` px 固定）、判定後にワールド座標へ逆変換する。
+
+### 3.1 モジュールレベル定数
 
 | 定数 | 値 | 説明 |
 |---|---|---|
@@ -762,7 +802,7 @@ n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
 
 `HIT_DIST` と `HANDLE_R` はスクリーンピクセル単位の固定値。ズームレベルによらず一定のクリック精度を保つために、ヒット判定はスクリーン座標系で行い、判定後にワールド座標へ変換する。
 
-### 2.2 `Handle` データクラス
+### 3.2 `Handle` データクラス
 
 ハンドルの描画・操作情報を保持するデータクラス。
 
@@ -773,7 +813,7 @@ n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
 | `tag` | `str` | ハンドルの種別識別子（例: `"ref_start"`, `"arc_end"`, `"radius"`） |
 | `owner` | `Any` | このハンドルが属する図形オブジェクト |
 
-### 2.2b モジュールレベルユーティリティ（canvas.py）
+### 3.2b モジュールレベルユーティリティ（canvas.py）
 
 #### `qp(v: Vec2) -> QPointF`
 
@@ -781,7 +821,7 @@ n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
 
 ---
 
-### 2.3 `Canvas` クラス
+### 3.3 `Canvas` クラス
 
 #### `__init__(scene, parent=None)`
 
@@ -803,7 +843,7 @@ n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
 | `_pan_start` | `None` | パン開始時のスクリーン座標 |
 | `_pan_offset_start` | `None` | パン開始時の `_offset` 値 |
 | `_mouse_moved_px` | `0.0` | マウスダウンからの累積移動量（px）|
-| `_undo_stack` | `[]` | Undo スタック（最大 500） |
+| `_undo_stack` | `deque(maxlen=500)` | Undo スタック（最大 500、古い履歴は自動破棄） |
 
 `setMouseTracking(True)` でマウスボタンを押さなくてもホバーイベントを受け取る。`setFocusPolicy(Qt.FocusPolicy.StrongFocus)` でキーイベントを受け取る。
 
@@ -841,7 +881,7 @@ screen_y = -p.y * scale + offset.y   # y 反転
 
 #### `push_undo()`
 
-現在の Scene を `scene.to_dict()` で JSON シリアライズしてスタックに積む。500 件を超えると先頭を削除する（FIFO）。
+現在の Scene を `scene.to_dict()` で JSON シリアライズして `_undo_stack`（`deque(maxlen=500)`）に積む。`maxlen` により 500 件を超えると最も古い状態が自動的に破棄される（O(1)）。
 
 #### `undo()`
 
@@ -886,7 +926,7 @@ screen_y = -p.y * scale + offset.y   # y 反転
 4. 線分（線分近接）
 5. 直線（無限直線への距離）
 
-各リストを `reversed()` で走査するため、後から追加した図形が優先される。
+優先順位の根拠: クロソイドと円弧は線より細く、同一箇所にある場合は前者を選ぶ意図が明確なため上位に置く。直線（参照線）は画面全域に広がるため最下位にし、操作対象になりにくくする。各リストを `reversed()` で走査するため、同一優先度内では後から追加した図形が優先される。
 
 #### `_hit_polyline(pts, w, tol) -> bool`
 
@@ -1087,25 +1127,15 @@ screen_y = -p.y * scale + offset.y   # y 反転
 
 直線 `ln` の参照点が変更されたあとに呼ばれる。「伝播」とは、直線の変形によって影響を受けるすべての従属オブジェクトを連鎖的に更新することを指す。具体的には:
 
-直線変更をクロソイドと SegmentSnap に伝播する。
-
 1. `ln` を参照するクロソイドに `compute()` を呼ぶ
-2. `_propagate_segment_snaps(ln)` で SegmentSnap 追従
-3. `_updating_smooth=False` かつスムーズ接続中のとき `_update_smooth_circle(conn)` を呼ぶ
-
-#### `_propagate_segment_snaps(ln)`
-
-`SegmentSnap` で繋がれた線分の端点を追従させる。`ln` が変更された場合に相手側の `t_start` / `t_end` を更新する。
+2. `_updating_smooth=False` かつスムーズ接続中のとき `_update_smooth_circle(conn)` を呼ぶ
 
 #### `_propagate_circle(ci)`
 
-円 `ci` の中心・半径が変更されたあとに呼ばれる。円に接続しているクロソイドの接点・点列を再計算し、ArcSnap で接続された円弧端点を追従させ、オフセット拘束（`OffsetConstraint`）で直線を追従させる。`_propagate_line()` と対になる存在。
-
-円変更をクロソイドと ArcSnap とオフセット拘束に伝播する。
+円 `ci` の中心・半径が変更されたあとに呼ばれる。円に接続しているクロソイドの接点・点列を再計算し、オフセット拘束（`OffsetConstraint`）で直線を追従させる。`_propagate_line()` と対になる存在。
 
 1. `ci` を参照するクロソイドに `compute()` を呼ぶ
-2. `_propagate_arc_snaps(ci)` で ArcSnap 追従
-3. `_propagate_offset_constraints(ci)` でオフセット拘束追従
+2. `_propagate_offset_constraints(ci)` でオフセット拘束追従
 
 #### `_propagate_offset_constraints(ci)`
 
@@ -1114,10 +1144,6 @@ screen_y = -p.y * scale + offset.y   # y 反転
 - `solve()` の成否にかかわらず `_propagate_line(oc.line)` を呼んで関連クロソイドも追従させる
 - `scene_changed.emit()` と `update()` を呼んで再描画する
 - **設計意図**: `feasible=False`（矛盾状態）でも `_propagate_line` を呼ぶのは、Clothoid が直線の現在位置（変更されていない正しい位置）に追従し続けるため
-
-#### `_propagate_arc_snaps(ci)`
-
-`ArcSnap` で繋がれた円弧の端点角度を追従させる。
 
 #### `_update_smooth_circle(conn)`
 
@@ -1165,9 +1191,9 @@ return ln.ref_start if ds >= de else ln.ref_end
 
 ---
 
-## 3. vertical_window.py — 縦断線形設計ウィンドウ
+## 4. vertical_window.py — 縦断線形設計ウィンドウ
 
-### 3.1 `ProfileCanvas` クラス
+### 4.1 `ProfileCanvas` クラス
 
 縦断線形設計ウィンドウの中核となるキャンバス。「**編集は全体、保存は要素単位**」という設計方針を実装する。
 
@@ -1335,9 +1361,14 @@ screen_y = -elev * scale_y + offset.y   # y 反転
 
 勾配直線を折れ線で描画する。縦断曲線の VPC〜VPT 範囲は放物線（多数の短い線分）で描画する。
 
-#### `_make_empty_profile()` （`ProfileCanvas` 内）
+#### `make_empty_profile()` （`vertical_profile` モジュールレベル関数）
 
-`GradeLine` も `VerticalCurve` も持たない空の `ElementProfile` を生成して返す。`set_plan_elements()` で EP が存在しない要素のダミーとして使用する。
+`GradeLine` も `VerticalCurve` も持たない空の `ElementProfile` を生成して返す。`set_plan_elements()` で EP が存在しない要素のダミーとして使用する。`vertical_profile.py` に定義され、`models.py` からも再エクスポートされる。
+
+```python
+from vertical_profile import make_empty_profile
+ep = make_empty_profile()   # ElementProfile(grade_lines=[], vertical_curves=[])
+```
 
 #### `_dist_point_seg(sx, sy, ax, ay, bx, by) -> float`
 
@@ -1349,7 +1380,7 @@ screen_y = -elev * scale_y + offset.y   # y 反転
 
 ---
 
-### 3.2 `VerticalAlignmentWindow` クラス
+### 4.2 `VerticalAlignmentWindow` クラス
 
 縦断線形設計ウィンドウ本体（`QMainWindow` を継承）。
 
@@ -1367,8 +1398,13 @@ screen_y = -elev * scale_y + offset.y   # y 反転
 
 #### `keyPressEvent(event)`
 
+Redo 判定（`Ctrl+Y` / `Ctrl+Shift+Z`）を Undo（`Ctrl+Z`）より先にチェックすることで、`Ctrl+Shift+Z` が Undo に捕捉されるのを防ぐ。
+
 | キー | 処理 |
 |---|---|
+| `Ctrl+Y` | `_canvas._redo()` → `_refresh_props()` |
+| `Ctrl+Shift+Z` | `_canvas._redo()` → `_refresh_props()` |
+| `Ctrl+Z` | `_canvas._undo()` → `_refresh_props()` |
 | `S` | `_set_select_mode()` |
 | `G` | `_set_grade_mode()` |
 | `Esc` | 勾配直線モードの入力をリセット（`_grade_first = None`） |
@@ -1439,9 +1475,291 @@ screen_y = -elev * scale_y + offset.y   # y 反転
 
 ---
 
-## 4. road_viewer.py — 3D走行ビューア
+## 5. _prop_builder.py — プロパティパネル UI 構築 Mixin
 
-### 4.1 モジュールレベル関数
+プロパティパネルの UI 構築ロジックを `PropBuilderMixin` として切り出したモジュール。`RightPanel` はこの Mixin を継承して使用する（`class RightPanel(PropBuilderMixin, QWidget)`）。
+
+切り出した理由: `right_panel.py` が肥大化したため、UI 構築メソッド（`_build_clothoid_props` 等）を別ファイルに分離して見通しをよくした。Mixin パターンを採用したのは、継承した `RightPanel` が `self.scene` や `self.scene_changed` 等を直接参照できるようにするためで、引数として渡す方式よりシグナル接続が自然に書ける。
+
+`PropBuilderMixin` のメソッドは以下のフィールドが `self` に存在することを前提とする:
+- `self.scene`: 現在の `Scene`
+- `self._prop_layout`: プロパティパネルのレイアウト (`QVBoxLayout`)
+- `self.scene_changed`: `Signal()` — シーン変更通知用
+- `self.request_*`: 各種シグナル
+
+### 5.1 モジュールレベルユーティリティ
+
+#### `_make_spinbox(val, lo, hi, step, decimals) -> _FlexSpinBox`
+
+`_FlexSpinBox`（ホイール操作をオーバーライドした `QDoubleSpinBox` サブクラス）を生成するファクトリ関数。フォーカス中のみホイール操作を受け付ける（誤操作防止）。
+
+> `vertical_window.py` にも同名の `_make_spinbox` が存在するが、そちらは `QDoubleSpinBox` を直接使用しており独立した実装。
+
+#### `_separator() -> QFrame`
+
+水平区切り線（`QFrame.Shape.HLine`）を返す。`vertical_window.py` が `from _prop_builder import _separator` でインポートして共有する。
+
+#### `_style_disabled(btn, disabled)`
+
+ボタンの `setEnabled` を設定し、無効時にグレースタイルを適用する。
+
+### 5.2 `PropBuilderMixin` の主要メソッド
+
+#### `_build_snap_checkboxes(clo, lay) -> None`
+
+クロソイドの `snap_segment`・`snap_arc` チェックボックスを `lay` に追加する。変更時に `clo.compute()` と `scene_changed.emit()` を呼ぶ。`_build_clothoid_props` と `_build_line_circle` の両方から呼び出される（DRY 設計）。
+
+#### `_build_clothoid_props(clo)`
+
+クロソイドのプロパティパネルを構築する（詳細は 8 章参照）。
+
+#### `_build_line_circle(ln, ci)`
+
+直線と円が選択された場合のクロソイド操作パネルを構築する（詳細は 8 章参照）。
+
+#### `_build_two_segments(seg_a, seg_b)` / `_build_two_arcs(arc_a, arc_b)`
+
+同一直線上の 2 線分 / 同一円上の 2 円弧の結合パネルを構築する（詳細は 8 章参照）。
+
+---
+
+## 6. road_viewer.py — 3D走行ビューア
+
+`road_viewer.py` は以下の責務を持つ:
+
+- **純粋ロジック関数群（モジュールレベル）**: Panda3D 不要・単体テスト可能
+- **`_elem_fwd_vec()`**: 走行方向ベクトル計算ユーティリティ
+- **`RoadViewer` クラス**: Panda3D ShowBase を継承した走行ビューア（オートドライブ・トラフィック対応）
+- **`prepare_viewer_data()` / `launch_viewer()` / `_main_from_file()`**: データ準備・プロセス起動
+
+メッシュ生成（`build_centerline`・`build_road_mesh`・`build_piers` 等）は `_road_mesh.py` に分離されている（7章参照）。
+
+### 6.1 モジュールレベル純粋関数
+
+これらは Panda3D の表示ウィンドウを必要とせず、単体テストが可能。`RoadViewer` の対応メソッドはすべてこれらへの薄いラッパーとして実装されている。
+
+#### `_elem_fwd_vec(elem: dict, forward: bool) -> tuple[float, float]`
+
+走行チェーンの要素辞書から進行方向の単位ベクトルを計算する。`_ad_advance()` 内部で隣接要素との接続向き判定に使用する。
+
+- `forward=True`: 要素の始端方向（`points_xy` が 2 点以上あれば先頭 2 点、なければ `start`→`end`）
+- `forward=False`: 終端方向（末尾 2 点の逆）
+- 長さゼロのベクトルは `(1.0, 0.0)` にフォールバック
+
+#### `interp_cl(cl: list, dist: float) -> tuple`
+
+中心線点列 `cl = [(x, y, z, dist), ...]` 上の累積距離 `dist` に対応する位置・方向を線形補間して返す。
+
+- 戻り値: `(pos, fwd, right)` — 各要素は `(float, float, float)` のタプル
+- `cl` が空のとき: `(0,0,0), (1,0,0), (0,-1,0)` を返す
+- `dist` が末尾を超えるとき: 末尾点の位置・デフォルト方向 `(1,0,0)` を返す
+- `right` は `fwd` の XY 平面直交ベクトル `(fwd.y, -fwd.x, 0)`
+
+#### `bearing_str(fwd_x: float, fwd_y: float) -> str`
+
+進行方向ベクトル `(fwd_x, fwd_y)` を N / NE / E / SE / S / SW / W / NW の 8 方位文字列に変換する。座標系は x=東・y=北。
+
+#### `make_elem_cl(elem: dict, forward: bool) -> tuple[list, float]`
+
+要素辞書から 3D 中心線を生成して `(cl, total)` を返す。
+
+- `pts_xy` がある場合: 累積距離を計算して `plan_length` にスケーリング
+- `pts_xy` がない場合: `start`→`end` の直線を `max(2, int(pl*0.5))` 分割
+- `forward=False` のとき点列・heights を逆順にしてから生成
+- `heights` が空リストのとき標高は常に `0.0`
+- `dist` が `heights` 末尾を超えるとき `heights[-1][1]` を返す
+
+#### `find_next_candidates(elem_graph, cur_id, ex, ey, exit_clo_ref, ad_tol=1.0) -> list`
+
+隣接する走行候補要素を `[(elem, forward), ...]` で返す。
+
+- `exit_clo_ref` がある場合: `clothoid_id` + `side` の両方が一致する要素を最優先で収集（座標距離判定より優先）
+- `exit_clo_ref` がない場合: 末端座標から `ad_tol` m 以内の端点を持つ要素を収集
+- `elem["id"] == cur_id` の要素は除外
+
+#### `prepare_viewer_data(scene, elements, profiles, rev_flags, all_display=None) -> dict`
+
+I/O なしで走行データを計算する純粋関数。`launch_viewer()` から呼ばれる。
+
+戻り値:
+```python
+{
+  "centerline_3d":    [(x, y, z, dist), ...],   # 走行チェーンの3D中心線
+  "display_segments": [[(x, y, z, dist), ...], ...],  # 背景要素の独立点列
+  "elem_graph":       [{...}, ...],              # オートドライブ用全要素グラフ
+  "start_info":       {"id": int, "forward": bool} | None  # 走行開始要素情報
+}
+```
+
+`elem_graph` の各要素は `{id, type, nickname, start, end, plan_length, heights, points_xy, start_clo_ref, end_clo_ref}` の辞書。`start_clo_ref` / `end_clo_ref` は Clothoid 接点参照 `{"clothoid_id": int, "side": "line"|"circle"}` または `None`。
+
+#### `launch_viewer(scene, elements, profiles, rev_flags, all_display=None, warp_boundary=None)`
+
+`prepare_viewer_data()` を呼び、結果を `tempfile`（JSON）に書き出して `road_viewer.py` を別プロセスで起動する。`warp_boundary` を指定すると `RoadViewer` のワープ境界距離を上書きできる。
+
+#### `_main_from_file(path)`
+
+tempfile から走行データを読み込み `RoadViewer` を起動するエントリーポイント。`__main__` ブロックから呼ばれる。
+
+### 6.2 `RoadViewer` クラス
+
+Panda3D の `ShowBase` を継承した走行ビューア。走行アニメーションは `taskMgr.add(_move_task)` で登録したタスク関数を毎フレーム呼び出すことで実現する（イベント駆動ではなくポーリング方式）。
+
+#### クラス定数
+
+| 定数 | 値 | 説明 |
+|---|---|---|
+| `SPEED_DEFAULT` | `30.0` m/s | 走行速度初期値 |
+| `CAM_BEHIND` | `20.0` m | 追従視点: 後方距離 |
+| `CAM_ABOVE` | `6.0` m | 追従視点: 高さ |
+| `CAM_EYE_H` | `1.5` m | 車載視点: 目の高さ |
+| `CAM_OVERVIEW_H` | `500.0` m | 俯瞰視点: 初期高度 |
+| `WARP_BOUNDARY` | `500.0` m | ワープ境界距離 |
+| `AD_TOL` | `1.0` m | 隣接判定の距離閾値 |
+| `TRAFFIC_EACH` | `5` 台 | 初期周囲車両台数（前後各） |
+| `TRAFFIC_GAP` | `20.0` m | 初期車間距離 |
+
+#### `__init__(centerline, display_segs=None, elem_graph=None, start_info=None, warp_boundary=None)`
+
+| 属性 | 説明 |
+|---|---|
+| `self.cl` | 走行チェーンの 3D 点列 |
+| `self.disp_segs` | 背景要素の点列リスト |
+| `self.dist` | 現在の累積距離（初期値 `0.0`） |
+| `self.speed` | 走行速度（初期値 `SPEED_DEFAULT`） |
+| `self.paused` | 一時停止フラグ |
+| `self.view_mode` | カメラモード（`"follow"` / `"onboard"` / `"overview"` / `"overview_fixed"`） |
+| `self._total` | チェーン全長 `cl[-1][3]` |
+| `self._surface_nodes` | 路面メッシュ NodePath リスト |
+| `self._auto_drive` | オートドライブモード（`elem_graph` がある場合 True） |
+| `self._elem_graph` | 全要素グラフ辞書リスト |
+| `self._ad_cl` | 現在走行中の中心線 |
+| `self._ad_total` | 現在チェーンの全長 |
+| `self._ad_dist` | 現在チェーン内の走行距離 |
+| `self._ad_cur_id` | 現在走行中の要素 ID |
+| `self._ad_forward` | 現在の走行方向 |
+| `self._ad_history` | 走行履歴スタック（最大 `_AD_HISTORY_MAX=10` 件） |
+| `self._ad_history_idx` | 履歴参照インデックス（-1: 最新） |
+| `self._traffic` | 周囲車両状態辞書のリスト |
+| `self._warp_boundary` | ワープ境界距離（引数 or `WARP_BOUNDARY`） |
+| `self._overview_pos` | 固定俯瞰視点のカメラ XY 座標 |
+
+#### `_build_scene()`
+
+1. 背景要素ごとに `build_road_mesh` + `build_center_line_node` + `build_road_markings` + `build_piers` を生成
+2. 走行チェーンの路面・中心線・白線・橋脚を同様に構築
+3. `_apply_surface_visible(ROAD_SURFACE)` で初期表示状態を設定
+4. 全点の重心に `build_ground` を配置
+5. 自車ダミー（直方体）を生成
+6. `_init_traffic()` で周囲車両を初期配置
+
+#### `_apply_surface_visible(visible)` / `_toggle_surface()`
+
+`_surface_nodes` の全ノードを一括 show/hide する。`R` キーで `ROAD_SURFACE` フラグを反転して呼ばれる。
+
+#### `_setup_keys()`
+
+| キー | メソッド |
+|---|---|
+| `Escape` | `sys.exit` |
+| `v` | `_toggle_view`（follow ↔ onboard） |
+| `o` | `_toggle_overview`（follow/onboard → overview → overview_fixed → follow） |
+| `r` | `_toggle_surface` |
+| `space` | `_toggle_pause` |
+| `a` | `_toggle_auto_drive` |
+| `arrow_up` / `arrow_down` | `_change_speed(±10)` |
+| `arrow_left` | `_rewind`（100m 後退 / 履歴を戻る） |
+| `arrow_right` | `_forward`（100m 前進 / 履歴を進む） |
+| `p` | `_add_one_traffic` |
+| `shift-p` | `_remove_one_traffic` |
+| `i` / `k` | `_overview_zoom_in` / `_overview_zoom_out` |
+
+#### `_move_task(task)`
+
+毎フレーム呼ばれる走行タスク。
+
+1. `view_mode == "overview_fixed"` のとき `_overview_pan()` でマウスパン処理
+2. `paused=False` かつ `_auto_drive=True` → `_ad_step(dt)` でオートドライブ進行
+3. `paused=False` かつ `_auto_drive=False` → `dist = (dist + speed * dt) % _total`（ループ）
+4. `_update_car_pose_cl(cur_cl, cur_dist)` と `_update_camera_cl(cur_cl, cur_dist)` で自車・カメラ更新
+5. 周囲車両を `_step_traffic_car()` + `_update_traffic_car_pose()` で更新
+6. `_update_hud()` で HUD を更新
+
+#### オートドライブ
+
+`_auto_drive=True` のとき `elem_graph` を使って交差点でランダム選択しながら走行を継続する。
+
+**`_ad_step(dt)`**: `_ad_dist += speed * dt`。末端超過時に `_ad_advance(overflow)` を呼ぶ。
+
+**`_ad_advance(overflow)`**: 次の要素を決定する。
+
+1. 末端座標から `find_next_candidates()` で候補を収集（Clothoid 接点参照 → 座標距離の順）
+2. 候補がゼロのとき: 座標距離でフォールバック再検索
+3. 進行方向と内積が負の候補を除外（逆走防止）
+4. 候補あり → `random.choice()` → `_ad_start_elem(elem, forward, overflow)`
+5. 候補なし → `_ad_warp(...)` でワープ（パックマン式: 境界を超えた軸の符号を反転）
+
+**`_ad_start_elem(elem, forward, overflow)`**: 要素の中心線を生成して `_ad_cl` を更新。内部で `heights` から標高を線形補間する（現在は `_ad_advance` 内のロジックと同等: `make_elem_cl` には委譲しない独立実装）。
+
+**`_ad_warp(ex, ey, fwd_x, fwd_y, overflow)`**: `|ex| > WARP_BOUNDARY` なら `x` 符号反転、`|ey| > WARP_BOUNDARY` なら `y` 符号反転。同じ方向で仮の直線チェーン 100m を生成。
+
+**履歴**: `_ad_advance()` を呼ぶ前に `_ad_history_push()` でスナップショットを積む（最大 10 件）。`←` キーで `_ad_history_idx` を戻り履歴を復元、`→` キーで進む（`_ad_history_idx == -1` でリアルタイム走行に復帰）。
+
+#### 周囲車両（トラフィック）
+
+`_traffic` は各車の状態辞書 `{np, cl, total, dist, cur_id, forward, speed_mul}` のリスト。
+
+**`_init_traffic()`**: チェーン全長 ÷ `TRAFFIC_GAP` 台を前方に均等配置。
+
+**`_add_traffic_car(offset)`**: `offset` 分だけ前方（または後方）の要素を `elem_graph` で解決し、車両を追加。
+
+**`_step_traffic_car(car, dt)`**: `dist += speed * speed_mul * dt`。末端超過時に次の要素に遷移（`_find_next_candidates` を使用）。候補なしのときワープ。
+
+#### 補間・座標変換（薄いラッパー）
+
+| メソッド | 委譲先 |
+|---|---|
+| `_interp_cl(cl, dist)` | モジュールレベル `interp_cl()` |
+| `_interp(dist)` | `_interp_cl(self.cl, dist)`（後方互換） |
+| `_make_elem_cl(elem, forward)` | モジュールレベル `make_elem_cl()` |
+| `_find_next_candidates(cur_id, ex, ey, exit_clo_ref)` | モジュールレベル `find_next_candidates()` |
+| `_bearing_str(fwd_x, fwd_y)` | モジュールレベル `bearing_str()`（staticmethod） |
+
+#### カメラ
+
+**`_update_camera_cl(cl, dist)`**: `view_mode` に応じてカメラを配置する。
+
+| モード | 動作 |
+|---|---|
+| `"follow"` | 後方 `CAM_BEHIND` m・上方 `CAM_ABOVE` m から前方 5m を注視 |
+| `"onboard"` | 前方 2m・高さ `CAM_EYE_H` m の運転席視点 |
+| `"overview"` | 自車真上 `CAM_OVERVIEW_H` m から鉛直下向き（自車追従） |
+| `"overview_fixed"` | `_overview_pos` の真上から鉛直下向き（マウスパン可能） |
+
+**`_overview_pan()`**: 右クリック or 中クリックドラッグで `_overview_pos` を移動。
+
+**`_overview_zoom_in()` / `_overview_zoom_out()`**: `CAM_OVERVIEW_H` を 0.8 倍 / 1.25 倍（`I` / `K` キー）。
+
+---
+
+## 7. _road_mesh.py — 3D道路メッシュ生成
+
+`road_viewer.py` から分離した純粋なメッシュ生成モジュール。Panda3D の Geom API を直接使用する。`road_viewer.py` が `from _road_mesh import ...` でインポートして使用する。
+
+分離の理由は 2 つある。第一に、メッシュ生成は「座標列 → Panda3D GeomNode」という I/O のない純粋な変換であり、`RoadViewer`（ShowBase サブクラス、Panda3D ウィンドウを伴う）と同一ファイルに置くと単体テストが困難になるため。第二に、`build_centerline` は `prepare_viewer_data()` からも呼ばれるため、道路ビューア固有ロジックと切り離す方がモジュールの責務が明確になるため。
+
+### 7.1 モジュールレベルユーティリティ
+
+#### `_tangent_normal_at(centerline, i) -> tuple[float, float, float, float]`
+
+中心線点列のインデックス `i` における接線・法線単位ベクトルを返す。
+
+- 中差分（端点は片側差分）で接線 `(tx, ty)` を計算
+- 右法線 `(nx, ny) = (ty, -tx)`
+- 戻り値: `(tx, ty, nx, ny)`
+- **エッジケース**: 差分ベクトルの長さが `1e-9` 未満 → `(1.0, 0.0, 0.0, -1.0)` にフォールバック
+
+`build_road_mesh`・`build_piers`・`build_road_markings` の 3 関数で共通して使用する（DRY 設計）。
 
 #### `_elev_at_dist(dist, profiles, offsets) -> float`
 
@@ -1450,6 +1768,18 @@ screen_y = -elev * scale_y + offset.y   # y 反転
 - 各 EP を順に走査し、`off ≤ dist ≤ off + L` の EP を見つけて `ep.elev_at(dist - off)` を呼ぶ
 - 最後の EP は `dist > d_end` でも処理する（チェーン末端の誤差吸収）
 - **エッジケース**: `dist` が全チェーンを超える → `0.0`
+
+#### `_elem_endpoints_xy(obj) -> list[tuple[float, float]]`
+
+平面線形要素の 2D 点列を返す。`build_centerline` 内で要素ごとの 2D 座標を取得するために使用する。
+
+| 型 | 戻り値 |
+|---|---|
+| `Segment` | `[(start.x, start.y), (end.x, end.y)]` |
+| `Arc` | 角度補間した点列 |
+| `Clothoid` | `[(p.x, p.y) for p in points]` |
+
+### 7.2 メッシュ生成関数
 
 #### `build_centerline(elements, profiles, rev_flags, n_per_m=0.5) -> list[tuple]`
 
@@ -1467,181 +1797,55 @@ screen_y = -elev * scale_y + offset.y   # y 反転
   - `Clothoid.points` が空 → スキップ
   - クロソイドの `cum[-1] = 0`（点列が1点）→ 全点が末端点になる
 
+#### `build_car_box(length=4.0, width=2.0, height=1.5) -> GeomNode`
+
+走行シミュレーション用の車ダミーボックス（直方体メッシュ）を生成する。
+
 #### `build_road_mesh(centerline, half_width=4.0, color_override=None, z_offset=0.02) -> GeomNode`
 
 中心線に沿った帯状三角形メッシュを生成する。
 
 **頂点生成**:
-- 各中心線点 `(x, y, z, dist)` で接線方向を計算（前後点の差分。先頭・末尾は片側差分）
-- 接線に直交する左法線方向 `(ny, -nx)` に `half_width` だけオフセットした左右2頂点を生成
-- 頂点の z 座標 = `z + z_offset`（`z_offset=0.02m`）
+- 各中心線点で `_tangent_normal_at()` により接線・法線を計算
+- 法線方向に `half_width` だけオフセットした左右 2 頂点を生成
+- 頂点の z = `z + z_offset`（`z_offset=0.02m`）
 
-**`z_offset` の役割**: 地面メッシュ（`z = -0.1m`）と路面メッシュが重なると Z-fighting（どちらが手前かGPUが不定になる現象）が発生する。`z_offset=0.02m` で路面が確実に地面の上に描画されるようにする。
+**`z_offset` の役割**: 地面メッシュ（`z = -0.1m`）と路面メッシュが重なると Z-fighting が発生する。`z_offset=0.02m` で路面が確実に地面の上に描画されるようにする。
 
-**三角形の構成**（点 `i` と `i+1` の間の4頂点 `bl, br, tl, tr`）:
+**三角形の構成**（点 `i` と `i+1` の間の 4 頂点 `bl, br, tl, tr`）:
 - 表面: `(bl, tl, tr)`, `(bl, tr, br)`
-- 裏面: `(bl, tr, tl)`, `(bl, br, tr)`（両面描画。下から見上げたときも路面が見える）
-
-- `color_override=None` のとき: デフォルト色 `LColor(0.25, 0.25, 0.25, 1)`
+- 裏面: `(bl, tr, tl)`, `(bl, br, tr)`（両面描画）
 
 #### `build_center_line_node(centerline, color_override=None) -> GeomNode`
 
-中心線を `LineSegs` で描画するノードを生成する。
+中心線を `GeomLinestrips` で描画するノードを生成する。
 
 #### `build_piers(centerline, half_width, interval=30.0) -> GeomNode`
 
 約 `interval` m おきに橋脚を生成する。
 
-- 各点の `dist` が `next_dist` を超えた最初の点で橋脚を配置
+- `_tangent_normal_at()` で各点の法線方向を計算
 - 橋脚位置: 中心線から `OUTER = half_width + 0.5m` 外側（左右各1本）
 - 橋脚形状: `z=0` から `z=centerline[i][2]` までの角柱（断面 `PW=0.4m × 0.4m`）
 - **エッジケース**: `z_top ≤ 0.05` → 橋脚を生成しない（地面と同じ高さ）
 
+**内部クロージャ**:
+- `add_quad(pts, normal)`: 4 頂点の四角形を 2 三角形として追加
+- `add_pier(cx, cy, z_top, nx_v, ny_v)`: 橋脚 1 セット（左右各 1 本）を追加。上面 1 枚 + 側面 4 枚 = 5 面
+
 #### `build_road_markings(centerline, half_width) -> GeomNode`
 
-左右の白線を生成する。メッシュ（`GeomTriangles`）ではなく `GeomLinestrips` を使うのは、白線は幅のある面より線として描く方が実装がシンプルで、かつ道路幅（3.5m）に対して白線幅は視覚的に無視できるほど細いため。白線の z = `centerline[i][2] + EDGE_Z`（`EDGE_Z=0.08m`）で路面より上に描き、路面メッシュとの Z-fighting を防ぐ。
+左右の白線を `GeomLinestrips` で生成する。`GeomTriangles` でなく `GeomLinestrips` を使うのは、白線は幅のある面より線として描く方が実装がシンプルで、かつ道路幅に対して白線幅は視覚的に無視できるほど細いため。白線の z = `centerline[i][2] + EDGE_Z`（`EDGE_Z=0.08m`）で路面メッシュとの Z-fighting を防ぐ。
 
 #### `build_ground(cx, cy, size=2000) -> GeomNode`
 
 緑色（`(0.3, 0.5, 0.25, 1)`）の 2000m×2000m 平板を生成する。z = `-0.1m`（路面より下）。
 
-#### `add_quad(pts, normal)`（`build_piers` 内ヘルパー）
-
-4頂点の四角形を2三角形（`(0,1,2)` と `(0,2,3)`）として追加する。`build_piers` の内部クロージャ。頂点データを `vdata` に追記し、三角形インデックスを `tris` に追記する。
-
-#### `add_pier(cx, cy, z_top, nx_v, ny_v)`（`build_piers` 内ヘルパー）
-
-指定座標に橋脚1セット（左右各1本）を追加する。`build_piers` の内部クロージャ。
-
-- `z_top ≤ 0.05` → 何もしない（地面と同高さ）
-- 各橋脚は上面1枚 + 側面4枚 = 5面で構成（`add_quad` を10回呼ぶ）
-
-#### `prepare_viewer_data(scene, elements, profiles, rev_flags, all_display=None) -> dict`
-
-I/O なしで走行データを計算する純粋関数。
-
-戻り値:
-```python
-{
-  "centerline_3d":    [(x, y, z, dist), ...],  # 走行チェーンの3D中心線
-  "display_segments": [[(x, y, z, dist), ...], ...]  # 背景要素の独立点列
-}
-```
-
-背景要素の EP: `scene.element_profiles` から `element_id` で検索し、なければダミー（grade_lines なし）を使用。
-
-#### `launch_viewer(scene, elements, profiles, rev_flags, all_display=None)`
-
-`prepare_viewer_data()` を呼び、結果を `tempfile`（JSON）に書き出して `road_viewer.py` を別プロセスで起動する。
-
-#### `_main_from_file(path)`
-
-tempfile から走行データを読み込み `RoadViewer` を起動するエントリーポイント。
-
-### 4.2 `RoadViewer` クラス
-
-#### `__init__(centerline, display_segs=None)`
-
-- `self.cl`: 走行チェーンの 3D 点列
-- `self.disp_segs`: 背景要素の点列リスト
-- `self.dist`: 現在の累積距離（初期値 `0.0`）
-- `self.speed`: 走行速度（初期値 `20.0` m/s）
-- `self.paused`: 一時停止フラグ（初期値 `False`）
-- `self.view_mode`: `"follow"` または `"onboard"`（初期値 `"follow"`）
-- `self._total`: `cl[-1][3]` (チェーン全長)
-- `self._surface_nodes`: 路面メッシュの NodePath リスト（on/off 制御用）
-
-#### `_build_scene()`
-
-1. `_surface_nodes = []` で初期化
-2. 背景要素ごとに `build_road_mesh` + `build_center_line_node` + `build_road_markings` + `build_piers` を呼んでノードをアタッチ。路面ノードは `_surface_nodes` に追加、`set_two_sided(True)`, `set_light_off()` を設定
-3. 走行チェーンの路面・中心線・白線・橋脚を同様に構築
-4. 全点から AABB の重心を計算して `build_ground` を配置
-5. 車ダミー（CardMaker）を作成
-6. `_apply_surface_visible(ROAD_SURFACE)` で初期表示状態を設定
-
-#### `_apply_surface_visible(visible)`
-
-`_surface_nodes` の全ノードに対して `show()` または `hide()` を呼ぶ。
-
-#### `_toggle_surface()`
-
-`ROAD_SURFACE` フラグを反転し `_apply_surface_visible()` を呼ぶ。
-
-#### `_setup_lighting()`
-
-環境光（`AmbientLight`）と平行光（`DirectionalLight`）を設定する。
-
-#### `_setup_hud()`
-
-左上に `OnscreenText` で HUD を作成する。
-
-#### `_setup_keys()`
-
-| キー | メソッド |
-|---|---|
-| `Escape` | `sys.exit` |
-| `v` | `_toggle_view` |
-| `r` | `_toggle_surface` |
-| `space` | `_toggle_pause` |
-| `arrow_up` | `_change_speed(+10)` |
-| `arrow_down` | `_change_speed(-10)` |
-| `arrow_left` | `_rewind` |
-| `arrow_right` | `_forward` |
-
-#### `_move_task(task)`
-
-毎フレーム呼ばれる走行タスク（Panda3D タスクチェーン）。
-
-- `paused=True` のとき何もしない
-- `dt = globalClock.dt`（フレーム間隔）
-- `dist += speed * dt`。`dist > _total` で停止
-- `_update_car_pose(dist)` と `_update_hud()` を呼ぶ
-
-#### `_update_car_pose(dist)`
-
-`_interp(dist)` で位置・接線方向を取得し、カメラ・車ダミーを配置する。
-
-- **追従視点（follow）**: カメラを車の後方 `15m`・上方 `5m` に配置し車を注視
-- **車載視点（onboard）**: カメラを車の前方 `0.5m`・上方 `1.5m` に配置し前方を注視
-
-#### `_interp(dist) -> tuple`
-
-`dist` に対応する位置 `(x, y, z)` と接線方向 `(tx, ty, tz)` を点列から線形補間して返す。
-
-- `dist < 0` → 先頭点の情報
-- `dist >= _total` → 末尾点の情報
-- それ以外: `cl[i][3] ≤ dist ≤ cl[i+1][3]` となる区間で線形補間
-
-#### `_update_hud()`
-
-HUD テキストを現在の状態に更新する。
-
-#### `_update_camera(dist)`（`_move_task` から委譲）
-
-`_interp(dist)` で取得した位置と接線方向に基づいてカメラを配置する内部メソッド（`_update_car_pose` と同義）。
-
-#### `_toggle_view()`
-
-`view_mode` を `"follow"` ↔ `"onboard"` で切り替える。
-
-#### `_toggle_pause()`
-
-`paused` フラグを反転する。
-
-#### `_change_speed(delta)`
-
-`speed = max(1.0, speed + delta)` で速度を変更する。下限 1 m/s。
-
-#### `_rewind()`
-
-`dist = max(0.0, dist - 100.0)` で 100m 後退する。
-
 ---
 
-## 5. right_panel.py — 右パネル
+## 8. right_panel.py — 右パネル
 
-### 5.1 `RightPanel` クラス
+### 8.1 `RightPanel` クラス
 
 設計画面（Canvas）と連動して図形のプロパティ表示・編集、および図形間の接続操作を提供するサイドパネル。
 
@@ -1683,9 +1887,11 @@ UIを構築する。構成（上から順）:
 3. **プロパティ表示エリア**: `QScrollArea` 内の `_prop_layout` に動的にウィジェットを追加・削除する
 
 初期状態:
-- `_block = False`: スピンボックスの値変更 → モデル更新 → スピンボックス値更新 の無限ループを防ぐフラグ
+- `_block = False`: スピンボックスの値変更 → モデル更新 → スピンボックス値更新 の無限ループを防ぐフラグ。`_refresh_seg_display()` 等でスピンボックスに `setValue()` する前に `True` にセットし、コールバックが走らないようにする
 - `_selected = []`: 選択中の図形リスト
 - `_nick_combos = []`: コンボボックスのリスト（`_add_nick_combo()` で初期2個を追加）
+
+**`_undo_pushed` パターン**: プロパティコールバック内では `_undo_pushed = [False]` というミュータブルリストをクロージャキャプチャして使う。同一編集セッション中の最初の変更のみ `request_push_undo.emit()` を発行し、連続した数値入力が 1 つの Undo 手順にまとまるようにする。クラスフィールドでなくリストを使うのは、ネストした内部関数から値を書き換えるための Python のイディオム。
 
 幅制約: `minimumWidth=260`, `maximumWidth=360`
 
@@ -1824,9 +2030,9 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 
 ---
 
-## 6. main_window.py — メインウィンドウ
+## 9. main_window.py — メインウィンドウ
 
-### 6.1 `MainWindow` クラス
+### 9.1 `MainWindow` クラス
 
 アプリケーションのエントリーポイントとなるウィンドウ。`Canvas`・`RightPanel`・`VerticalAlignmentWindow`・`road_viewer` を統合し、コンポーネント間のシグナルを配線する。
 
@@ -1951,36 +2157,36 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 
 `_canvas.scene` への委譲プロパティ。メインウィンドウ全体から `self.scene` で現在の Scene にアクセスするために使用する。
 
-#### `_get_or_create_ep(obj, rev) -> ElementProfile`
-
-既存 EP を返すか新規作成する。`element_type`・`plan_length`・`reversed_flag` を常に更新する。
-
 ---
 
 ## 補足: right_panel.py の追加詳細
 
-### 5.2 モジュールレベル関数
+### 8.2 モジュールレベル関数
 
-#### `_make_spinbox(val, lo=-1e6, hi=1e6, step=0.01, decimals=3) -> QDoubleSpinBox`
+> これらの関数は現在 `_prop_builder.py` に定義されており、`right_panel.py` は `PropBuilderMixin` を継承することで間接的に利用する。詳細は 5 章参照。
 
-スピンボックスを生成するファクトリ関数。
+#### `_make_spinbox(val, lo=-1e6, hi=1e6, step=0.01, decimals=3) -> _FlexSpinBox`
+
+スピンボックス（`_FlexSpinBox`、フォーカス中のみホイール操作を受け付ける）を生成するファクトリ関数。`_prop_builder.py` に定義。
 
 - `val`: 初期値
 - `lo`, `hi`: 最小・最大値（デフォルト `−1e6`〜`+1e6`）
 - `step`: 単一ステップ量（デフォルト `0.01`）
 - `decimals`: 小数点以下桁数（デフォルト `3`）
 
+> `vertical_window.py` にも同名の `_make_spinbox` があるが、そちらは `QDoubleSpinBox` を直接生成する独立した実装（ホイール制御なし）。
+
 #### `_separator() -> QFrame`
 
-水平区切り線（`HLine` スタイル）を返す。
+水平区切り線（`QFrame.Shape.HLine`）を返す。`_prop_builder.py` に定義。`vertical_window.py` が `from _prop_builder import _separator` でインポートして共有する。
 
 #### `_style_disabled(btn, disabled)`
 
-ボタンの `enabled` を設定し、無効時は薄いグレースタイルを適用する。
+ボタンの `enabled` を設定し、無効時は薄いグレースタイルを適用する。`_prop_builder.py` に定義。
 
 ---
 
-### 5.3 `RightPanel` の追加メソッド
+### 8.3 `RightPanel` の追加メソッド
 
 #### `_adjacent_elements(obj, exclude_pt=None) -> list[tuple]`
 

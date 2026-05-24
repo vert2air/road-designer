@@ -9,23 +9,30 @@ ProfileCanvas と VerticalAlignmentWindow の 2 クラスで構成される。
   に切り出して ElementProfile に書き戻す。
 """
 from __future__ import annotations
+import copy
 import math
-from typing import Optional, List
+from collections import deque
+from typing import Optional
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QDoubleSpinBox, QGroupBox, QScrollArea, QFrame,
-    QSplitter, QSizePolicy
+    QSplitter
 )
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+from PySide6.QtCore import Qt, QPointF, Signal
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QFont
 
-from models import (Vec2, GradeLine, VerticalCurve, VerticalAlignment,
-                    Scene, Segment, Arc, Clothoid, new_id)
+from models import (Vec2, GradeLine, VerticalCurve,
+                    Scene, Segment, Arc, Clothoid)
+from _prop_builder import _separator
 
 
 def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
                   step: float = 1.0, decimals: int = 3) -> QDoubleSpinBox:
     """設定済みの QDoubleSpinBox を生成して返すファクトリ関数。
+
+    .. note::
+        ``_prop_builder._make_spinbox`` は ``_FlexSpinBox``（マウスホイール対応）を返すが、
+        こちらは素の ``QDoubleSpinBox`` を返す。縦断線形ウィンドウの操作感に合わせた意図的な差異。
 
     Parameters
     ----------
@@ -46,18 +53,10 @@ def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
     return sb
 
 
-def _separator() -> QFrame:
-    """右パネル内の水平区切り線（HLine）を返す。"""
-    line = QFrame()
-    line.setFrameShape(QFrame.Shape.HLine)
-    line.setFrameShadow(QFrame.Shadow.Sunken)
-    return line
-
-
 # ─── カラーバー色 ────────────────────────────────────────────
-CB_SEGMENT  = QColor( 60, 120, 220)
-CB_CLOTHOID = QColor( 40, 180,  80)
-CB_ARC      = QColor(120,  40, 180)
+CB_SEGMENT = QColor(60, 120, 220)
+CB_CLOTHOID = QColor(40, 180, 80)
+CB_ARC = QColor(120, 40, 180)
 
 
 class ProfileCanvas(QWidget):
@@ -83,26 +82,42 @@ class ProfileCanvas(QWidget):
     CB_H : int = 26
         カラーバーの高さ [px]。
     """
-    selection_changed     = Signal(object)
-    mouse_world_pos       = Signal(float, float)
+    selection_changed = Signal(object)
+    mouse_world_pos = Signal(float, float)
 
     HANDLE_R = 6   # ハンドル半径 [px]
-    HIT_TOL  = 8   # ヒット許容距離 [px]
-    CB_H     = 26  # カラーバー高さ [px]
+    HIT_TOL = 8   # ヒット許容距離 [px]
+    CB_H = 26  # カラーバー高さ [px]
 
     def __init__(self, scene: Scene, parent=None):
+        """ProfileCanvas を初期化する。
+
+        ビュー変換パラメータ・Undo/Redo スタック・ドラッグ状態を初期化し、
+        マウス追跡を有効にする。実際のデータは :meth:`set_plan_elements` で設定する。
+
+        Parameters
+        ----------
+        scene : Scene
+            ニックネーム参照に使う現在の Scene オブジェクト。
+        parent : QWidget, optional
+            親ウィジェット。
+        """
         super().__init__(parent)
         self.scene = scene
         self._plan_elements: list = []
-        self._profiles:      list = []   # list[ElementProfile] 要素単位のデータ
+        self._profiles: list = []   # list[ElementProfile] 要素単位のデータ
 
         # チェーン全体の勾配直線・縦断曲線（累積距離で管理）
         # これを直接編集し、保存時に要素単位に切り出す
-        self._grade_lines:     List[GradeLine]     = []
-        self._vertical_curves: List[VerticalCurve] = []
+        self._grade_lines: list[GradeLine] = []
+        self._vertical_curves: list[VerticalCurve] = []
+        # Undo/Redo スタック
+        # [(grade_lines_snapshot, vc_snapshot), ...]
+        self._undo_stack: deque = deque(maxlen=50)
+        self._redo_stack: list = []
 
         # 各要素の累積開始距離 [element_idx → dist_offset]
-        self._elem_offsets: List[float] = []
+        self._elem_offsets: list[float] = []
 
         # ビュー
         self._offset = Vec2(80, 300)
@@ -145,8 +160,8 @@ class ProfileCanvas(QWidget):
         _grade_lines / _vertical_curves に統合する。
         """
         self._plan_elements = elements
-        self._profiles      = profiles
-        self._rev_flags     = rev_flags if rev_flags else [False] * len(profiles)
+        self._profiles = profiles
+        self._rev_flags = rev_flags if rev_flags else [False] * len(profiles)
 
         # 累積オフセットを計算
         offsets = []
@@ -159,14 +174,14 @@ class ProfileCanvas(QWidget):
         # 各 profile の grade_lines を累積距離に変換して統合
         # rev=True の要素は dist を (plan_length - dist) に反転する
         # grade_lines は plan_length の範囲 [0, plan_length] でクリップしてから使う
-        self._grade_lines     = []
+        self._grade_lines = []
         self._vertical_curves = []
         for ep, offset, rev in zip(profiles, offsets, self._rev_flags):
             L = ep.plan_length
             for gl in ep.grade_lines:
                 # plan_length の範囲でクリップ
                 gs = max(gl.dist_start, 0.0)
-                ge = min(gl.dist_end,   L)
+                ge = min(gl.dist_end, L)
                 if ge - gs < 0.001:
                     continue
                 # クリップ後の標高を補間
@@ -174,16 +189,16 @@ class ProfileCanvas(QWidget):
                 ge_elev = self._elev_at(ge, gl)
                 if rev:
                     merged = GradeLine(
-                        dist_start = offset + (L - ge),
-                        elev_start = ge_elev,
-                        dist_end   = offset + (L - gs),
-                        elev_end   = gs_elev)
+                        dist_start=offset + (L - ge),
+                        elev_start=ge_elev,
+                        dist_end=offset + (L - gs),
+                        elev_end=gs_elev)
                 else:
                     merged = GradeLine(
-                        dist_start = gs + offset,
-                        elev_start = gs_elev,
-                        dist_end   = ge + offset,
-                        elev_end   = ge_elev)
+                        dist_start=gs + offset,
+                        elev_start=gs_elev,
+                        dist_end=ge + offset,
+                        elev_end=ge_elev)
                 merged.id = gl.id
                 self._grade_lines.append(merged)
 
@@ -193,18 +208,18 @@ class ProfileCanvas(QWidget):
                     continue
                 if rev:
                     merged_vc = VerticalCurve(
-                        pvi_dist = offset + (L - vc.pvi_dist),
-                        pvi_elev = vc.pvi_elev,
-                        g1 = -vc.g2, g2 = -vc.g1,
-                        length = vc.length)
+                        pvi_dist=offset + (L - vc.pvi_dist),
+                        pvi_elev=vc.pvi_elev,
+                        g1=-vc.g2, g2=-vc.g1,
+                        length=vc.length)
                 else:
                     merged_vc = VerticalCurve(
-                        pvi_dist = vc.pvi_dist + offset,
-                        pvi_elev = vc.pvi_elev,
-                        g1 = vc.g1, g2 = vc.g2,
-                        length = vc.length,
-                        prev_line_id = vc.prev_line_id,
-                        next_line_id = vc.next_line_id)
+                        pvi_dist=vc.pvi_dist + offset,
+                        pvi_elev=vc.pvi_elev,
+                        g1=vc.g1, g2=vc.g2,
+                        length=vc.length,
+                        prev_line_id=vc.prev_line_id,
+                        next_line_id=vc.next_line_id)
                 merged_vc.id = vc.id
                 self._vertical_curves.append(merged_vc)
 
@@ -222,16 +237,18 @@ class ProfileCanvas(QWidget):
         保存後に ep.elev_at(0.0) / ep.elev_at(L) で始終端標高を更新する。
         """
         rev_flags = getattr(self, '_rev_flags', [False] * len(self._profiles))
-        for ep, offset, rev in zip(self._profiles, self._elem_offsets, rev_flags):
+        for ep, offset, rev in zip(
+            self._profiles, self._elem_offsets, rev_flags
+        ):
             L = ep.plan_length
             d_start = offset
-            d_end   = offset + L
+            d_end = offset + L
 
             # この要素の範囲に含まれる grade_lines を切り出し
             ep.grade_lines = []
             for gl in self._grade_lines:
                 s = max(gl.dist_start, d_start)
-                e = min(gl.dist_end,   d_end)
+                e = min(gl.dist_end, d_end)
                 if e - s < 0.01:
                     continue
                 s_elev = self._elev_at(s, gl)
@@ -239,43 +256,44 @@ class ProfileCanvas(QWidget):
                 if rev:
                     # 逆順に戻す
                     new_gl = GradeLine(
-                        dist_start = L - (e - offset),
-                        elev_start = e_elev,
-                        dist_end   = L - (s - offset),
-                        elev_end   = s_elev)
+                        dist_start=L - (e - offset),
+                        elev_start=e_elev,
+                        dist_end=L - (s - offset),
+                        elev_end=s_elev)
                 else:
                     new_gl = GradeLine(
-                        dist_start = s - offset,
-                        elev_start = s_elev,
-                        dist_end   = e - offset,
-                        elev_end   = e_elev)
+                        dist_start=s - offset,
+                        elev_start=s_elev,
+                        dist_end=e - offset,
+                        elev_end=e_elev)
                 ep.grade_lines.append(new_gl)
             ep.grade_lines.sort(key=lambda g: g.dist_start)
 
             # 縦断曲線も同様にクリップして保存
             ep.vertical_curves = []
             for vc in self._vertical_curves:
-                if vc.vpc_dist >= d_end - 0.01 or vc.vpt_dist <= d_start + 0.01:
+                if (vc.vpc_dist >= d_end - 0.01
+                        or vc.vpt_dist <= d_start + 0.01):
                     continue
                 rel_pvi = vc.pvi_dist - offset
                 if rev:
                     new_vc = VerticalCurve(
-                        pvi_dist = L - rel_pvi,
-                        pvi_elev = vc.pvi_elev,
-                        g1 = -vc.g2, g2 = -vc.g1,
-                        length = vc.length)
+                        pvi_dist=L - rel_pvi,
+                        pvi_elev=vc.pvi_elev,
+                        g1=-vc.g2, g2=-vc.g1,
+                        length=vc.length)
                 else:
                     new_vc = VerticalCurve(
-                        pvi_dist = rel_pvi,
-                        pvi_elev = vc.pvi_elev,
-                        g1 = vc.g1, g2 = vc.g2,
-                        length = vc.length)
+                        pvi_dist=rel_pvi,
+                        pvi_elev=vc.pvi_elev,
+                        g1=vc.g1, g2=vc.g2,
+                        length=vc.length)
                 ep.vertical_curves.append(new_vc)
 
             # 要素の始端・終端標高を更新（縦断曲線があればそちらを優先）
             if ep.grade_lines:
                 ep.elev_start = ep.elev_at(0.0)
-                ep.elev_end   = ep.elev_at(ep.plan_length)
+                ep.elev_end = ep.elev_at(ep.plan_length)
 
     @staticmethod
     def _elev_at(dist: float, gl: GradeLine) -> float:
@@ -330,7 +348,7 @@ class ProfileCanvas(QWidget):
         QPointF
             スクリーン座標。
         """
-        x =  dist * self._scale_x + self._offset.x
+        x = dist * self._scale_x + self._offset.x
         y = -elev * self._scale_y + self._offset.y
         return QPointF(x, y)
 
@@ -353,15 +371,16 @@ class ProfileCanvas(QWidget):
 
     def wheelEvent(self, event):
         delta = event.angleDelta()
-        mods  = event.modifiers()
-        pos   = event.position()
+        mods = event.modifiers()
+        pos = event.position()
         if mods & Qt.KeyboardModifier.ShiftModifier:
             factor = 1.15 if delta.y() > 0 else 1 / 1.15
             self._scale_y *= factor
         else:
             factor = 1.15 if delta.y() > 0 else 1 / 1.15
             cx = pos.x()
-            self._offset = Vec2(cx + (self._offset.x - cx) * factor, self._offset.y)
+            self._offset = Vec2(cx + (self._offset.x - cx)
+                                * factor, self._offset.y)
             self._scale_x *= factor
         self.update()
 
@@ -463,14 +482,14 @@ class ProfileCanvas(QWidget):
             # 前→後方向: 前の終端に次の始端を合わせる
             for i in range(len(gls) - 1):
                 g_next = gls[i + 1]
-                g_cur  = gls[i]
+                g_cur = gls[i]
                 g_next.dist_start = g_cur.dist_end
                 g_next.elev_start = g_cur.elev_end
 
         if changed_end in ('start', 'both'):
             # 後→前方向: 後の始端に前の終端を合わせる
             for i in range(len(gls) - 1, 0, -1):
-                g_cur  = gls[i]
+                g_cur = gls[i]
                 g_prev = gls[i - 1]
                 g_prev.dist_end = g_cur.dist_start
                 g_prev.elev_end = g_cur.elev_start
@@ -483,10 +502,11 @@ class ProfileCanvas(QWidget):
         Returns
         -------
         list[dict]
-            各ハンドルは {'dist': float, 'elev': float, 'partners': list[(GradeLine, str)]}。
+            各ハンドルは
+            {'dist': float, 'elev': float, 'partners': list[(GradeLine, str)]}。
             'partners' は [(GradeLine, 'start'|'end'), ...] のリスト。
         """
-        gls  = self._grade_lines_sorted()
+        gls = self._grade_lines_sorted()
         seen: dict[int, dict] = {}   # key=round(dist*100) → ハンドル
         handles = []
 
@@ -494,7 +514,7 @@ class ProfileCanvas(QWidget):
             for end in ('start', 'end'):
                 dist = gl.dist_start if end == 'start' else gl.dist_end
                 elev = gl.elev_start if end == 'start' else gl.elev_end
-                key  = round(dist * 100)   # 0.01m 単位でグループ化
+                key = round(dist * 100)   # 0.01m 単位でグループ化
                 if key in seen:
                     seen[key]['partners'].append((gl, end))
                 else:
@@ -505,14 +525,15 @@ class ProfileCanvas(QWidget):
         # 隣接する勾配直線の境界点を共有ハンドルとして統合
         # gls[i].dist_end ≈ gls[i+1].dist_start → 同じハンドルにまとめる
         for i in range(len(gls) - 1):
-            g_cur  = gls[i]
+            g_cur = gls[i]
             g_next = gls[i + 1]
             if abs(g_next.dist_start - g_cur.dist_end) < 0.01:
-                key_end   = round(g_cur.dist_end   * 100)
+                key_end = round(g_cur.dist_end * 100)
                 key_start = round(g_next.dist_start * 100)
-                if key_end != key_start and key_end in seen and key_start in seen:
+                if (key_end != key_start
+                        and key_end in seen and key_start in seen):
                     # 2つのハンドルを統合：key_end に key_start の partners を追加
-                    h_end   = seen[key_end]
+                    h_end = seen[key_end]
                     h_start = seen[key_start]
                     for p in h_start['partners']:
                         if p not in h_end['partners']:
@@ -566,11 +587,12 @@ class ProfileCanvas(QWidget):
         # 水平グリッド
         raw_y = h / self._scale_y / 5
         mag = 10 ** math.floor(math.log10(raw_y)) if raw_y > 0 else 1
-        steps = [1,2,5,10]
-        gy = mag * min((s for s in steps if s*mag >= raw_y*0.8), default=10)
+        steps = [1, 2, 5, 10]
+        gy = mag * min((s for s in steps if s * mag >=
+                       raw_y * 0.8), default=10)
         dist0, elev0 = self.s2w(0, h)
         dist1, elev1 = self.s2w(w, 0)
-        ey0 = math.floor(elev0/gy)*gy
+        ey0 = math.floor(elev0 / gy) * gy
         e = ey0
         while e <= elev1 + gy:
             sp = self.w2s(0, e)
@@ -579,8 +601,9 @@ class ProfileCanvas(QWidget):
         # 垂直グリッド
         raw_x = w / self._scale_x / 5
         mag_x = 10 ** math.floor(math.log10(raw_x)) if raw_x > 0 else 1
-        gx = mag_x * min((s for s in steps if s*mag_x >= raw_x*0.8), default=10)
-        dx0 = math.floor(dist0/gx)*gx
+        gx = mag_x * min((s for s in steps if s * mag_x >=
+                         raw_x * 0.8), default=10)
+        dx0 = math.floor(dist0 / gx) * gx
         d = dx0
         while d <= dist1 + gx:
             sp = self.w2s(d, 0)
@@ -596,30 +619,35 @@ class ProfileCanvas(QWidget):
         if not self._plan_elements:
             return
         cb_y = 2
-        font = QFont(); font.setPointSize(8)
+        font = QFont()
+        font.setPointSize(8)
         painter.setFont(font)
 
         for idx, elem in enumerate(self._plan_elements):
             if idx >= len(self._elem_offsets):
                 break
             offset = self._elem_offsets[idx]
-            L = self._profiles[idx].plan_length if idx < len(self._profiles) else 0
+            L = self._profiles[idx].plan_length if idx < len(
+                self._profiles) else 0
             color = self._element_color(elem)
-            x0 = self.w2s(offset,     0).x()
+            x0 = self.w2s(offset, 0).x()
             x1 = self.w2s(offset + L, 0).x()
-            painter.fillRect(int(x0), cb_y, max(int(x1-x0), 1), self.CB_H, color)
+            painter.fillRect(int(x0), cb_y, max(
+                int(x1 - x0), 1), self.CB_H, color)
             # ラベル
-            painter.setPen(QPen(QColor(255,255,255)))
+            painter.setPen(QPen(QColor(255, 255, 255)))
             eid = getattr(elem, 'id', None)
             name = self.scene.nicknames.get(eid, "")
             kind = ("線分" if isinstance(elem, Segment) else
                     "クロ" if isinstance(elem, Clothoid) else "円弧")
             label = f"{kind}" + (f"[{name}]" if name else "") + f" {L:.0f}m"
-            painter.drawText(int(x0)+2, cb_y, max(int(x1-x0)-4, 1), self.CB_H,
-                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                             label)
+            painter.drawText(
+                int(x0) + 2, cb_y, max(int(x1 - x0) - 4, 1), self.CB_H,
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                label)
             # 要素境界の縦線
-            painter.setPen(QPen(QColor(255, 255, 255, 180), 1, Qt.PenStyle.DashLine))
+            painter.setPen(
+                QPen(QColor(255, 255, 255, 180), 1, Qt.PenStyle.DashLine))
             painter.drawLine(int(x1), cb_y, int(x1), self.height())
 
     def _element_length(self, elem) -> float:
@@ -642,8 +670,8 @@ class ProfileCanvas(QWidget):
         elif isinstance(elem, Clothoid):
             if elem.is_valid and len(elem.points) >= 2:
                 total = 0.0
-                for i in range(len(elem.points)-1):
-                    total += (elem.points[i+1] - elem.points[i]).length()
+                for i in range(len(elem.points) - 1):
+                    total += (elem.points[i + 1] - elem.points[i]).length()
                 return total
         return 0.0
 
@@ -661,10 +689,13 @@ class ProfileCanvas(QWidget):
             Segment=青（CB_SEGMENT）、Arc=紫（CB_ARC）、Clothoid=緑（CB_CLOTHOID）、
             その他=グレー。
         """
-        if isinstance(elem, Segment):  return CB_SEGMENT
-        if isinstance(elem, Arc):      return CB_ARC
-        if isinstance(elem, Clothoid): return CB_CLOTHOID
-        return QColor(128,128,128)
+        if isinstance(elem, Segment):
+            return CB_SEGMENT
+        if isinstance(elem, Arc):
+            return CB_ARC
+        if isinstance(elem, Clothoid):
+            return CB_CLOTHOID
+        return QColor(128, 128, 128)
 
     def _draw_profile(self, painter: QPainter):
         """勾配直線と縦断曲線をチェーン全体にわたって描画する。
@@ -677,12 +708,14 @@ class ProfileCanvas(QWidget):
             return
 
         # 縦断曲線の範囲セット（VPC〜VPT）
-        vc_ranges = [(vc.vpc_dist, vc.vpt_dist, vc) for vc in self._vertical_curves]
+        vc_ranges = [(vc.vpc_dist, vc.vpt_dist, vc)
+                     for vc in self._vertical_curves]
 
         for gl in gls:
             is_sel = (gl is self._selected)
-            line_color = QColor(240, 200, 80) if is_sel else QColor(100, 160, 240)
-            vc_color   = QColor(240, 140, 40) if is_sel else QColor(240, 180, 60)
+            line_color = QColor(
+                240, 200, 80) if is_sel else QColor(100, 160, 240)
+            vc_color = QColor(240, 140, 40) if is_sel else QColor(240, 180, 60)
 
             d0, d1 = gl.dist_start, gl.dist_end
             if abs(d1 - d0) < 1e-9:
@@ -697,7 +730,9 @@ class ProfileCanvas(QWidget):
                 return _gl.elev_start + (_gl.elev_end - _gl.elev_start) * t
 
             def is_in_vc(d):
-                return any(v0 - 0.001 <= d <= v1 + 0.001 for v0, v1, _ in my_vcs)
+                return any(
+                    v0 - 0.001 <= d <= v1 + 0.001
+                    for v0, v1, _ in my_vcs)
 
             # 直線部分
             painter.setPen(QPen(line_color, 2))
@@ -726,7 +761,8 @@ class ProfileCanvas(QWidget):
                         continue
                     p = self.w2s(dd, ee)
                     if first:
-                        path.moveTo(p); first = False
+                        path.moveTo(p)
+                        first = False
                     else:
                         path.lineTo(p)
                 if not first:
@@ -738,7 +774,10 @@ class ProfileCanvas(QWidget):
             col = QColor(240, 140, 40) if is_sel else QColor(240, 180, 60)
             painter.setBrush(QBrush(col))
             painter.setPen(QPen(QColor(255, 255, 255), 1))
-            for dd, ee in [(vc.vpc_dist, vc.vpc_elev), (vc.vpt_dist, vc.vpt_elev)]:
+            for dd, ee in [
+                (vc.vpc_dist, vc.vpc_elev),
+                (vc.vpt_dist, vc.vpt_elev)
+            ]:
                 painter.drawEllipse(self.w2s(dd, ee), 4, 4)
 
     def _draw_rubber(self, painter: QPainter):
@@ -757,8 +796,10 @@ class ProfileCanvas(QWidget):
         # 始点マーカー（小さい×）
         painter.setPen(QPen(QColor(200, 200, 200, 200), 1))
         r = 4
-        painter.drawLine(QPointF(p1.x()-r, p1.y()-r), QPointF(p1.x()+r, p1.y()+r))
-        painter.drawLine(QPointF(p1.x()+r, p1.y()-r), QPointF(p1.x()-r, p1.y()+r))
+        painter.drawLine(QPointF(p1.x() - r, p1.y() - r),
+                         QPointF(p1.x() + r, p1.y() + r))
+        painter.drawLine(QPointF(p1.x() + r, p1.y() - r),
+                         QPointF(p1.x() - r, p1.y() + r))
 
     def _draw_axes(self, painter: QPainter):
         """距離軸（水平）と標高軸（垂直）のグリッドラベルを描画する。"""
@@ -775,8 +816,9 @@ class ProfileCanvas(QWidget):
         raw_x = max((dist1 - dist0) / 6, 1e-9)
         if raw_x > 0:
             mag = 10 ** math.floor(math.log10(raw_x))
-            gx = mag * min((s for s in [1, 2, 5, 10] if s * mag >= raw_x * 0.8),
-                           default=10)
+            gx = mag * min(
+                (s for s in [1, 2, 5, 10] if s * mag >= raw_x * 0.8),
+                default=10)
             d = math.ceil(dist0 / gx) * gx
             while d <= dist1 + gx:
                 sp = self.w2s(d, 0)
@@ -790,14 +832,16 @@ class ProfileCanvas(QWidget):
         raw_y = max((elev1 - elev0) / 5, 1e-9)
         if raw_y > 0:
             mag = 10 ** math.floor(math.log10(raw_y))
-            gy = mag * min((s for s in [1, 2, 5, 10] if s * mag >= raw_y * 0.8),
-                           default=10)
+            gy = mag * min(
+                (s for s in [1, 2, 5, 10] if s * mag >= raw_y * 0.8),
+                default=10)
             e = math.ceil(elev0 / gy) * gy
             while e <= elev1 + gy:
                 sp = self.w2s(0, e)
-                painter.drawText(2, int(sp.y()) - 8, 72, 16,
-                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                                 f"{e:.1f}m")
+                painter.drawText(
+                    2, int(sp.y()) - 8, 72, 16,
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    f"{e:.1f}m")
                 e += gy
 
     def _draw_handles(self, painter: QPainter):
@@ -826,6 +870,7 @@ class ProfileCanvas(QWidget):
             # ハンドルヒット？
             h = self._hit_handle(sx, sy)
             if h:
+                self._push_undo()   # ドラッグ操作前に保存
                 self._drag_handle = h
                 self._drag_start_screen = Vec2(sx, sy)
                 self._mouse_moved_px = 0.0
@@ -844,13 +889,15 @@ class ProfileCanvas(QWidget):
             dist, elev = self.s2w(sx, sy)
 
             # チェーン全体の長さ（area_end）
-            total_len = sum(ep.plan_length for ep in self._profiles) if self._profiles else float('inf')
+            total_len = (
+                sum(ep.plan_length for ep in self._profiles)
+                if self._profiles else float('inf'))
 
             # スナップ候補: 既存端点 + 区間端 (0, total_len)
             snap_pts = [(0.0, None), (total_len, None)]
             for gl in self._grade_lines:
                 snap_pts.append((gl.dist_start, gl.elev_start))
-                snap_pts.append((gl.dist_end,   gl.elev_end))
+                snap_pts.append((gl.dist_end, gl.elev_end))
 
             def snap_dist(d, e):
                 """最も近いスナップ点（既存端点・区間端）に吸着する。
@@ -875,8 +922,8 @@ class ProfileCanvas(QWidget):
                     px = abs(d - sd) * self._scale_x
                     if px < 12 and px < best_px:
                         best_px = px
-                        best_d  = sd
-                        best_e  = se if se is not None else e
+                        best_d = sd
+                        best_e = se if se is not None else e
                 return best_d, best_e
 
             if self._grade_first is None:
@@ -890,14 +937,14 @@ class ProfileCanvas(QWidget):
                     return  # 始点と終点が同じ距離は無効
 
                 new_start = min(d0, dist)
-                new_end   = max(d0, dist)
-                new_elev_start = e0    if d0 <= dist else elev
-                new_elev_end   = elev  if d0 <= dist else e0
+                new_end = max(d0, dist)
+                new_elev_start = e0 if d0 <= dist else elev
+                new_elev_end = elev if d0 <= dist else e0
 
                 # チェーン範囲外はクリップ
                 if total_len > 0:
                     new_start = max(0.0, min(new_start, total_len))
-                    new_end   = max(0.0, min(new_end,   total_len))
+                    new_end = max(0.0, min(new_end, total_len))
                 if abs(new_end - new_start) < 0.01:
                     return
 
@@ -914,21 +961,29 @@ class ProfileCanvas(QWidget):
                         if gs < new_start - 0.001:
                             # 左側はみ出し部分を残す
                             elev_at_split = self._elev_at(new_start, gl)
-                            left_gl = GradeLine(dist_start=gs, elev_start=gl.elev_start,
-                                                dist_end=new_start, elev_end=elev_at_split)
+                            left_gl = GradeLine(
+                                dist_start=gs,
+                                elev_start=gl.elev_start,
+                                dist_end=new_start,
+                                elev_end=elev_at_split)
                             new_gls.append(left_gl)
                         if ge > new_end + 0.001:
                             # 右側はみ出し部分を残す
                             elev_at_split = self._elev_at(new_end, gl)
-                            right_gl = GradeLine(dist_start=new_end, elev_start=elev_at_split,
-                                                 dist_end=ge, elev_end=gl.elev_end)
+                            right_gl = GradeLine(
+                                dist_start=new_end,
+                                elev_start=elev_at_split,
+                                dist_end=ge,
+                                elev_end=gl.elev_end)
                             new_gls.append(right_gl)
 
                 # 新しい勾配直線を追加
-                new_gl = GradeLine(dist_start=new_start, elev_start=new_elev_start,
-                                   dist_end=new_end, elev_end=new_elev_end)
+                new_gl = GradeLine(
+                    dist_start=new_start, elev_start=new_elev_start,
+                    dist_end=new_end, elev_end=new_elev_end)
                 new_gls.append(new_gl)
                 new_gls.sort(key=lambda g: g.dist_start)
+                self._push_undo()   # 勾配直線追加前に保存
                 self._grade_lines.clear()
                 self._grade_lines.extend(new_gls)
 
@@ -962,7 +1017,7 @@ class ProfileCanvas(QWidget):
 
         # パン
         if self._pan_start and btns & (Qt.MouseButton.MiddleButton |
-                                        Qt.MouseButton.LeftButton):
+                                       Qt.MouseButton.LeftButton):
             dx = sx - self._pan_start.x
             dy = sy - self._pan_start.y
             if self._mode == "select" and math.hypot(dx, dy) < 4:
@@ -1004,8 +1059,8 @@ class ProfileCanvas(QWidget):
                 gl.dist_start = new_dist
                 gl.elev_start = new_elev
             else:
-                gl.dist_end   = new_dist
-                gl.elev_end   = new_elev
+                gl.dist_end = new_dist
+                gl.elev_end = new_elev
 
         # ハンドル座標を更新
         h['dist'] = new_dist
@@ -1045,7 +1100,8 @@ class ProfileCanvas(QWidget):
 
     def mouseReleaseEvent(self, event):
         if self._drag_handle is not None:
-            # 全縦断曲線の勾配を再確定
+            # ドラッグ開始時（mousePressEventで記録）にpush_undoするため
+            # ここでは全縦断曲線の勾配を再確定するだけ
             for vc in self._vertical_curves:
                 self._recalc_vc_gradients(vc)
             self._drag_handle = None
@@ -1066,6 +1122,51 @@ class ProfileCanvas(QWidget):
                 self.update()
         super().keyPressEvent(event)
 
+    # ─── Undo/Redo ───────────────────────────────────────────
+
+    def _push_undo(self):
+        """現在の状態を Undo スタックに保存する。
+
+        呼び出し側は操作を実行する**直前**に呼ぶこと。
+        保存するのは _grade_lines と _vertical_curves のディープコピー。
+        操作後に Redo スタックはクリアされる。
+        """
+        snap = (copy.deepcopy(self._grade_lines),
+                copy.deepcopy(self._vertical_curves))
+        self._undo_stack.append(snap)
+        self._redo_stack.clear()
+
+    def _undo(self):
+        """直前の操作を取り消す。"""
+        if not self._undo_stack:
+            return
+        # 現在の状態を Redo に保存
+        self._redo_stack.append((copy.deepcopy(self._grade_lines),
+                                 copy.deepcopy(self._vertical_curves)))
+        gls, vcs = self._undo_stack.pop()
+        self._grade_lines.clear()
+        self._grade_lines.extend(gls)
+        self._vertical_curves.clear()
+        self._vertical_curves.extend(vcs)
+        self._selected = None
+        self.selection_changed.emit(None)
+        self.update()
+
+    def _redo(self):
+        """取り消した操作をやり直す。"""
+        if not self._redo_stack:
+            return
+        self._undo_stack.append((copy.deepcopy(self._grade_lines),
+                                 copy.deepcopy(self._vertical_curves)))
+        gls, vcs = self._redo_stack.pop()
+        self._grade_lines.clear()
+        self._grade_lines.extend(gls)
+        self._vertical_curves.clear()
+        self._vertical_curves.extend(vcs)
+        self._selected = None
+        self.selection_changed.emit(None)
+        self.update()
+
     def _delete_grade_line(self, gl: GradeLine):
         """勾配直線を削除し、関連する縦断曲線もあわせて削除する。
 
@@ -1080,6 +1181,7 @@ class ProfileCanvas(QWidget):
         """
         if gl not in self._grade_lines:
             return
+        self._push_undo()   # 勾配直線削除前に保存
         # この勾配直線が prev or next の縦断曲線を削除
         to_remove = [vc for vc in self._vertical_curves
                      if vc.prev_line_id == gl.id or vc.next_line_id == gl.id
@@ -1109,17 +1211,17 @@ class ProfileCanvas(QWidget):
             最も近い図形。TOL_PX 以内にない場合は None。
         """
         TOL_PX = 8.0  # ヒット許容距離 [px]
-        best_obj  = None
+        best_obj = None
         best_dist = TOL_PX
 
         # 勾配直線: 線分との距離
         for gl in self._grade_lines:
             p1 = self.w2s(gl.dist_start, gl.elev_start)
-            p2 = self.w2s(gl.dist_end,   gl.elev_end)
-            d  = self._dist_point_seg(sx, sy, p1.x(), p1.y(), p2.x(), p2.y())
+            p2 = self.w2s(gl.dist_end, gl.elev_end)
+            d = self._dist_point_seg(sx, sy, p1.x(), p1.y(), p2.x(), p2.y())
             if d < best_dist:
                 best_dist = d
-                best_obj  = gl
+                best_obj = gl
 
         # 縦断曲線: 折れ線近似で距離
         for vc in self._vertical_curves:
@@ -1135,7 +1237,7 @@ class ProfileCanvas(QWidget):
                                              cur.x(), cur.y())
                     if d < best_dist:
                         best_dist = d
-                        best_obj  = vc
+                        best_obj = vc
                 prev = cur
 
         return best_obj
@@ -1154,11 +1256,11 @@ class ProfileCanvas(QWidget):
             最短距離 [px]。線分が縮退（長さゼロ）のとき始点からの距離を返す。
         """
         dx, dy = bx - ax, by - ay
-        l2 = dx*dx + dy*dy
+        l2 = dx * dx + dy * dy
         if l2 < 1e-12:
             return math.hypot(px - ax, py - ay)
-        t = max(0.0, min(1.0, ((px-ax)*dx + (py-ay)*dy) / l2))
-        return math.hypot(px - (ax + t*dx), py - (ay + t*dy))
+        t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / l2))
+        return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
     def fit_all(self):
         """全 GradeLine/VerticalCurve が収まるよう 10% マージンでビューを調整する。
@@ -1182,17 +1284,12 @@ class ProfileCanvas(QWidget):
         md = max(dmax - dmin, 1)
         me = max(emax - emin, 1)
         mg = 0.1
-        self._scale_x = self.width()  / (md * (1 + 2 * mg))
+        self._scale_x = self.width() / (md * (1 + 2 * mg))
         self._scale_y = self.height() / (me * (1 + 2 * mg))
-        self._offset  = Vec2(self.width() / 2  - (dmin + dmax) / 2 * self._scale_x,
-                             self.height() / 2 + (emin + emax) / 2 * self._scale_y)
+        self._offset = Vec2(
+            self.width() / 2 - (dmin + dmax) / 2 * self._scale_x,
+            self.height() / 2 + (emin + emax) / 2 * self._scale_y)
         self.update()
-
-
-def _make_empty_profile():
-    """空の ElementProfile を生成する（選択なしで縦断線形を開いた場合）"""
-    from models import ElementProfile
-    return ElementProfile()
 
 
 class VerticalAlignmentWindow(QMainWindow):
@@ -1221,7 +1318,7 @@ class VerticalAlignmentWindow(QMainWindow):
             親ウィジェット。None のとき独立ウィンドウとして表示する。
         """
         super().__init__(parent)
-        self.scene    = scene
+        self.scene = scene
         self.profiles = profiles
         self.rev_flags = rev_flags   # list[ElementProfile]
 
@@ -1242,7 +1339,8 @@ class VerticalAlignmentWindow(QMainWindow):
                 if isinstance(obj, Clothoid):
                     return f"クロソイド#{obj.id}"
                 return f"#{obj.id}"
-            title = "縦断線形 [" + " → ".join(elem_label(e) for e in plan_elements) + "]"
+            title = "縦断線形 [" + " → ".join(elem_label(e)
+                                          for e in plan_elements) + "]"
         else:
             title = "縦断線形設計"
         self.setWindowTitle(title)
@@ -1266,9 +1364,10 @@ class VerticalAlignmentWindow(QMainWindow):
         # モードボタン
         mode_grp = QGroupBox("モード")
         mode_lay = QHBoxLayout(mode_grp)
-        self._btn_sel   = QPushButton("[S] 選択")
+        self._btn_sel = QPushButton("[S] 選択")
         self._btn_grade = QPushButton("[G] 勾配直線")
-        self._btn_sel.setCheckable(True);   self._btn_sel.setChecked(True)
+        self._btn_sel.setCheckable(True)
+        self._btn_sel.setChecked(True)
         self._btn_grade.setCheckable(True)
         self._btn_sel.clicked.connect(self._set_select_mode)
         self._btn_grade.clicked.connect(self._set_grade_mode)
@@ -1327,7 +1426,17 @@ class VerticalAlignmentWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         k = event.key()
-        if k == Qt.Key.Key_S:
+        mods = event.modifiers()
+        ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        # Redo を先に判定する（Ctrl+Shift+Z は Undo より前にチェックが必要）
+        if ctrl and (k == Qt.Key.Key_Y or (k == Qt.Key.Key_Z and shift)):
+            self._canvas._redo()
+            self._refresh_props()
+        elif ctrl and k == Qt.Key.Key_Z:
+            self._canvas._undo()
+            self._refresh_props()
+        elif k == Qt.Key.Key_S:
             self._set_select_mode()
         elif k == Qt.Key.Key_G:
             self._set_grade_mode()
@@ -1380,11 +1489,26 @@ class VerticalAlignmentWindow(QMainWindow):
 
     # ─── 選択変更 ────────────────────────────────────────────
     def _on_selection_changed(self, obj):
+        """ProfileCanvas の selection_changed シグナルを受け取り、パネルを更新する。
+
+        キャンバスを再描画してからプロパティパネルを再構築する。
+
+        Parameters
+        ----------
+        obj : GradeLine or VerticalCurve or None
+            新しく選択された図形。None のとき選択解除。
+        """
         self._canvas.update()
         self._refresh_props()
 
     # ─── プロパティ表示 ──────────────────────────────────────
     def _clear_props(self):
+        """右パネルのプロパティレイアウト内の全ウィジェットを即時削除する。
+
+        ``setParent(None)`` でウィジェットツリーから切り離してから
+        ``deleteLater()`` を呼ぶことで、直後の ``_refresh_props`` での
+        ``findChildren`` が古いウィジェットを返す問題を防ぐ。
+        """
         while self._prop_layout.count():
             item = self._prop_layout.takeAt(0)
             w = item.widget()
@@ -1393,6 +1517,17 @@ class VerticalAlignmentWindow(QMainWindow):
                 w.deleteLater()
 
     def _refresh_props(self):
+        """プロパティパネルを選択状態に合わせて一から再構築する。
+
+        :meth:`_clear_props` で既存ウィジェットをすべて削除してから再生成する。
+        末尾では選択状態によらず常に :meth:`_build_grade_list` を呼ぶ。
+
+        選択図形に応じて呼ぶメソッドを切り替える:
+
+        * None: 「図形を選択してください」ラベルを表示。
+        * GradeLine: :meth:`_build_grade_props`。
+        * VerticalCurve: :meth:`_build_vc_props`。
+        """
         self._clear_props()
         sel = self._canvas._selected
 
@@ -1411,6 +1546,18 @@ class VerticalAlignmentWindow(QMainWindow):
         self._build_grade_list()
 
     def _build_grade_props(self, gl: GradeLine):
+        """選択された GradeLine のプロパティフォームを右パネルに構築する。
+
+        始点・終点の距離と標高をスピンボックスで編集できる。値変更時は
+        :meth:`ProfileCanvas._snap_grade_lines` と
+        :meth:`ProfileCanvas._recalc_vc_gradients` を連動して呼ぶ。
+        次の GradeLine が存在し縦断曲線がない場合は「縦断曲線を挿入」ボタンも表示する。
+
+        Parameters
+        ----------
+        gl : GradeLine
+            プロパティを表示する勾配直線。
+        """
         grp = QGroupBox("勾配直線プロパティ")
         lay = QVBoxLayout(grp)
         lay.addWidget(QLabel(f"ID: {gl.id}"))
@@ -1419,8 +1566,8 @@ class VerticalAlignmentWindow(QMainWindow):
 
         # 始点・終点の数値入力
         # 変更時は縦断曲線も追従させる
-        lbl_grad   = QLabel(f"勾配: {gl.gradient:.4f} %")
-        lbl_horiz  = QLabel(f"水平長: {gl.dist_end - gl.dist_start:.3f} m")
+        lbl_grad = QLabel(f"勾配: {gl.gradient:.4f} %")
+        lbl_horiz = QLabel(f"水平長: {gl.dist_end - gl.dist_start:.3f} m")
 
         def refresh_derived(changed_end='end'):
             """GradeLine の数値が変わった後、派生値の表示と隣接スナップを更新する。"""
@@ -1438,7 +1585,9 @@ class VerticalAlignmentWindow(QMainWindow):
         # SpinBox のブロックフラグ（シグナルループ防止）
         self._block_grade_sb = False
 
-        def add_endpoint(label, get_dist, set_dist, get_elev, set_elev, end_type):
+        def add_endpoint(
+            label, get_dist, set_dist, get_elev, set_elev, end_type
+        ):
             """勾配直線の端点（始点または終点）の距離・標高入力フォームを生成する。
 
             Parameters
@@ -1451,12 +1600,14 @@ class VerticalAlignmentWindow(QMainWindow):
                 距離・標高を設定するセッター関数。
             end_type : str
                 'start' または 'end'。_snap_grade_lines に渡すスナップ方向。
-            """            """end_type: 'start' or 'end' — どちらの端点か"""
+            """
             lay.addWidget(QLabel(label))
             row_d = QHBoxLayout()
             row_e = QHBoxLayout()
-            sb_d = _make_spinbox(get_dist(), lo=-1e6, hi=1e6, step=1.0, decimals=3)
-            sb_e = _make_spinbox(get_elev(), lo=-1e6, hi=1e6, step=0.1, decimals=3)
+            sb_d = _make_spinbox(get_dist(), lo=-1e6,
+                                 hi=1e6, step=1.0, decimals=3)
+            sb_e = _make_spinbox(get_elev(), lo=-1e6,
+                                 hi=1e6, step=0.1, decimals=3)
 
             def sync_sb():
                 """スピンボックスの表示を現在値に同期する（コールバックの無限ループを防ぐ）。"""
@@ -1467,10 +1618,15 @@ class VerticalAlignmentWindow(QMainWindow):
                 sb_e.setValue(get_elev())
                 self._block_grade_sb = False
 
+            _undo_pushed = [False]   # この編集セッションで push 済みか
+
             def on_dist(v, _end=end_type):
                 """距離スピンボックスの値変更コールバック。"""
                 if self._block_grade_sb:
                     return
+                if not _undo_pushed[0]:
+                    self._canvas._push_undo()
+                    _undo_pushed[0] = True
                 self._block_grade_sb = True
                 set_dist(v)
                 for vc in self._canvas._vertical_curves:
@@ -1483,6 +1639,9 @@ class VerticalAlignmentWindow(QMainWindow):
                 """標高スピンボックスの値変更コールバック。"""
                 if self._block_grade_sb:
                     return
+                if not _undo_pushed[0]:
+                    self._canvas._push_undo()
+                    _undo_pushed[0] = True
                 self._block_grade_sb = True
                 set_elev(v)
                 for vc in self._canvas._vertical_curves:
@@ -1493,18 +1652,24 @@ class VerticalAlignmentWindow(QMainWindow):
 
             sb_d.valueChanged.connect(on_dist)
             sb_e.valueChanged.connect(on_elev)
-            row_d.addWidget(QLabel("距離:")); row_d.addWidget(sb_d); row_d.addWidget(QLabel("m"))
-            row_e.addWidget(QLabel("標高:")); row_e.addWidget(sb_e); row_e.addWidget(QLabel("m"))
+            row_d.addWidget(QLabel("距離:"))
+            row_d.addWidget(sb_d)
+            row_d.addWidget(QLabel("m"))
+            row_e.addWidget(QLabel("標高:"))
+            row_e.addWidget(sb_e)
+            row_e.addWidget(QLabel("m"))
             lay.addLayout(row_d)
             lay.addLayout(row_e)
 
         add_endpoint("始点",
-                     lambda: gl.dist_start, lambda v: setattr(gl, 'dist_start', v),
-                     lambda: gl.elev_start, lambda v: setattr(gl, 'elev_start', v),
+                     lambda: gl.dist_start, lambda v: setattr(
+                         gl, 'dist_start', v),
+                     lambda: gl.elev_start, lambda v: setattr(
+                         gl, 'elev_start', v),
                      'start')
         add_endpoint("終点",
-                     lambda: gl.dist_end,   lambda v: setattr(gl, 'dist_end',   v),
-                     lambda: gl.elev_end,   lambda v: setattr(gl, 'elev_end',   v),
+                     lambda: gl.dist_end, lambda v: setattr(gl, 'dist_end', v),
+                     lambda: gl.elev_end, lambda v: setattr(gl, 'elev_end', v),
                      'end')
 
         lay.addWidget(lbl_horiz)
@@ -1515,6 +1680,7 @@ class VerticalAlignmentWindow(QMainWindow):
         # 削除ボタン
         btn_del_gl = QPushButton("この勾配直線を削除")
         btn_del_gl.setStyleSheet("color: #e08080;")
+
         def do_delete_gl():
             """「この勾配直線を削除」ボタンのコールバック。"""
             self._canvas._delete_grade_line(gl)
@@ -1523,7 +1689,8 @@ class VerticalAlignmentWindow(QMainWindow):
         lay.addWidget(btn_del_gl)
 
         # 次の勾配直線があれば縦断曲線挿入ボタン
-        idx = self._canvas._grade_lines.index(gl) if gl in self._canvas._grade_lines else -1
+        idx = self._canvas._grade_lines.index(
+            gl) if gl in self._canvas._grade_lines else -1
         can_insert = (idx >= 0 and idx + 1 < len(self._canvas._grade_lines))
         # 既に縦断曲線があるか確認
         already_vc = any(
@@ -1533,7 +1700,8 @@ class VerticalAlignmentWindow(QMainWindow):
 
         lay.addWidget(_separator())
         sb_len = _make_spinbox(50.0, 1.0, 10000.0, 10.0, 1)
-        sb_len.setPrefix("L="); sb_len.setSuffix(" m")
+        sb_len.setPrefix("L=")
+        sb_len.setSuffix(" m")
         btn_ins = QPushButton("縦断曲線を挿入")
         btn_ins.setEnabled(can_insert and not already_vc)
         if not can_insert:
@@ -1547,11 +1715,23 @@ class VerticalAlignmentWindow(QMainWindow):
 
         btn_ins.clicked.connect(do_insert)
         row = QHBoxLayout()
-        row.addWidget(sb_len); row.addWidget(btn_ins)
+        row.addWidget(sb_len)
+        row.addWidget(btn_ins)
         lay.addLayout(row)
         self._prop_layout.addWidget(grp)
 
     def _build_vc_props(self, vc: VerticalCurve):
+        """選択された VerticalCurve のプロパティフォームを右パネルに構築する。
+
+        PVI 距離・標高・前後勾配・勾配変化量・VPC/VPT 座標・K 値を表示する。
+        曲線長 L のスピンボックスで編集でき、変更時は前後 GradeLine の端点を
+        VPC/VPT に追従させる。「縦断曲線を削除」ボタンも提供する。
+
+        Parameters
+        ----------
+        vc : VerticalCurve
+            プロパティを表示する縦断曲線。
+        """
         grp = QGroupBox("縦断曲線プロパティ")
         lay = QVBoxLayout(grp)
 
@@ -1567,7 +1747,10 @@ class VerticalAlignmentWindow(QMainWindow):
 
         # 曲線長 L — 変更可能
         lay.addWidget(QLabel("曲線長 L [m]:"))
-        sb_L = _make_spinbox(vc.length, lo=1.0, hi=10000.0, step=10.0, decimals=1)
+        sb_L = _make_spinbox(vc.length, lo=1.0, hi=10000.0,
+                             step=10.0, decimals=1)
+
+        _vc_undo_pushed = [False]
 
         def on_L_changed(val: float):
             """曲線長スピンボックスの値変更コールバック。VPC/VPT および前後 GradeLine の端点を追従させる。
@@ -1579,6 +1762,9 @@ class VerticalAlignmentWindow(QMainWindow):
             """
             if val < 1.0:
                 return
+            if not _vc_undo_pushed[0]:
+                self._canvas._push_undo()
+                _vc_undo_pushed[0] = True
             # 勾配直線を VPC/VPT に合わせて再調整
             old_vpc = vc.vpc_dist
             old_vpt = vc.vpt_dist
@@ -1588,15 +1774,17 @@ class VerticalAlignmentWindow(QMainWindow):
             # 前後の勾配直線の端点を更新
             for gl in self._canvas._grade_lines:
                 if abs(gl.dist_end - old_vpc) < 0.01:
-                    gl.dist_end  = new_vpc
-                    gl.elev_end  = vc.vpc_elev
+                    gl.dist_end = new_vpc
+                    gl.elev_end = vc.vpc_elev
                 if abs(gl.dist_start - old_vpt) < 0.01:
                     gl.dist_start = new_vpt
                     gl.elev_start = vc.vpt_elev
             self._canvas.update()
             # 表示を更新（再帰を避けるため sb は直接更新しない）
-            lbl_vpc.setText(f"VPC: 距離 {vc.vpc_dist:.3f} m  標高 {vc.vpc_elev:.3f} m")
-            lbl_vpt.setText(f"VPT: 距離 {vc.vpt_dist:.3f} m  標高 {vc.vpt_elev:.3f} m")
+            lbl_vpc.setText(
+                f"VPC: 距離 {vc.vpc_dist:.3f} m  標高 {vc.vpc_elev:.3f} m")
+            lbl_vpt.setText(
+                f"VPT: 距離 {vc.vpt_dist:.3f} m  標高 {vc.vpt_elev:.3f} m")
             lbl_K.setText(f"K値: {vc.K:.2f} m/%")
 
         sb_L.valueChanged.connect(on_L_changed)
@@ -1605,9 +1793,11 @@ class VerticalAlignmentWindow(QMainWindow):
         lay.addWidget(_separator())
 
         # 設計指標（読み取り専用ラベル）
-        lbl_vpc = QLabel(f"VPC: 距離 {vc.vpc_dist:.3f} m  標高 {vc.vpc_elev:.3f} m")
-        lbl_vpt = QLabel(f"VPT: 距離 {vc.vpt_dist:.3f} m  標高 {vc.vpt_elev:.3f} m")
-        lbl_K   = QLabel(f"K値: {vc.K:.2f} m/%")
+        lbl_vpc = QLabel(
+            f"VPC: 距離 {vc.vpc_dist:.3f} m  標高 {vc.vpc_elev:.3f} m")
+        lbl_vpt = QLabel(
+            f"VPT: 距離 {vc.vpt_dist:.3f} m  標高 {vc.vpt_elev:.3f} m")
+        lbl_K = QLabel(f"K値: {vc.K:.2f} m/%")
         lay.addWidget(lbl_vpc)
         lay.addWidget(lbl_vpt)
         lay.addWidget(lbl_K)
@@ -1617,6 +1807,7 @@ class VerticalAlignmentWindow(QMainWindow):
         # 削除ボタン
         btn_del = QPushButton("縦断曲線を削除")
         btn_del.setStyleSheet("color: #e08080;")
+
         def do_delete():
             self._delete_vertical_curve(vc)
         btn_del.clicked.connect(do_delete)
@@ -1656,10 +1847,6 @@ class VerticalAlignmentWindow(QMainWindow):
         gl が最後の GradeLine（次の GradeLine がない）場合は何もしない。
         挿入後に選択をリセットして _refresh_props を呼ぶ。
         """
-        """
-        勾配直線 gl の終点（= 次の勾配直線の始点 = PVI）に縦断曲線を挿入。
-        勾配直線の端点は変更しない。PVI は gl.dist_end / gl.elev_end。
-        """
         idx = self._canvas._grade_lines.index(gl)
         if idx + 1 >= len(self._canvas._grade_lines):
             return
@@ -1673,6 +1860,7 @@ class VerticalAlignmentWindow(QMainWindow):
             prev_line_id=gl.id,
             next_line_id=gl2.id,
         )
+        self._canvas._push_undo()   # 縦断曲線追加前に保存
         self._canvas._vertical_curves.append(vc)
         self._canvas._selected = None
         self._canvas.update()
@@ -1692,8 +1880,8 @@ class VerticalAlignmentWindow(QMainWindow):
         """
         if vc not in self._canvas._vertical_curves:
             return
+        self._canvas._push_undo()   # 縦断曲線削除前に保存
         self._canvas._vertical_curves.remove(vc)
         self._canvas._selected = None
         self._canvas.update()
         self._refresh_props()
-

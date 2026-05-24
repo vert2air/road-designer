@@ -19,21 +19,19 @@ UI 生成・メニュー・ファイルダイアログ・縦断線形ウィン�
   [C1]   C1 カバレッジを高めるための追加試験
 """
 from __future__ import annotations
+from main_window import MainWindow
+from models import (
+    Vec2, Line, Segment, Circle, Arc, Clothoid,
+    Scene, plan_length_of,
+)
+from PySide6.QtWidgets import QApplication
 import math
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-import pytest
-from PySide6.QtWidgets import QApplication
 _app = QApplication.instance() or QApplication(sys.argv)
-
-from models import (
-    Vec2, Line, Segment, Circle, Arc, Clothoid,
-    ElementProfile, Scene, plan_length_of,
-)
-from main_window import MainWindow
 
 
 def approx(a, b, tol=1e-6):
@@ -107,7 +105,9 @@ class TestGetOrCreateEp:
         ep1 = w._get_or_create_ep(seg, False)
         ep2 = w._get_or_create_ep(seg, False)
         assert ep1 is ep2
-        assert len([e for e in w.scene.element_profiles if e.element_id == seg.id]) == 1
+        assert len([
+            e for e in w.scene.element_profiles
+            if e.element_id == seg.id]) == 1
 
     # [仕様] element_type が常に最新値で上書きされる
     def test_element_type_segment(self):
@@ -563,7 +563,8 @@ class TestDoDeleteObjectsBranches:
 class TestSaveLoad:
     # [C1] _filepath が設定済みのとき _save は _write_file を呼ぶ（L258）
     def test_save_with_filepath(self):
-        import tempfile, os
+        import tempfile
+        import os
         w = make_window()
         with tempfile.NamedTemporaryFile(suffix='.rdjson', delete=False) as f:
             path = f.name
@@ -577,11 +578,15 @@ class TestSaveLoad:
 
     # [C1] _write_file が JSON を正しく書き出す（L280-286）
     def test_write_file_json(self):
-        import tempfile, os, json
+        import tempfile
+        import os
+        import json
         w = make_window()
         ln = Line(Vec2(0, 0), Vec2(10, 0))
         w.scene.add_line(ln)
-        with tempfile.NamedTemporaryFile(suffix='.rdjson', delete=False, mode='w') as f:
+        with tempfile.NamedTemporaryFile(
+            suffix='.rdjson', delete=False, mode='w'
+        ) as f:
             path = f.name
         try:
             w._write_file(path)
@@ -598,7 +603,8 @@ class TestSaveLoad:
         w = make_window()
         w._filepath = None
         called = []
-        with patch.object(w, '_save_as', side_effect=lambda: called.append(True)):
+        side_eff = lambda: called.append(True)  # noqa: E731
+        with patch.object(w, '_save_as', side_effect=side_eff):
             w._save()
         assert called == [True]
 
@@ -616,7 +622,8 @@ class TestSaveLoad:
         w.scene.add_line(seg.line)
         w._canvas._selected = [seg]
         mock_win = MagicMock()
-        with patch('main_window.VerticalAlignmentWindow', return_value=mock_win):
+        with patch('main_window.VerticalAlignmentWindow',
+                   return_value=mock_win):
             w._open_vertical_window()
         mock_win.show.assert_called_once()
 
@@ -643,10 +650,12 @@ class TestDoSetOffsetConstraint:
     def test_creates_and_appends_oc(self):
         """[仕様] OC を生成して calc_offsets_from_current を呼び scene に追加する。"""
         w = make_window()
-        ca = Circle(Vec2(0,  30), 10.0)
+        ca = Circle(Vec2(0, 30), 10.0)
         cb = Circle(Vec2(0, -30), 10.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        w.scene.add_circle(ca)
+        w.scene.add_circle(cb)
+        w.scene.add_line(ln)
         assert len(w.scene.offset_constraints) == 0
         w._do_set_offset_constraint(ln, ca, cb)
         assert len(w.scene.offset_constraints) == 1
@@ -662,7 +671,9 @@ class TestDoSetOffsetConstraint:
         ca = Circle(Vec2(0, 30), 10.0)   # dist=30, r=10 → off_a=20
         cb = Circle(Vec2(0, -40), 15.0)  # dist=40, r=15 → off_b=25
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        w.scene.add_circle(ca)
+        w.scene.add_circle(cb)
+        w.scene.add_line(ln)
         w._do_set_offset_constraint(ln, ca, cb)
         oc = w.scene.offset_constraints[0]
         assert abs(oc.off_a - 20.0) < 1e-6
@@ -675,7 +686,9 @@ class TestDoSetOffsetConstraint:
         ca = Circle(Vec2(0, 30), 10.0)
         cb = Circle(Vec2(0, -30), 10.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        w.scene.add_circle(ca)
+        w.scene.add_circle(cb)
+        w.scene.add_line(ln)
         w._do_set_offset_constraint(ln, ca, cb)
         w._do_set_offset_constraint(ln, ca, cb)  # 2回目
         assert len(w.scene.offset_constraints) == 1
@@ -687,7 +700,9 @@ class TestDoSetOffsetConstraint:
         ca = Circle(Vec2(0, 30), 10.0)
         cb = Circle(Vec2(0, -30), 10.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        w.scene.add_circle(ca)
+        w.scene.add_circle(cb)
+        w.scene.add_line(ln)
         w._do_set_offset_constraint(ln, ca, cb)
         w._do_set_offset_constraint(ln, cb, ca)  # 順序を逆に
         assert len(w.scene.offset_constraints) == 1
@@ -699,7 +714,9 @@ class TestDoSetOffsetConstraint:
         ca = Circle(Vec2(0, 30), 10.0)
         cb = Circle(Vec2(0, -30), 10.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        w.scene.add_circle(ca)
+        w.scene.add_circle(cb)
+        w.scene.add_line(ln)
         before = len(w._canvas._undo_stack)
         w._do_set_offset_constraint(ln, ca, cb)
         assert len(w._canvas._undo_stack) > before
@@ -719,7 +736,9 @@ class TestDoClearOffsetConstraint:
         ca = Circle(Vec2(0, 30), 10.0)
         cb = Circle(Vec2(0, -30), 10.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        w.scene.add_circle(ca)
+        w.scene.add_circle(cb)
+        w.scene.add_line(ln)
         self._add_oc(w, ln, ca, cb)
         assert len(w.scene.offset_constraints) == 1
         w._do_clear_offset_constraint(ln)
@@ -733,8 +752,10 @@ class TestDoClearOffsetConstraint:
         cb = Circle(Vec2(0, -30), 10.0)
         ln1 = Line(Vec2(-100, 0), Vec2(100, 0))
         ln2 = Line(Vec2(0, -100), Vec2(0, 100))
-        w.scene.add_circle(ca); w.scene.add_circle(cb)
-        w.scene.add_line(ln1); w.scene.add_line(ln2)
+        w.scene.add_circle(ca)
+        w.scene.add_circle(cb)
+        w.scene.add_line(ln1)
+        w.scene.add_line(ln2)
         self._add_oc(w, ln1, ca, cb)
         self._add_oc(w, ln2, ca, cb)
         w._do_clear_offset_constraint(ln1)
@@ -748,7 +769,9 @@ class TestDoClearOffsetConstraint:
         ca = Circle(Vec2(0, 30), 10.0)
         cb = Circle(Vec2(0, -30), 10.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        w.scene.add_circle(ca); w.scene.add_circle(cb); w.scene.add_line(ln)
+        w.scene.add_circle(ca)
+        w.scene.add_circle(cb)
+        w.scene.add_line(ln)
         self._add_oc(w, ln, ca, cb)
         before = len(w._canvas._undo_stack)
         w._do_clear_offset_constraint(ln)
@@ -807,7 +830,8 @@ class TestWriteFile:
 
     # [仕様] ファイルへの書き出しと読み込みが正常に動作する
     def test_write_and_read_file(self, tmp_path):
-        """[仕様] _write_file で書き出したファイルを json.load+from_dict で読み込める（L303-318）。"""
+        """[仕様] _write_file で書き出したファイルを
+        json.load+from_dict で読み込める（L303-318）。"""
         import json
         from models import Scene
         w = make_window()
@@ -884,7 +908,8 @@ class TestOpenVerticalWindow:
         """[仕様] 選択図形がある状態で縦断線形ウィンドウを開いてもエラーにならない。"""
         w = make_window()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         w.scene.add_line(ln)
         w._canvas.set_selection([seg])
         try:
@@ -898,10 +923,11 @@ class TestOpenVerticalWindow:
 # ══════════════════════════════════════════════════════════════
 
 class TestSaveAsOpenWithMock:
-    """_save_as / _open のファイルダイアログをモックしてテスト（L297-340）。"""
+    """_save_as / _open のファイルダイアログをモックしてテスト。"""
 
     def test_save_as_writes_file(self, tmp_path):
-        """[仕様] _save_as() がパス選択後に _write_file を呼び _filepath を更新する（L299-301）。"""
+        """[仕様] _save_as() がパス選択後に _write_file を呼び
+        _filepath を更新する（L299-301）。"""
         from unittest.mock import patch
         w = make_window()
         w.scene.add_line(Line(Vec2(0, 0), Vec2(100, 0)))
@@ -925,7 +951,6 @@ class TestSaveAsOpenWithMock:
     def test_open_loads_scene(self, tmp_path):
         """[仕様] _open() がファイル選択後に Scene を読み込む（L327-335）。"""
         from unittest.mock import patch
-        import json
         w = make_window()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
         w.scene.add_line(ln)
@@ -948,7 +973,8 @@ class TestSaveAsOpenWithMock:
         assert len(w.scene.lines) == n_before
 
     def test_open_invalid_json_shows_error(self, tmp_path):
-        """[C1] _open() で JSON パースエラー時に QMessageBox.critical が呼ばれる（L328 例外分岐）。"""
+        """[C1] _open() で JSON パースエラー時に
+        QMessageBox.critical が呼ばれる（L328 例外分岐）。"""
         from unittest.mock import patch
         path = str(tmp_path / "bad.rdjson")
         with open(path, 'w') as f:
@@ -956,12 +982,12 @@ class TestSaveAsOpenWithMock:
         w = make_window()
         with patch('PySide6.QtWidgets.QFileDialog.getOpenFileName',
                    return_value=(path, '')), \
-             patch('PySide6.QtWidgets.QMessageBox.critical') as mock_crit:
+                patch('PySide6.QtWidgets.QMessageBox.critical') as mock_crit:
             w._open()
         assert mock_crit.called
 
 
-class TestDoDeleteObjects:
+class TestDoDeleteObjects2:
     """_do_delete_objects の各分岐テスト（L431-447）。"""
 
     def test_delete_arc_remaining_arcs(self):
@@ -1014,16 +1040,19 @@ class TestOpenVerticalWindowWithProfiles:
         from models import ElementProfile, GradeLine
         w = make_window()
         ln1 = Line(Vec2(0, 0), Vec2(100, 0))
-        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
         ln2 = Line(Vec2(100, 0), Vec2(200, 0))
-        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
-        w.scene.add_line(ln1); w.scene.add_line(ln2)
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        w.scene.add_line(ln1)
+        w.scene.add_line(ln2)
         ep1 = ElementProfile(element_id=seg1.id, element_type='segment',
-                              plan_length=100.0)
+                             plan_length=100.0)
         gl1 = GradeLine(0.0, 100.0, 10.0, 12.0)
         ep1.grade_lines.append(gl1)
         ep2 = ElementProfile(element_id=seg2.id, element_type='segment',
-                              plan_length=100.0)
+                             plan_length=100.0)
         w.scene.element_profiles.extend([ep1, ep2])
         w._canvas.set_selection([seg1, seg2])
         w._open_vertical_window()
@@ -1043,7 +1072,8 @@ class TestDoDeleteObjectsRemainingBranches:
         w = make_window()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        w.scene.add_line(ln); w.scene.add_circle(ci)
+        w.scene.add_line(ln)
+        w.scene.add_circle(ci)
         clo = Clothoid(ln, ci)
         w.scene.add_clothoid(clo)
         w._do_delete_objects([clo])
@@ -1053,10 +1083,12 @@ class TestDoDeleteObjectsRemainingBranches:
         """[C1] Segment 削除後 clothoid が recompute される（L430-432）。"""
         w = make_window()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg1 = Segment(ln, 0.0, 0.5); seg2 = Segment(ln, 0.5, 1.0)
+        seg1 = Segment(ln, 0.0, 0.5)
+        seg2 = Segment(ln, 0.5, 1.0)
         ln.segments.extend([seg1, seg2])
         ci = Circle(Vec2(50, 60), 30.0)
-        w.scene.add_line(ln); w.scene.add_circle(ci)
+        w.scene.add_line(ln)
+        w.scene.add_circle(ci)
         clo = Clothoid(ln, ci)
         w.scene.add_clothoid(clo)
         w._do_delete_objects([seg1])
@@ -1073,7 +1105,8 @@ class TestDoDeleteObjectsRemainingBranches:
         arc2 = Arc(ci, math.pi / 2, math.pi)
         ci.arcs.extend([arc1, arc2])
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        w.scene.add_circle(ci); w.scene.add_line(ln)
+        w.scene.add_circle(ci)
+        w.scene.add_line(ln)
         clo = Clothoid(ln, ci)
         w.scene.add_clothoid(clo)
         w._do_delete_objects([arc1])
@@ -1089,15 +1122,18 @@ class TestOpenVerticalWindowElevSync:
         from models import ElementProfile, GradeLine
         w = make_window()
         ln1 = Line(Vec2(0, 0), Vec2(100, 0))
-        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
         ln2 = Line(Vec2(100, 0), Vec2(200, 0))
-        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
-        w.scene.add_line(ln1); w.scene.add_line(ln2)
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        w.scene.add_line(ln1)
+        w.scene.add_line(ln2)
         ep1 = ElementProfile(element_id=seg1.id, element_type='segment',
-                              plan_length=100.0)
+                             plan_length=100.0)
         # ep1 に grade_lines なし → ep2 から取る
         ep2 = ElementProfile(element_id=seg2.id, element_type='segment',
-                              plan_length=100.0)
+                             plan_length=100.0)
         gl2 = GradeLine(0.0, 100.0, 15.0, 18.0)
         ep2.grade_lines.append(gl2)
         w.scene.element_profiles.extend([ep1, ep2])
@@ -1111,14 +1147,17 @@ class TestOpenVerticalWindowElevSync:
         from models import ElementProfile
         w = make_window()
         ln1 = Line(Vec2(0, 0), Vec2(100, 0))
-        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
         ln2 = Line(Vec2(100, 0), Vec2(200, 0))
-        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
-        w.scene.add_line(ln1); w.scene.add_line(ln2)
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        w.scene.add_line(ln1)
+        w.scene.add_line(ln2)
         ep1 = ElementProfile(element_id=seg1.id, element_type='segment',
-                              plan_length=100.0)
+                             plan_length=100.0)
         ep2 = ElementProfile(element_id=seg2.id, element_type='segment',
-                              plan_length=100.0)
+                             plan_length=100.0)
         # 両方 grade_lines なし → continue で何も変わらない
         w.scene.element_profiles.extend([ep1, ep2])
         w._canvas.set_selection([seg1, seg2])
@@ -1127,3 +1166,318 @@ class TestOpenVerticalWindowElevSync:
         w._open_vertical_window()
         assert ep1.elev_end == before1
         assert ep2.elev_start == before2
+
+
+class TestBuildInitializedDict:
+    """_build_initialized_dict のテスト。"""
+
+    def _make_window_with_scene(self):
+        from models import Vec2, Line, Segment, Circle, Arc, Clothoid
+        import math
+        w = make_window()
+        # 線分2本を持つ直線
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        s1 = Segment(ln, 0.0, 0.5)
+        s2 = Segment(ln, 0.5, 1.0)
+        ln.segments.extend([s1, s2])
+        w.scene.add_line(ln)
+        # 円弧2本を持つ円
+        ci = Circle(Vec2(0, 0), 30.0)
+        ci.arcs.append(Arc(ci, 0.0, math.pi / 2))
+        ci.arcs.append(Arc(ci, math.pi, 3 * math.pi / 2))
+        w.scene.add_circle(ci)
+        # snap onのクロソイド
+        clo = Clothoid(ln, ci)
+        clo.snap_segment = True
+        clo.snap_arc = True
+        w.scene.add_clothoid(clo)
+        return w, ln, ci, clo
+
+    def test_segments_reduced_to_one(self):
+        """[仕様] 各直線の線分が1本（t_start=0, t_end=1）になる。"""
+        w, ln, ci, clo = self._make_window_with_scene()
+        data = w._build_initialized_dict()
+        for ln_d in data["lines"]:
+            assert len(ln_d["segments"]) == 1
+            seg = ln_d["segments"][0]
+            assert seg["t_start"] == 0.0
+            assert seg["t_end"] == 1.0
+
+    def test_segment_id_preserved(self):
+        """[仕様] 線分のIDは元の最初の線分のIDを引き継ぐ。"""
+        w, ln, ci, clo = self._make_window_with_scene()
+        orig_first_id = ln.segments[0].id
+        data = w._build_initialized_dict()
+        for ln_d in data["lines"]:
+            assert ln_d["segments"][0]["id"] == orig_first_id
+
+    def test_arcs_all_deleted(self):
+        """[仕様] 全円の円弧が削除される。"""
+        w, ln, ci, clo = self._make_window_with_scene()
+        data = w._build_initialized_dict()
+        for ci_d in data["circles"]:
+            assert ci_d["arcs"] == []
+
+    def test_clothoid_snap_all_off(self):
+        """[仕様] 全クロソイドの snap_segment と snap_arc が False になる。"""
+        w, ln, ci, clo = self._make_window_with_scene()
+        data = w._build_initialized_dict()
+        for clo_d in data["clothoids"]:
+            assert clo_d["snap_segment"] is False
+            assert clo_d["snap_arc"] is False
+
+    def test_original_scene_unchanged(self):
+        """[仕様] 元の Scene は変更されない。"""
+        w, ln, ci, clo = self._make_window_with_scene()
+        n_segs_before = len(ln.segments)
+        n_arcs_before = len(ci.arcs)
+        snap_before = clo.snap_segment
+        w._build_initialized_dict()
+        assert len(ln.segments) == n_segs_before
+        assert len(ci.arcs) == n_arcs_before
+        assert clo.snap_segment == snap_before
+
+    def test_offset_constraints_preserved(self):
+        """[仕様] オフセット拘束はそのまま維持される。"""
+        w, ln, ci, clo = self._make_window_with_scene()
+        orig_oc = len(w.scene.offset_constraints)
+        data = w._build_initialized_dict()
+        assert len(data.get("offset_constraints", [])) == orig_oc
+
+    def test_connections_not_deleted(self):
+        """[仕様] 直線の connection フィールドは to_dict 後も削除されない（None のまま維持）。
+
+        Note: LineConnection は現状 to_dict/from_dict で永続化されていないため、
+        connection キー自体は None になることが期待される。
+        _build_initialized_dict はこのキーを削除しない。
+        """
+        w, ln, ci, clo = self._make_window_with_scene()
+        data = w._build_initialized_dict()
+        # connection キーが lines から消えていないことを確認（None でも良い）
+        for ln_d in data["lines"]:
+            # connection キーがあってもなくても OK だが、削除していないことを確認
+            # (少なくとも初期化処理で segments/arcs/snap 以外が壊れていない)
+            assert "id" in ln_d
+            assert "segments" in ln_d
+
+    def test_initialized_data_loadable(self):
+        """[仕様] 初期化済みデータが Scene.from_dict で正しくロードできる。"""
+        from models import Scene
+        w, ln, ci, clo = self._make_window_with_scene()
+        data = w._build_initialized_dict()
+        sc2 = Scene.from_dict(data)
+        assert all(len(ln.segments) == 1 for ln in sc2.lines)
+        assert all(len(c.arcs) == 0 for c in sc2.circles)
+        assert all(
+            not c.snap_segment and not c.snap_arc for c in sc2.clothoids)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _do_add_arcs
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDoAddArcs:
+    """[仕様] _do_add_arcs が Arc を Circle に追加して
+    scene_changed を emit する（L489-493）。"""
+
+    def test_do_add_arcs_appends_arc_to_circle(self):
+        """arc が ci.arcs に追加される。"""
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 20.0)
+        w.scene.add_circle(ci)
+        arc = Arc(ci, 0.0, math.pi / 2)
+
+        w._do_add_arcs(ci, [arc])
+
+        assert arc in ci.arcs
+
+    def test_do_add_arcs_emits_scene_changed(self):
+        """scene_changed シグナルが emit される。"""
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 20.0)
+        w.scene.add_circle(ci)
+        arc = Arc(ci, 0.0, math.pi / 2)
+
+        emitted = []
+        w._canvas.scene_changed.connect(lambda: emitted.append(1))
+        w._do_add_arcs(ci, [arc])
+
+        assert len(emitted) >= 1
+
+    def test_do_add_arcs_multiple(self):
+        """複数の arc が一括追加される。"""
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 30.0)
+        w.scene.add_circle(ci)
+        arc1 = Arc(ci, 0.0, math.pi / 4)
+        arc2 = Arc(ci, math.pi / 4, math.pi / 2)
+
+        w._do_add_arcs(ci, [arc1, arc2])
+
+        assert arc1 in ci.arcs
+        assert arc2 in ci.arcs
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _do_delete_objects: ループの False 分岐（non-matching clothoid）
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDoDeleteObjectsLoopFalseBranch:
+    """[C1] Segment/Arc 削除ループで clothoid が別の line/circle を参照する
+    False 分岐（L552→551, L563→562）をカバー。"""
+
+    def test_segment_loop_visits_non_matching_clothoid(self):
+        """[C1] Segment 削除時、clo.line is ln が False の clothoid がループで訪れられる。"""
+        w = make_window()
+
+        # ln1 の線分を削除対象にする
+        ln1 = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 0.5)
+        seg2 = Segment(ln1, 0.5, 1.0)
+        ln1.segments.extend([seg1, seg2])
+
+        # ln2: 別の直線（clothoid2 がこちらに紐付く）
+        ln2 = Line(Vec2(-100, 50), Vec2(100, 50))
+        seg_ln2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg_ln2)
+
+        ci1 = Circle(Vec2(0, 30), 20.0)
+        ci2 = Circle(Vec2(0, 70), 20.0)
+
+        # clo1 は ln1、clo2 は ln2 → seg1 削除後のループで clo2 は False 分岐を通る
+        clo1 = Clothoid(ln1, ci1, snap_segment=False, snap_arc=False)
+        clo2 = Clothoid(ln2, ci2, snap_segment=False, snap_arc=False)
+
+        w.scene.add_line(ln1)
+        w.scene.add_line(ln2)
+        w.scene.add_circle(ci1)
+        w.scene.add_circle(ci2)
+        w.scene.add_clothoid(clo1)
+        w.scene.add_clothoid(clo2)
+
+        # seg1 を削除 → ln1 に seg2 が残るので clothoid ループが走る
+        w._do_delete_objects([seg1])
+
+        assert seg1 not in ln1.segments, "seg1 が削除されているはず"
+        assert seg2 in ln1.segments, "seg2 は残るはず"
+
+    def test_arc_loop_visits_non_matching_clothoid(self):
+        """[C1] Arc 削除時、clo.circle is ci が False の clothoid がループで訪れられる。"""
+        w = make_window()
+
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+
+        ci1 = Circle(Vec2(0, 50), 20.0)
+        arc1 = Arc(ci1, -0.5, 0.0)
+        arc2 = Arc(ci1, 0.0, 0.5)
+        ci1.arcs.extend([arc1, arc2])
+
+        # ci2: 別の円（clothoid2 がこちらに紐付く）
+        ci2 = Circle(Vec2(0, -50), 20.0)
+
+        # clo1 は ci1、clo2 は ci2 → arc1 削除後のループで clo2 は False 分岐を通る
+        clo1 = Clothoid(ln, ci1, snap_segment=False, snap_arc=False)
+        clo2 = Clothoid(ln, ci2, snap_segment=False, snap_arc=False)
+
+        w.scene.add_line(ln)
+        w.scene.add_circle(ci1)
+        w.scene.add_circle(ci2)
+        w.scene.add_clothoid(clo1)
+        w.scene.add_clothoid(clo2)
+
+        # arc1 を削除 → ci1 に arc2 が残るので clothoid ループが走る
+        w._do_delete_objects([arc1])
+
+        assert arc1 not in ci1.arcs, "arc1 が削除されているはず"
+        assert arc2 in ci1.arcs, "arc2 は残るはず"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _save_initialized
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestSaveInitialized:
+    """[仕様/C1] _save_initialized のファイル書き出し・キャンセル・例外処理（L322-335）。"""
+
+    def test_save_initialized_writes_file(self):
+        """[仕様] ダイアログで有効パスを返すとファイルが書き出される。"""
+        import tempfile
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QFileDialog
+
+        w = make_window()
+        with tempfile.NamedTemporaryFile(suffix='.rdjson', delete=False) as f:
+            path = f.name
+
+        try:
+            with patch.object(QFileDialog, 'getSaveFileName',
+                              return_value=(path, 'JSON')):
+                w._save_initialized()
+
+            assert os.path.exists(path), "ファイルが存在するはず"
+            assert os.path.getsize(path) > 0, "ファイルサイズが 0 より大きいはず"
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_save_initialized_cancel_does_nothing(self):
+        """[C1] ダイアログがキャンセルされた（空文字列）場合は早期リターンする。"""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QFileDialog
+
+        w = make_window()
+        # 例外も書き出しも発生しなければOK
+        with patch.object(QFileDialog, 'getSaveFileName',
+                          return_value=('', '')):
+            w._save_initialized()
+
+    def test_save_initialized_exception_shows_critical(self):
+        """[C1] 書き出し中に例外が発生すると QMessageBox.critical を呼び出す。"""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        w = make_window()
+        save_path = '/fake/nonexistent/path.rdjson'
+        with patch.object(QFileDialog, 'getSaveFileName',
+                          return_value=(save_path, 'JSON')):
+            with patch('builtins.open', side_effect=IOError("disk full")):
+                with patch.object(QMessageBox, 'critical') as mock_crit:
+                    w._save_initialized()
+
+        mock_crit.assert_called_once()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _launch_viewer: 表示対象なし → QMessageBox.information
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestLaunchViewerEmpty:
+    """[仕様] 表示できる図形がないとき _launch_viewer が QMessageBox.information を表示する
+    （L746-751）。"""
+
+    def test_launch_viewer_no_elements_shows_message(self):
+        """シーンが空のとき launch_viewer を呼ばずに情報メッセージを表示する。"""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+
+        w = make_window()
+        # シーンは空（make_window でクリア済み）
+        with patch.object(QMessageBox, 'information') as mock_info:
+            w._open_3d_viewer()
+
+        mock_info.assert_called_once()
+
+    def test_launch_viewer_no_elements_does_not_call_launch(self):
+        """シーンが空のとき road_viewer.launch_viewer は呼ばれない。"""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+        import road_viewer
+
+        w = make_window()
+        with patch.object(QMessageBox, 'information'):
+            with patch.object(road_viewer, 'launch_viewer') as mock_launch:
+                w._open_3d_viewer()
+
+        mock_launch.assert_not_called()

@@ -1,21 +1,22 @@
 [project]
 name = "road-designer"
-version = "0.1.0"
+version = "1.0.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "numpy>=2.4.4",
     "panda3d>=1.10.16",
     "pyside6>=6.11.0",
-    "scipy>=1.17.1",
 ]
 
 [dependency-groups]
 dev = [
+    "autopep8>=2.3.2",
     "coverage>=7.13.5",
+    "flake8>=7.3.0",
     "pytest>=9.0.3",
     "pytest-cov>=4.0",
+    "pytest-qt>=4.4",
 ]
 
 [tool.pytest.ini_options]
@@ -23,7 +24,10 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--tb=short"
+addopts = "--tb=short --cov --cov-report=term-missing -m 'not spec'"
+markers = [
+    "spec: 要求仕様書との適合確認テスト（CI 除外）。手動実行: uv run pytest -m spec",
+]
 
 [tool.coverage.run]
 source = ["src"]
@@ -39,3 +43,4 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "raise NotImplementedError",
 ]
+

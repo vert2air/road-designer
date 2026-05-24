@@ -20,16 +20,14 @@ main() 関数は QApplication 生成 → MainWindow 起動 → sys.exit(app.exec
   [エッジ] エッジケース・コーナーケース
 """
 from __future__ import annotations
+from PySide6.QtWidgets import QApplication
+from unittest.mock import patch
+import pytest
 import sys
 import os
-import importlib
 import inspect
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-
-import pytest
-from unittest.mock import patch, MagicMock
-from PySide6.QtWidgets import QApplication
 
 
 def _main_source() -> str:
@@ -37,6 +35,7 @@ def _main_source() -> str:
     import main
     with open(main.__file__, encoding='utf-8') as f:
         return f.read()
+
 
 _app = QApplication.instance() or QApplication(sys.argv)
 
@@ -48,7 +47,7 @@ _app = QApplication.instance() or QApplication(sys.argv)
 class TestImport:
     # [仕様] main モジュールが ImportError なしにインポートできる
     def test_importable(self):
-        import main  # 例外にならない
+        import main  # noqa: F401 例外にならない
 
     # [仕様] main 関数が定義されている
     def test_main_function_exists(self):
@@ -102,7 +101,7 @@ class TestMainFunction:
     def test_sets_application_name(self):
         import main
         captured = {}
-        original_exit = sys.exit
+        _original_exit = sys.exit  # noqa: F841
 
         def fake_exit(code=0):
             raise SystemExit(code)
@@ -110,10 +109,13 @@ class TestMainFunction:
         class FakeApp:
             def __init__(self, argv):
                 pass
+
             def setApplicationName(self, name):
                 captured['appName'] = name
+
             def setOrganizationName(self, name):
                 captured['orgName'] = name
+
             def exec(self):
                 return 0
 
@@ -122,8 +124,8 @@ class TestMainFunction:
                 pass
 
         with patch('main.QApplication', FakeApp), \
-             patch('main.MainWindow', FakeWindow), \
-             patch('sys.exit', fake_exit):
+                patch('main.MainWindow', FakeWindow), \
+                patch('sys.exit', fake_exit):
             try:
                 main.main()
             except SystemExit:
@@ -139,10 +141,13 @@ class TestMainFunction:
         class FakeApp:
             def __init__(self, argv):
                 pass
+
             def setApplicationName(self, name):
                 pass
+
             def setOrganizationName(self, name):
                 captured['orgName'] = name
+
             def exec(self):
                 return 0
 
@@ -151,8 +156,9 @@ class TestMainFunction:
                 pass
 
         with patch('main.QApplication', FakeApp), \
-             patch('main.MainWindow', FakeWindow), \
-             patch('sys.exit', lambda c=0: (_ for _ in ()).throw(SystemExit(c))):
+                patch('main.MainWindow', FakeWindow), \
+                patch('sys.exit',
+                      lambda c=0: (_ for _ in ()).throw(SystemExit(c))):
             try:
                 main.main()
             except SystemExit:
@@ -176,8 +182,9 @@ class TestMainFunction:
                 shown.append(True)
 
         with patch('main.QApplication', FakeApp), \
-             patch('main.MainWindow', FakeWindow), \
-             patch('sys.exit', lambda c=0: (_ for _ in ()).throw(SystemExit(c))):
+                patch('main.MainWindow', FakeWindow), \
+                patch('sys.exit',
+                      lambda c=0: (_ for _ in ()).throw(SystemExit(c))):
             try:
                 main.main()
             except SystemExit:
@@ -204,8 +211,8 @@ class TestMainFunction:
             raise SystemExit(code)
 
         with patch('main.QApplication', FakeApp), \
-             patch('main.MainWindow', FakeWindow), \
-             patch('sys.exit', fake_exit):
+                patch('main.MainWindow', FakeWindow), \
+                patch('sys.exit', fake_exit):
             try:
                 main.main()
             except SystemExit:
@@ -229,7 +236,7 @@ class TestMainFunction:
                 raise RuntimeError("window init failed")
 
         with patch('main.QApplication', FakeApp), \
-             patch('main.MainWindow', BrokenWindow):
+                patch('main.MainWindow', BrokenWindow):
             with pytest.raises(RuntimeError, match="window init failed"):
                 main.main()
 
@@ -255,8 +262,8 @@ class TestMainEntryPoint:
 
         called_with = []
         with patch.object(main_module, 'QApplication', FakeApp), \
-             patch.object(main_module, 'MainWindow', FakeWindow), \
-             patch('sys.exit', side_effect=lambda v: called_with.append(v)):
+                patch.object(main_module, 'MainWindow', FakeWindow), \
+                patch('sys.exit', side_effect=lambda v: called_with.append(v)):
             main_module.main()
         # sys.exit(42) が呼ばれている
         assert called_with == [42]

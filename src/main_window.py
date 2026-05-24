@@ -9,13 +9,16 @@ import json
 import os
 from typing import Optional
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QToolBar,
+    QMainWindow, QWidget, QHBoxLayout, QToolBar,
     QSplitter, QFileDialog, QMessageBox, QLabel, QCheckBox
 )
 from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QKeySequence, QIcon, QAction, QActionGroup
+from PySide6.QtGui import QKeySequence, QAction, QActionGroup
 
-from models import Scene, Line, Circle, Clothoid, Segment, Arc, Vec2, resolve_chain, SNAP_TOL
+from models import (
+    Scene, Line, Circle, Clothoid, Segment, Arc, Vec2,
+    resolve_chain, new_id
+)
 from canvas import Canvas
 from right_panel import RightPanel
 from vertical_window import VerticalAlignmentWindow
@@ -30,6 +33,7 @@ class MainWindow(QMainWindow):
     _get_or_create_ep と _collect_all_display は縦断線形ウィンドウと
     3D ビューアの両方で使われる共通ヘルパーとして MainWindow に集約している。
     """
+
     def __init__(self):
         """MainWindow を初期化する。UI・メニュー・ツールバー・シグナルを構築する。"""
         super().__init__()
@@ -100,6 +104,11 @@ class MainWindow(QMainWindow):
         act_save_as.triggered.connect(self._save_as)
         file_menu.addAction(act_save_as)
 
+        act_save_init = QAction("子図形を初期化して保存(&I)...", self)
+        act_save_init.setShortcut(QKeySequence("Ctrl+Shift+I"))
+        act_save_init.triggered.connect(self._save_initialized)
+        file_menu.addAction(act_save_init)
+
         act_open = QAction("開く(&O)...", self)
         act_open.setShortcut(QKeySequence("Ctrl+O"))
         act_open.triggered.connect(self._open)
@@ -161,21 +170,24 @@ class MainWindow(QMainWindow):
         self._act_select.setCheckable(True)
         self._act_select.setChecked(True)
         self._act_select.setShortcut(QKeySequence("S"))
-        self._act_select.triggered.connect(lambda: self._canvas.set_mode(Canvas.MODE_SELECT))
+        self._act_select.triggered.connect(
+            lambda: self._canvas.set_mode(Canvas.MODE_SELECT))
         ag.addAction(self._act_select)
         tb.addAction(self._act_select)
 
         self._act_line = QAction("直線 [L]", self)
         self._act_line.setCheckable(True)
         self._act_line.setShortcut(QKeySequence("L"))
-        self._act_line.triggered.connect(lambda: self._canvas.set_mode(Canvas.MODE_LINE))
+        self._act_line.triggered.connect(
+            lambda: self._canvas.set_mode(Canvas.MODE_LINE))
         ag.addAction(self._act_line)
         tb.addAction(self._act_line)
 
         self._act_circle = QAction("円 [C]", self)
         self._act_circle.setCheckable(True)
         self._act_circle.setShortcut(QKeySequence("C"))
-        self._act_circle.triggered.connect(lambda: self._canvas.set_mode(Canvas.MODE_CIRCLE))
+        self._act_circle.triggered.connect(
+            lambda: self._canvas.set_mode(Canvas.MODE_CIRCLE))
         ag.addAction(self._act_circle)
         tb.addAction(self._act_circle)
 
@@ -206,13 +218,17 @@ class MainWindow(QMainWindow):
         * ``Canvas.scene_changed`` → :meth:`_on_scene_changed`
         * ``Canvas.mouse_world_pos`` → ``RightPanel.update_mouse_pos``
         * ``RightPanel.request_smooth_connect`` → :meth:`_do_smooth_connect`
-        * ``RightPanel.request_polyline_connect`` → :meth:`_do_polyline_connect`
+        * ``RightPanel.request_polyline_connect``
+          → :meth:`_do_polyline_connect`
         * ``RightPanel.request_disconnect`` → :meth:`_do_disconnect`
         * ``RightPanel.request_add_clothoid`` → :meth:`_do_add_clothoid`
+        * ``RightPanel.request_add_arcs`` → :meth:`_do_add_arcs`
         * ``RightPanel.request_delete_clothoid`` → :meth:`_do_delete_clothoid`
         * ``RightPanel.request_flip_clothoid`` → :meth:`_do_flip_clothoid`
-        * ``RightPanel.request_set_offset`` → :meth:`_do_set_offset_constraint`
-        * ``RightPanel.request_clear_offset`` → :meth:`_do_clear_offset_constraint`
+        * ``RightPanel.request_set_offset``
+          → :meth:`_do_set_offset_constraint`
+        * ``RightPanel.request_clear_offset``
+          → :meth:`_do_clear_offset_constraint`
         * ``RightPanel.request_push_undo`` → ``Canvas.push_undo``
         * ``RightPanel.request_select`` → ``Canvas.set_selection``
         * ``RightPanel.request_delete`` → :meth:`_do_delete_objects`
@@ -220,13 +236,16 @@ class MainWindow(QMainWindow):
         """
         self._canvas.selection_changed.connect(self._on_selection_changed)
         self._canvas.scene_changed.connect(self._on_scene_changed)
-        self._canvas.mouse_world_pos.connect(self._right_panel.update_mouse_pos)
+        self._canvas.mouse_world_pos.connect(
+            self._right_panel.update_mouse_pos)
+        self._canvas.hover_changed.connect(self._right_panel.update_hovered)
 
         rp = self._right_panel
         rp.request_smooth_connect.connect(self._do_smooth_connect)
         rp.request_polyline_connect.connect(self._do_polyline_connect)
         rp.request_disconnect.connect(self._do_disconnect)
         rp.request_add_clothoid.connect(self._do_add_clothoid)
+        rp.request_add_arcs.connect(self._do_add_arcs)
         rp.request_delete_clothoid.connect(self._do_delete_clothoid)
         rp.request_flip_clothoid.connect(self._do_flip_clothoid)
         rp.request_set_offset.connect(self._do_set_offset_constraint)
@@ -300,6 +319,80 @@ class MainWindow(QMainWindow):
             self._filepath = path
             self._write_file(path)
 
+    def _save_initialized(self):
+        """子図形を初期化した状態でファイルに保存する（名前を付けて保存）。
+
+        以下の初期化を行ってから保存する。通常の Scene は変更しない。
+
+        * **直線**: 線分を全削除し、参照始点・終点を端点とする線分1本だけを設定する。
+        * **円**: 円弧を全削除する。
+        * **クロソイド**: snap_segment / snap_arc を False にする。
+          （smooth 接続由来の bisector も off にする）
+        * **折れ線接続・スムーズ接続・オフセット拘束**: そのまま維持する。
+        """
+        path, _ = QFileDialog.getSaveFileName(
+            self, "子図形を初期化して保存", "",
+            "Road Design JSON (*.rdjson);;JSON (*.json)")
+        if not path:
+            return
+        try:
+            data = self._build_initialized_dict()
+            with open(path, "w", encoding="utf-8") as f:
+                import json as _json
+                _json.dump(data, f, indent=2, ensure_ascii=False)
+            self._status_label.setText(
+                f"初期化保存完了: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.critical(self, "保存エラー", str(e))
+
+    def _build_initialized_dict(self) -> dict:
+        """Scene を初期化した状態の JSON 辞書を返す。
+
+        元の Scene は変更しない（コピーを操作する）。
+
+        Returns
+        -------
+        dict
+            ``Scene.to_dict()`` と同じ形式だが、各図形の子が初期化されている。
+        """
+        import copy
+        data = copy.deepcopy(self.scene.to_dict())
+
+        # ── 直線: 線分を1本に初期化 ──────────────────────────
+        for ln_d in data.get("lines", []):
+            # 参照始点・終点が端点の線分1本だけを残す
+            # t_start=0.0, t_end=1.0 で全長をカバーする線分
+            orig_segs = ln_d.get("segments", [])
+            # ID は最初の線分のIDを使うか、新IDを割り当てる
+            # 既存 segment があれば最初の id を再利用（ニックネーム維持のため）
+            seg_id = orig_segs[0]["id"] if orig_segs else new_id()
+            ln_d["segments"] = [{
+                "id": seg_id,
+                "t_start": 0.0,
+                "t_end": 1.0,
+            }]
+
+        # ── 円: 全円弧を削除 ────────────────────────────────
+        for ci_d in data.get("circles", []):
+            ci_d["arcs"] = []
+
+        # ── クロソイド: snap を全て off ─────────────────────
+        for clo_d in data.get("clothoids", []):
+            clo_d["snap_segment"] = False
+            clo_d["snap_arc"] = False
+            # smooth 接続由来の bisector_dir も off にする
+            # （bisector_dir は Line 側に記録されるため lines も処理）
+
+        # ── 直線の bisector_dir を削除（smooth接続の円参照を初期化）──
+        # smooth 接続の円は connection で維持されるが、
+        # bisector_origin / bisector_dir は Clothoid snap off で不要になる
+        # ※ 折れ線接続(connection)・オフセット拘束(offset_constraints)は維持
+        for ci_d in data.get("circles", []):
+            ci_d.pop("bisector_dir", None)
+            ci_d.pop("bisector_origin", None)
+
+        return data
+
     def _write_file(self, path: str):
         """Scene を JSON 形式でファイルに書き出す。
 
@@ -311,7 +404,8 @@ class MainWindow(QMainWindow):
         """
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.scene.to_dict(), f, indent=2, ensure_ascii=False)
+                json.dump(self.scene.to_dict(), f,
+                          indent=2, ensure_ascii=False)
             self.setWindowTitle(f"道路設計アプリ - {os.path.basename(path)}")
             self._status_label.setText("保存完了")
         except Exception as e:
@@ -325,25 +419,44 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self, "開く", "", "Road Design JSON (*.rdjson);;JSON (*.json)")
         if path:
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self._canvas.scene = Scene.from_dict(data)
-                self._canvas._selected.clear()
-                self._canvas._handles.clear()
-                self._canvas.scene_changed.emit()
-                self._canvas.selection_changed.emit([])
-                self._filepath = path
-                self.setWindowTitle(f"道路設計アプリ - {os.path.basename(path)}")
-                self._canvas.fit_all()
-            except Exception as e:
-                QMessageBox.critical(self, "読み込みエラー", str(e))
+            self._open_file(path)
+
+    def _open_file(self, path: str) -> bool:
+        """指定パスのファイルを読み込んで Scene を更新する。
+
+        ``-i``/``--input-file`` オプションや ``_open`` から呼ばれる共通ロジック。
+
+        Parameters
+        ----------
+        path : str
+            読み込む rdjson ファイルのパス。
+
+        Returns
+        -------
+        bool
+            読み込み成功のとき True、失敗のとき False。
+        """
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._canvas.scene = Scene.from_dict(data)
+            self._canvas._selected.clear()
+            self._canvas._handles.clear()
+            self._canvas.scene_changed.emit()
+            self._canvas.selection_changed.emit([])
+            self._filepath = path
+            self.setWindowTitle(f"道路設計アプリ - {os.path.basename(path)}")
+            self._canvas.fit_all()
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "読み込みエラー", str(e))
+            return False
 
     def _clear_all(self):
         """全データを削除する。確認ダイアログを表示し、承認時に Undo に記録する。"""
         r = QMessageBox.question(self, "確認", "全データを削除しますか？",
-                                  QMessageBox.StandardButton.Yes |
-                                  QMessageBox.StandardButton.No)
+                                 QMessageBox.StandardButton.Yes |
+                                 QMessageBox.StandardButton.No)
         if r == QMessageBox.StandardButton.Yes:
             self._canvas.push_undo()
             self._canvas.scene = Scene()
@@ -354,7 +467,8 @@ class MainWindow(QMainWindow):
 
     # ─── クロソイド操作 ──────────────────────────────────────
     def _do_smooth_connect(self, a, b):
-        """RightPanel.request_smooth_connect シグナルを受けて Canvas.smooth_connect を呼ぶ。"""
+        """RightPanel.request_smooth_connect シグナルを受けて
+        Canvas.smooth_connect を呼ぶ。"""
         self._canvas.smooth_connect(a, b)
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
@@ -367,8 +481,29 @@ class MainWindow(QMainWindow):
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     def _do_disconnect(self, a, b):
-        """RightPanel.request_disconnect シグナルを受けて Canvas.disconnect_lines を呼ぶ。"""
+        """RightPanel.request_disconnect シグナルを受けて
+        Canvas.disconnect_lines を呼ぶ。"""
         self._canvas.disconnect_lines(a, b)
+        self._right_panel.update_selection(self._canvas._selected, self.scene)
+
+    def _do_add_arcs(self, ci: 'Circle', arcs: list):
+        """``request_add_arcs`` シグナルを受けて Arc を円に追加する。
+
+        ``RightPanel._calc_free_arc_intervals`` が生成した Arc オブジェクトを
+        そのまま ``ci.arcs`` に追加する。push_undo は RightPanel 側で発行済み。
+
+        Parameters
+        ----------
+        ci : Circle
+            追加先の円。
+        arcs : list[Arc]
+            追加する :class:`Arc` オブジェクトのリスト。
+            まだ ``ci.arcs`` には含まれていない。
+        """
+        for arc in arcs:
+            ci.arcs.append(arc)
+        self._canvas.scene_changed.emit()
+        self._canvas.update()
         self._right_panel.update_selection(self._canvas._selected, self.scene)
 
     def _do_add_clothoid(self, ln, ci):
@@ -500,7 +635,7 @@ class MainWindow(QMainWindow):
             return
         self._canvas.push_undo()
         oc = OffsetConstraint()
-        oc.line     = ln
+        oc.line = ln
         oc.circle_a = ci_a
         oc.circle_b = ci_b
         oc.calc_offsets_from_current()
@@ -552,10 +687,10 @@ class MainWindow(QMainWindow):
             ep = ElementProfile()
             ep.element_id = obj.id
             self.scene.element_profiles.append(ep)
-        ep.element_type  = ('segment'  if isinstance(obj, Segment)  else
-                             'arc'      if isinstance(obj, Arc)       else
-                             'clothoid')
-        ep.plan_length   = plan_length_of(obj)
+        ep.element_type = ('segment' if isinstance(obj, Segment) else
+                           'arc' if isinstance(obj, Arc) else
+                           'clothoid')
+        ep.plan_length = plan_length_of(obj)
         ep.reversed_flag = rev
         return ep
 
@@ -600,10 +735,11 @@ class MainWindow(QMainWindow):
             if cur.grade_lines:
                 elev = max(cur.grade_lines, key=lambda g: g.dist_end).elev_end
             elif nxt.grade_lines:
-                elev = min(nxt.grade_lines, key=lambda g: g.dist_start).elev_start
+                elev = min(nxt.grade_lines,
+                           key=lambda g: g.dist_start).elev_start
             else:
                 continue
-            cur.elev_end   = elev
+            cur.elev_end = elev
             nxt.elev_start = elev
 
         self._vertical_window = VerticalAlignmentWindow(
@@ -629,7 +765,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "3Dビューア", "表示できる図形がありません。")
             return
 
-        ride_elems, rev_flags = resolve_chain(selected, self.scene.element_profiles)
+        ride_elems, rev_flags = resolve_chain(
+            selected, self.scene.element_profiles)
         profiles = [self._get_or_create_ep(obj, rev)
                     for obj, rev in zip(ride_elems, rev_flags)]
 

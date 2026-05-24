@@ -6,11 +6,11 @@ on:
   pull_request:
     branches: ["main", "develop"]
 
-# ディレクトリ構成（想定）:
+# ディレクトリ構成:
 #   road_designer/
 #   ├── src/           ← アプリ本体（*.py）
 #   ├── tests/         ← テストコード（test_*.py, conftest.py）
-#   ├── pyproject.toml
+#   ├── pyproject.toml ← pytest / coverage の設定を一元管理
 #   └── uv.lock
 
 jobs:
@@ -29,7 +29,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          enable-cache: true          # uv.lock を使ったキャッシュを有効化
+          enable-cache: true   # uv.lock を使ったキャッシュを有効化
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
@@ -38,7 +38,8 @@ jobs:
         # uv.lock で再現性のあるインストール。dev グループも含める
         run: uv sync --group dev
 
-      - name: Install Qt dependencies
+      # ── Linux: Qt の X11 依存ライブラリをインストール ──────────────────────
+      - name: Install Qt dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -51,34 +52,20 @@ jobs:
             libxcb-shape0 \
             libxcb-xfixes0
 
-      - name: Run tests
+      # ── Linux: 仮想ディスプレイの代わりに Qt offscreen プラグインを使用 ──
+      #    xvfb-run は不要。PySide6 の offscreen バックエンドだけで十分。
+      - name: Set Qt offscreen platform (Linux)
         if: runner.os == 'Linux'
-        run: |
-          xvfb-run -a uv run pytest tests/
+        shell: bash
+        run: echo "QT_QPA_PLATFORM=offscreen" >> "$GITHUB_ENV"
 
-      - name: Run tests (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          uv run pytest tests/ \
-            --cov=src \
-            --cov-branch \
-            --cov-report=xml \
-            --cov-report=term-missing
+      # ── テスト実行（全 OS 共通） ────────────────────────────────────────────
+      #    --cov / --cov-report=term-missing は pyproject.toml の addopts に記載済み。
+      #    ここでは Codecov 向けの XML レポートだけ追加する。
+      - name: Run tests
+        run: uv run pytest tests/ --cov-report=xml
 
-      - name: Run tests (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          uv run pytest tests/ `
-            --cov=src `
-            --cov-branch `
-            --cov-report=xml `
-            --cov-report=term-missing
-        env:
-          # PySide6 6.4+ は Windows でも offscreen が使える場合がある
-          # 動作しない場合はこの行を削除してください
-          QT_QPA_PLATFORM: offscreen
-
-      # カバレッジを Codecov にアップロード（ubuntu + 最新 Python のみ）
+      # ── カバレッジを Codecov にアップロード（ubuntu + 最新 Python のみ） ──
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         uses: codecov/codecov-action@v4

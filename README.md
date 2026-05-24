@@ -29,6 +29,12 @@ uv sync  # pyproject.toml の dependencies に panda3d が含まれるため自�
 uv run python src/main.py
 ```
 
+起動時にファイルを指定する場合:
+
+```bash
+uv run python src/main.py -i path/to/file.rdjson
+```
+
 ## ディレクトリ構造
 
 ```
@@ -57,7 +63,10 @@ road_designer/
     ├── test_vertical_window.py
     ├── test_road_viewer.py
     ├── test_main_window.py
-    └── test_main.py
+    ├── test_main.py
+    ├── test_spec_gui_ch4.py   # 仕様適合テスト 第4章（-m spec）
+    ├── test_spec_gui_ch5.py   # 仕様適合テスト 第5章（-m spec）
+    └── test_spec_gui_ch6.py   # 仕様適合テスト 第6章（-m spec）
 ```
 
 ## ファイル構成
@@ -74,10 +83,10 @@ road_designer/
 
 ## テスト
 
-### 実行方法
+### 通常テスト（CI・自動実行）
 
 ```bash
-# 全テストを実行
+# 全テストを実行（仕様適合テストは自動除外）
 uv run pytest
 
 # 詳細出力
@@ -87,14 +96,37 @@ uv run pytest -v
 uv run pytest tests/test_models.py
 ```
 
+### 仕様適合テスト（手動・GUI が必要）
+
+要求仕様書との適合を確認する GUI テストです。Qt ウィンドウを実際に開くため、**ディスプレイのある環境で手動実行**してください。
+
+```bash
+# 第4〜6章まとめて実行
+uv run pytest -m spec tests/test_spec_gui_ch4.py tests/test_spec_gui_ch5.py tests/test_spec_gui_ch6.py -v
+
+# 章ごとに個別実行
+uv run pytest -m spec tests/test_spec_gui_ch4.py -v   # 平面線形編集
+uv run pytest -m spec tests/test_spec_gui_ch5.py -v   # 右パネル
+uv run pytest -m spec tests/test_spec_gui_ch6.py -v   # 縦断線形ウィンドウ
+
+# spec マーカーの全テスト
+uv run pytest -m spec -v
+```
+
+> **注意**: 仕様適合テストは CI では除外されます（`pyproject.toml` の `addopts = "-m 'not spec'"`）。
+
 ### カバレッジ計測
 
 ```bash
-# ターミナルに未カバー行を表示
+# ターミナルに未カバー行を表示（spec テストは除外）
 uv run pytest --cov=src --cov-branch --cov-report=term-missing
 
 # HTML レポートを生成（htmlcov/index.html で確認）
 uv run pytest --cov=src --cov-branch --cov-report=html
+
+# 通常テスト＋仕様適合テストを合算する場合
+uv run pytest
+uv run pytest -m spec --cov-append
 ```
 
 ### Windows での注意
@@ -112,16 +144,26 @@ uv run pytest
 
 ### テスト構成
 
+#### 通常テスト（CI 対象）
+
 | ファイル | 対象 | 件数 |
 |---|---|---|
-| `test_models.py` | データモデル・計算ロジック | 240件 |
+| `test_models.py` | データモデル・計算ロジック | 280件 |
 | `test_canvas.py` | 座標変換・ヒット判定・UI ロジック | 94件 |
-| `test_canvas_qtest.py` | `QTest` を使ったイベント・描画 | 47件 |
-| `test_right_panel.py` | 隣接検索・接線判定・結合操作 | 74件 |
-| `test_vertical_window.py` | 縦断線形の計算・snap | 79件 |
+| `test_canvas_qtest.py` | `QTest` を使ったイベント・描画 | 85件 |
+| `test_right_panel.py` | 隣接検索・接線判定・結合操作 | 204件 |
+| `test_vertical_window.py` | 縦断線形の計算・snap | 132件 |
 | `test_road_viewer.py` | 3D 中心線生成（Panda3D なしでスキップ） | 31件 |
-| `test_main_window.py` | ウィンドウの操作ロジック | 50件 |
-| `test_main.py` | エントリーポイント | 14件 |
+| `test_main_window.py` | ウィンドウの操作ロジック | 83件 |
+| `test_main.py` | エントリーポイント | 15件 |
+
+#### 仕様適合テスト（手動・`-m spec`）
+
+| ファイル | 対象仕様書章 | 件数 |
+|---|---|---|
+| `test_spec_gui_ch4.py` | 第4章 平面線形編集（モード切替・直線/円・削除・Undo） | 23件 |
+| `test_spec_gui_ch5.py` | 第5章 右パネル（マウス座標・プロパティ・削除ダイアログ・ニックネーム） | 21件 |
+| `test_spec_gui_ch6.py` | 第6章 縦断線形ウィンドウ（モード切替・Undo/Redo） | 20件 |
 
 ## CI
 
@@ -184,16 +226,22 @@ GitHub Actions により push / PR のたびに自動テストを実行します
 | `Esc` | 連続入力のリセット |
 | `Ctrl+0` | 全体表示 |
 | `Del` | 選択した勾配直線・縦断曲線を削除 |
+| `Ctrl+Z` | Undo（最大 50 手順） |
+| `Ctrl+Y` / `Ctrl+Shift+Z` | Redo |
 
 ### 3D 走行ビューア操作
 
 | キー | 動作 |
 |------|------|
 | `V` | 追従視点 ↔ 車載視点 |
+| `O` | 俯瞰視点をサイクル（追従俯瞰 → 固定俯瞰 → 通常）|
+| `I` / `K` | 俯瞰モードでズームイン / ズームアウト |
+| `A` | オートドライブ ON/OFF（全要素をランダムに走行）|
+| `P` / `Shift+P` | 周囲車両を 1 台追加 / 削除 |
 | `R` | 路面表示 ON/OFF |
 | `Space` | 一時停止 / 再開 |
 | `↑` / `↓` | 速度 ±10 m/s |
-| `←` / `→` | 100m 後退 / 前進 |
+| `←` / `→` | 100m 後退 / 前進（オートドライブ時は走行履歴を移動） |
 | `Esc` | 終了 |
 
 ## 主な機能
@@ -213,10 +261,15 @@ GitHub Actions により push / PR のたびに自動テストを実行します
 
 ### 右パネル
 
+- **ホバー情報表示**: キャンバス上でカーソルが図形の上にあるとき、ニックネーム・タイプ#id・親図形情報をリアルタイム表示
 - 図形選択コンボボックス（隣接図形を優先表示、`[順]`/`[逆]` で接続方向を表示）
   - 1個目を選択すると直ちに2個目の高優先候補が更新される（手段を問わず）
-- プロパティの数値入力による精密編集（変更は Undo に記録）
+  - **道なり選択**: 高優先候補が1件（または順方向が1件）の場合、`[道なり] <図形名>` アイテムが自動追加され、選択すると残りのコンボを連鎖的に埋める
+- プロパティの数値入力・マウスホイールによる精密編集（変更は Undo に記録）
 - ドラッグ完了後にプロパティが即座に更新される
+- **子の図形リスト**: 直線を選択すると所属する線分の一覧、円を選択すると所属する円弧の一覧を表示
+- **円弧を追加 / 全追加ボタン**: 円の空き区間（円弧のない範囲）がある場合に表示
+- **Copy / Paste ボタン**: 直線・線分の始点/終点ペアをクリップボード経由でコピー＆ペースト
 - 縦断設計情報の表示（勾配直線・縦断曲線の一覧）
 - 図形の削除・再描画ボタン
 
@@ -226,6 +279,7 @@ GitHub Actions により push / PR のたびに自動テストを実行します
 - 縦断曲線（放物線）の挿入（PVI・VPC・VPT・K 値の自動計算）
 - 縦断曲線と勾配直線が重なる区間は縦断曲線を優先して高さを計算
 - 平面線形チェーンのカラーバー表示（線分=青・クロソイド=緑・円弧=紫）
+- **Undo/Redo**: `Ctrl+Z` / `Ctrl+Y`（最大 50 手順）
 
 ### 3D 走行ビューア
 
@@ -233,6 +287,9 @@ GitHub Actions により push / PR のたびに自動テストを実行します
 - 全道路要素を背景として表示
 - 道路幅 3.5m の路面メッシュ・路肩白線・橋脚（約 30m おき）を表示
 - 路面表示 ON/OFF で立体感を確認可能
+- **俯瞰ビュー**: 自車追従俯瞰 / 固定俯瞰（マウスでパン可能）をサイクルで切替
+- **複数台走行**: 周囲車両（トラフィック）を `P`/`Shift+P` で増減
+- **オートドライブ**: 全要素グラフをランダムに辿って自動走行
 
 ### ファイル
 

@@ -59,14 +59,18 @@ road_designer/
   docs/
     road_design_spec.md
     road_design_basic_design.md
+    road_design_detail_design.md
   src/
-    main.py             # エントリーポイント
-    models.py           # データモデル・ユーティリティ
-    canvas.py           # メイン編集キャンバス
-    right_panel.py      # 右パネル
-    main_window.py      # メインウィンドウ
-    vertical_window.py  # 縦断線形設計ウィンドウ
-    road_viewer.py      # 3D走行ビューア（別プロセス起動）
+    main.py                # エントリーポイント
+    models.py              # データモデル・ユーティリティ（vertical_profile を再エクスポート）
+    vertical_profile.py    # 縦断線形クラス群（ElementProfile / GradeLine 等）
+    canvas.py              # メイン編集キャンバス
+    right_panel.py         # 右パネル
+    _prop_builder.py       # プロパティパネル UI 構築 Mixin（PropBuilderMixin）
+    main_window.py         # メインウィンドウ
+    vertical_window.py     # 縦断線形設計ウィンドウ
+    road_viewer.py         # 3D走行ビューア（別プロセス起動）
+    _road_mesh.py          # 3D道路メッシュ生成関数群（road_viewer から分離）
 ```
 
 ### 2.2 モジュール構成
@@ -74,25 +78,34 @@ road_designer/
 | モジュール | 役割・概要 |
 |---|---|
 | `src/main.py` | エントリーポイント。`MainWindow` を生成して起動 |
-| `src/models.py` | データモデル・ビジネスロジック・ユーティリティ関数（クロソイド計算、`resolve_chain` 等） |
+| `src/models.py` | データモデル・ビジネスロジック・ユーティリティ関数（クロソイド計算、`resolve_chain` 等）。`vertical_profile` のクラス群を後方互換のために再エクスポート |
+| `src/vertical_profile.py` | 縦断線形データモデル（`ElementProfile`・`GradeLine`・`VerticalCurve`・`VerticalAlignment`・`plan_length_of`・`make_empty_profile`）。`models.py` から循環インポートで参照される |
 | `src/canvas.py` | メイン編集キャンバス。描画・マウス操作・ハンドル管理 |
-| `src/right_panel.py` | 右パネル。図形選択コンボ・プロパティ表示・操作ボタン |
+| `src/right_panel.py` | 右パネル。図形選択コンボ・プロパティ表示・操作ボタン。`PropBuilderMixin` を継承 |
+| `src/_prop_builder.py` | プロパティパネル UI 構築 Mixin（`PropBuilderMixin`）。`right_panel.py` が継承して使用 |
 | `src/vertical_window.py` | 縦断線形設計ウィンドウ（`ProfileCanvas` + `VerticalAlignmentWindow`） |
 | `src/main_window.py` | メインウィンドウ。メニュー・ファイル操作・モジュール間シグナル接続 |
-| `src/road_viewer.py` | 3D 走行ビューア（Panda3D、別プロセス起動）。中心線・道路メッシュ生成 |
+| `src/road_viewer.py` | 3D 走行ビューア（Panda3D、別プロセス起動）。中心線生成・走行シミュレーション |
+| `src/_road_mesh.py` | 3D 道路メッシュ生成関数群（`build_road_mesh`・`build_piers` 等）。`road_viewer.py` から利用 |
 
 ### 2.3 コンポーネント間の依存関係
 
-同一 `src/` 内のファイル同士は通常の `import` で参照する。循環依存は存在しない。
+同一 `src/` 内のファイル同士は通常の `import` で参照する。`models.py` と `vertical_profile.py` の間にのみ制御された循環インポートが存在する（下記参照）。
 
 ```
 src/main.py
   └─ main_window.py
-       ├─ canvas.py          ← models.py
-       ├─ right_panel.py     ← models.py
-       ├─ vertical_window.py ← models.py
-       └─ road_viewer.py     ← models.py  （別プロセス）
+       ├─ canvas.py               ← models.py
+       ├─ right_panel.py          ← models.py, _prop_builder.py
+       ├─ _prop_builder.py        ← models.py
+       ├─ vertical_window.py      ← models.py, vertical_profile.py, _prop_builder.py
+       └─ road_viewer.py          ← models.py, _road_mesh.py  （別プロセス）
+            └─ _road_mesh.py      ← models.py
+
+models.py  ←→  vertical_profile.py  （後方互換再エクスポートのための循環インポート）
 ```
+
+**循環インポートの解決**: `vertical_profile.py` は `models.py` から `Segment`・`Arc`・`Clothoid`・`new_id` をインポートする。`models.py` はこれらのクラスを定義した**後**に `from vertical_profile import ...` で再エクスポートする。Python はモジュールの部分的な初期化状態を許容するため、`Segment`/`Arc`/`Clothoid` が定義済みの時点で `vertical_profile.py` のインポートが始まり、循環が安全に解決される。
 
 ### 2.4 シグナル設計
 
@@ -121,20 +134,23 @@ src/main.py
 
 ### 3.1 クラス一覧
 
-| クラス | 分類 | 説明 |
-|---|---|---|
-| `Vec2` | 基本型 | 2次元ベクトル。`dot` / `cross` / `normalized` / `perp` 等の演算を持つ |
-| `Line` | 平面線形 | 参照始点・参照終点で定義される有向直線。`segments: list[Segment]` を保持 |
-| `Segment` | 平面線形 | 直線の部分区間。`t_start` / `t_end`（0.0〜1.0）で位置を管理 |
-| `LineConnection` | 接続情報 | 2直線の折れ線/スムーズ接続を管理。`kind: "polyline" \| "smooth"` |
-| `Circle` | 平面線形 | 中心と半径で定義される円。`arcs: list[Arc]` を保持 |
-| `Arc` | 平面線形 | 円の部分区間。`angle_start` / `angle_end`（ラジアン、CCW）で管理 |
-| `Clothoid` | 平面線形 | 直線と円で定義されるクロソイド曲線。`compute()` で接点・点列を計算 |
-| `OffsetConstraint` | 平面線形 | 直線 S を 2 つの円 A・B に対してオフセット距離で拘束する。`solve()` で直線を再計算 |
-| `ElementProfile` | 縦断線形 | 平面要素1つに対応する縦断データ。`grade_lines` + `vertical_curves` を保持 |
-| `GradeLine` | 縦断線形 | 勾配直線。`dist_start` / `dist_end` ・ `elev_start` / `elev_end` で定義 |
-| `VerticalCurve` | 縦断線形 | 縦断曲線（放物線）。`pvi_dist` / `pvi_elev` ・ `g1` ・ `g2` ・ `length` で定義 |
-| `Scene` | 集約 | 全図形・`ElementProfile`・ニックネームを管理。`to_dict` / `from_dict` でシリアライズ |
+| クラス / 関数 | 定義モジュール | 分類 | 説明 |
+|---|---|---|---|
+| `Vec2` | `models.py` | 基本型 | 2次元ベクトル。`dot` / `cross` / `normalized` / `perp` 等の演算を持つ |
+| `Line` | `models.py` | 平面線形 | 参照始点・参照終点で定義される有向直線。`segments: list[Segment]` を保持 |
+| `Segment` | `models.py` | 平面線形 | 直線の部分区間。`t_start` / `t_end`（0.0〜1.0）で位置を管理 |
+| `LineConnection` | `models.py` | 接続情報 | 2直線の折れ線/スムーズ接続を管理。`kind: "polyline" \| "smooth"` |
+| `Circle` | `models.py` | 平面線形 | 中心と半径で定義される円。`arcs: list[Arc]` を保持 |
+| `Arc` | `models.py` | 平面線形 | 円の部分区間。`angle_start` / `angle_end`（ラジアン、CCW）で管理 |
+| `Clothoid` | `models.py` | 平面線形 | 直線と円で定義されるクロソイド曲線。`compute()` で接点・点列を計算 |
+| `OffsetConstraint` | `models.py` | 平面線形 | 直線 S を 2 つの円 A・B に対してオフセット距離で拘束する。`solve()` で直線を再計算 |
+| `ElementProfile` | `vertical_profile.py` | 縦断線形 | 平面要素1つに対応する縦断データ。`grade_lines` + `vertical_curves` を保持 |
+| `GradeLine` | `vertical_profile.py` | 縦断線形 | 勾配直線。`dist_start` / `dist_end` ・ `elev_start` / `elev_end` で定義 |
+| `VerticalCurve` | `vertical_profile.py` | 縦断線形 | 縦断曲線（放物線）。`pvi_dist` / `pvi_elev` ・ `g1` ・ `g2` ・ `length` で定義 |
+| `make_empty_profile()` | `vertical_profile.py` | 縦断線形 | `GradeLine` / `VerticalCurve` を持たない空の `ElementProfile` を生成するファクトリ関数 |
+| `Scene` | `models.py` | 集約 | 全図形・`ElementProfile`・ニックネームを管理。`to_dict` / `from_dict` でシリアライズ |
+
+> `ElementProfile`・`GradeLine`・`VerticalCurve`・`plan_length_of`・`make_empty_profile` は `vertical_profile.py` で定義されるが、`models.py` からも後方互換のために再エクスポートされる（`from models import ElementProfile` は引き続き動作する）。
 
 ### 3.2 Scene の構造
 
@@ -149,7 +165,8 @@ Scene
   element_profiles:    list[ElementProfile]
     grade_lines:       list[GradeLine]
     vertical_curves:   list[VerticalCurve]
-  nicknames:           dict[int, str]    # id → nickname
+  vertical_alignments: list[VerticalAlignment]  # 旧フォーマット互換用（読み込み専用）
+  nicknames:           dict[int, str]            # id → nickname
 ```
 
 ### 3.3 ID 管理
@@ -412,7 +429,7 @@ K 値 = `L / |g2 - g1|`
 
 #### 6.1.4 Undo
 
-`push_undo()` で `Scene` 全体を JSON シリアライズしてスタックに積む。最大 500 手順。`Ctrl+Z` で `pop_undo()` を呼びリストアする。
+`push_undo()` で `Scene` 全体を JSON シリアライズして `deque(maxlen=500)` のスタックに積む。最大 500 手順（`maxlen` で自動的に古い履歴を破棄）。`Ctrl+Z` で `pop_undo()` を呼びリストアする。
 
 **Undo に記録される操作**:
 - 図形の追加・削除
@@ -538,28 +555,40 @@ screen_y = -elev * scale_y + offset.y   # y 軸反転
 
 ### 7.4 RoadViewer クラス（Panda3D ShowBase 継承）
 
-| メソッド | 役割 |
+`__init__(centerline, display_segs=None, elem_graph=None, start_info=None, warp_boundary=None)`
+
+| メソッド/グループ | 役割 |
 |---|---|
-| `__init__` | 中心線・表示セグメントを受け取り `_build_scene()` を呼ぶ |
-| `_build_scene()` | 路面・白線・橋脚・地面・HUD・キー設定を構築 |
-| `_move_task(task)` | 毎フレーム呼ばれる走行タスク。`dist` を更新して `_update_car_pose()` を呼ぶ |
-| `_update_car_pose(dist)` | `dist` の位置・姿勢を点列から補間してカメラ・車を配置 |
-| `_toggle_surface()` | 路面メッシュ（`_surface_nodes`）の表示/非表示を切り替え |
+| `_build_scene()` | 路面・白線・橋脚・地面・HUD・キー設定と周囲車両（`_init_traffic()`）を構築 |
+| `_move_task(task)` | 毎フレーム呼ばれる走行タスク。オートドライブ / 通常ループを切り替え、自車・カメラ・周囲車両を更新 |
+| `_ad_step(dt)` / `_ad_advance(overflow)` | オートドライブ: チェーン末端超過時に `elem_graph` から次の要素をランダム選択して遷移。候補なしのときワープ |
+| `_ad_start_elem()` / `_ad_warp()` | オートドライブ走行開始 / パックマン式ワープ（境界超過軸の符号を反転） |
+| `_ad_history_push()` / `_rewind()` / `_forward()` | 走行履歴スタック（最大 10 件）。`←` で過去要素を復元、`→` で最新に戻る |
+| `_init_traffic()` / `_add_traffic_car()` / `_step_traffic_car()` | 周囲車両の初期化・追加・フレーム更新（個別速度係数付き） |
+| `_update_car_pose_cl()` / `_update_camera_cl()` | 自車・カメラ位置姿勢の更新（follow / onboard / overview / overview_fixed の 4 モード） |
+| `_overview_pan()` / `_overview_zoom_in()` / `_overview_zoom_out()` | 固定俯瞰視点のマウスパン・ズーム |
+| `_toggle_surface()` / `_apply_surface_visible()` | 路面メッシュ（`_surface_nodes`）の表示/非表示を切り替え |
+| `_interp_cl()` / `_make_elem_cl()` / `_find_next_candidates()` / `_bearing_str()` | モジュールレベル純粋関数への薄いラッパー |
 
 ---
 
 ## 8. ユーティリティ関数（models.py）
 
-| 関数 | 説明 |
-|---|---|
-| `tangent_at(obj, at_end)` | `Segment` / `Arc` / `Clothoid` の始点/終点での接線単位ベクトルを返す |
-| `entry_tangent(obj, connect_at_start)` | 「共有端点→近傍点」方向の単位ベクトルを返す |
-| `resolve_chain(elems, eps)` | 要素リストからチェーン順序と `reversed_flags` を解決して返す。`SNAP_TOL=1.0m`、貪欲法 |
-| `plan_length_of(obj)` | `Segment` / `Arc` / `Clothoid` の平面長を計算して返す |
-| `prepare_viewer_data(...)` | 3D 中心線と表示セグメントを計算して `dict` で返す（I/O なし、テスト可能） |
-| `OffsetConstraint.solve()` | `off_a`・`off_b`・`_eps_a`・`_eps_b` から直線 S の参照点を再計算する |
-| `OffsetConstraint.calc_offsets_from_current()` | 現在の直線と 2 円の位置関係から `off_a`・`off_b`・`_eps_a`・`_eps_b` を算出して設定する |
-| `Scene._fix_duplicate_ids()` | `to_dict()` の前に全図形の ID 重複を検出して振り直す |
+| 関数 | 定義モジュール | 説明 |
+|---|---|---|
+| `tangent_at(obj, at_end)` | `models.py` | `Segment` / `Arc` / `Clothoid` の始点/終点での接線単位ベクトルを返す |
+| `entry_tangent(obj, connect_at_start)` | `models.py` | 「共有端点→近傍点」方向の単位ベクトルを返す |
+| `resolve_chain(elems, eps)` | `models.py` | 要素リストからチェーン順序と `reversed_flags` を解決して返す。`SNAP_TOL=1.0m`、貪欲法 |
+| `plan_length_of(obj)` | `vertical_profile.py` | `Segment` / `Arc` / `Clothoid` の平面長を計算して返す（`models.py` から再エクスポート） |
+| `make_empty_profile()` | `vertical_profile.py` | `GradeLine` / `VerticalCurve` を持たない空の `ElementProfile` を生成する（`models.py` から再エクスポート） |
+| `interp_cl(cl, dist)` | `road_viewer.py` | 中心線点列上の累積距離に対応する位置・方向・右ベクトルを線形補間（Panda3D 不要、テスト可能） |
+| `bearing_str(fwd_x, fwd_y)` | `road_viewer.py` | 進行方向ベクトルを 8 方位文字列に変換（Panda3D 不要、テスト可能） |
+| `make_elem_cl(elem, forward)` | `road_viewer.py` | 要素辞書から 3D 中心線を生成して `(cl, total)` を返す（Panda3D 不要、テスト可能） |
+| `find_next_candidates(graph, cur_id, ex, ey, exit_clo_ref)` | `road_viewer.py` | 隣接走行候補要素を検索して `[(elem, forward), ...]` を返す（Panda3D 不要、テスト可能） |
+| `prepare_viewer_data(...)` | `road_viewer.py` | 3D 中心線・表示セグメント・`elem_graph`・`start_info` を計算して `dict` で返す（I/O なし、テスト可能） |
+| `OffsetConstraint.solve()` | `models.py` | `off_a`・`off_b`・`_eps_a`・`_eps_b` から直線 S の参照点を再計算する |
+| `OffsetConstraint.calc_offsets_from_current()` | `models.py` | 現在の直線と 2 円の位置関係から `off_a`・`off_b`・`_eps_a`・`_eps_b` を算出して設定する |
+| `Scene._fix_duplicate_ids()` | `models.py` | `to_dict()` の前に全図形の ID 重複を検出して振り直す |
 
 ---
 
@@ -602,6 +631,10 @@ screen_y = -elev * scale_y + offset.y   # y 軸反転
 | `tangent_at()` / `entry_tangent()` | 各図形タイプでの接線ベクトル方向 |
 | `Scene.to_dict()` / `from_dict()` | 往復シリアライズ・ID 衝突の自動修正 |
 | `Scene._fix_duplicate_ids()` | メモリ上の ID 重複を検出・修正できること |
+| `interp_cl()` | 空リスト・中間点・z 補間・境界値・末尾超過 |
+| `bearing_str()` | N/NE/E/SE/S/SW/W/NW 全 8 方位 |
+| `make_elem_cl()` | pts_xy あり/なし・forward/reverse・高さ補間・空 heights・末尾超過 |
+| `find_next_candidates()` | 座標一致・Clothoid ref 一致・許容誤差外・複数候補 |
 | `prepare_viewer_data()` | 中心線点数・標高の連続性（段差 < 0.01m） |
 | `VerticalCurve.elevation_at()` | VPC〜VPT 内の放物線値・範囲外の NaN 返却 |
 
@@ -614,7 +647,23 @@ screen_y = -elev * scale_y + offset.y   # y 軸反転
 | `Canvas` の描画 | `QPainter`（PySide6） |
 | `RoadViewer` の描画 | Panda3D `ShowBase` |
 
-### 10.3 C1 カバレッジ達成の方針
+### 10.3 仕様適合テスト（GUI・手動実行）
+
+要求仕様書との適合を確認する GUI テスト群。`pytest.mark.spec` マーカーを付与し、CI では除外（`-m 'not spec'`）。ディスプレイのある環境で開発者が手動実行する。
+
+| ファイル | 対象仕様書章 | 件数 |
+|---|---|---|
+| `test_spec_gui_ch4.py` | 第4章 平面線形編集（モード切替・直線/円追加・削除・Undo） | 23件 |
+| `test_spec_gui_ch5.py` | 第5章 右パネル（マウス座標・プロパティ表示・削除ダイアログ・ニックネーム） | 21件 |
+| `test_spec_gui_ch6.py` | 第6章 縦断線形ウィンドウ（モード切替・Undo/Redo） | 20件 |
+
+実行方法:
+
+```bash
+uv run pytest -m spec tests/test_spec_gui_ch4.py tests/test_spec_gui_ch5.py tests/test_spec_gui_ch6.py -v
+```
+
+### 10.4 C1 カバレッジ達成の方針
 
 - `models.py` の全クラス・ユーティリティ関数を優先的にカバーする（I/O 依存なし）
 - `Clothoid.compute()` は τ の存在条件（`d > R` の場合・`d ≤ R` の場合）を両方テストする
