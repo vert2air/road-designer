@@ -1398,8 +1398,13 @@ ep = make_empty_profile()   # ElementProfile(grade_lines=[], vertical_curves=[])
 
 #### `keyPressEvent(event)`
 
+Redo 判定（`Ctrl+Y` / `Ctrl+Shift+Z`）を Undo（`Ctrl+Z`）より先にチェックすることで、`Ctrl+Shift+Z` が Undo に捕捉されるのを防ぐ。
+
 | キー | 処理 |
 |---|---|
+| `Ctrl+Y` | `_canvas._redo()` → `_refresh_props()` |
+| `Ctrl+Shift+Z` | `_canvas._redo()` → `_refresh_props()` |
+| `Ctrl+Z` | `_canvas._undo()` → `_refresh_props()` |
 | `S` | `_set_select_mode()` |
 | `G` | `_set_grade_mode()` |
 | `Esc` | 勾配直線モードの入力をリセット（`_grade_first = None`） |

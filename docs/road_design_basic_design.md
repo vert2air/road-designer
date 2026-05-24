@@ -647,7 +647,23 @@ screen_y = -elev * scale_y + offset.y   # y 軸反転
 | `Canvas` の描画 | `QPainter`（PySide6） |
 | `RoadViewer` の描画 | Panda3D `ShowBase` |
 
-### 10.3 C1 カバレッジ達成の方針
+### 10.3 仕様適合テスト（GUI・手動実行）
+
+要求仕様書との適合を確認する GUI テスト群。`pytest.mark.spec` マーカーを付与し、CI では除外（`-m 'not spec'`）。ディスプレイのある環境で開発者が手動実行する。
+
+| ファイル | 対象仕様書章 | 件数 |
+|---|---|---|
+| `test_spec_gui_ch4.py` | 第4章 平面線形編集（モード切替・直線/円追加・削除・Undo） | 23件 |
+| `test_spec_gui_ch5.py` | 第5章 右パネル（マウス座標・プロパティ表示・削除ダイアログ・ニックネーム） | 21件 |
+| `test_spec_gui_ch6.py` | 第6章 縦断線形ウィンドウ（モード切替・Undo/Redo） | 20件 |
+
+実行方法:
+
+```bash
+uv run pytest -m spec tests/test_spec_gui_ch4.py tests/test_spec_gui_ch5.py tests/test_spec_gui_ch6.py -v
+```
+
+### 10.4 C1 カバレッジ達成の方針
 
 - `models.py` の全クラス・ユーティリティ関数を優先的にカバーする（I/O 依存なし）
 - `Clothoid.compute()` は τ の存在条件（`d > R` の場合・`d ≤ R` の場合）を両方テストする
