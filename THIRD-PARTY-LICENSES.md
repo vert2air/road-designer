@@ -30,6 +30,9 @@ They are licensed under the **GNU Lesser General Public License v3.0 (LGPL-3.0-o
 ### pytest-cov (MIT)
 - **pytest-cov** — https://pypi.org/project/pytest-cov/
 
+### pytest-qt (MIT)
+- **pytest-qt** — https://pypi.org/project/pytest-qt/
+
 ### coverage (Apache-2.0)
 - **coverage** — https://pypi.org/project/coverage/
 
@@ -47,6 +50,7 @@ They are not imported directly by this project's source code.
 | packaging | Apache-2.0 | pytest |
 | pluggy | MIT | pytest |
 | pygments | BSD-2-Clause | pytest |
+| typing-extensions | PSF-2.0 | pytest-qt |
 
 ---
 
