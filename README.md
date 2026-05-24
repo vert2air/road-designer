@@ -63,7 +63,10 @@ road_designer/
     ├── test_vertical_window.py
     ├── test_road_viewer.py
     ├── test_main_window.py
-    └── test_main.py
+    ├── test_main.py
+    ├── test_spec_gui_ch4.py   # 仕様適合テスト 第4章（-m spec）
+    ├── test_spec_gui_ch5.py   # 仕様適合テスト 第5章（-m spec）
+    └── test_spec_gui_ch6.py   # 仕様適合テスト 第6章（-m spec）
 ```
 
 ## ファイル構成
@@ -80,10 +83,10 @@ road_designer/
 
 ## テスト
 
-### 実行方法
+### 通常テスト（CI・自動実行）
 
 ```bash
-# 全テストを実行
+# 全テストを実行（仕様適合テストは自動除外）
 uv run pytest
 
 # 詳細出力
@@ -93,14 +96,37 @@ uv run pytest -v
 uv run pytest tests/test_models.py
 ```
 
+### 仕様適合テスト（手動・GUI が必要）
+
+要求仕様書との適合を確認する GUI テストです。Qt ウィンドウを実際に開くため、**ディスプレイのある環境で手動実行**してください。
+
+```bash
+# 第4〜6章まとめて実行
+uv run pytest -m spec tests/test_spec_gui_ch4.py tests/test_spec_gui_ch5.py tests/test_spec_gui_ch6.py -v
+
+# 章ごとに個別実行
+uv run pytest -m spec tests/test_spec_gui_ch4.py -v   # 平面線形編集
+uv run pytest -m spec tests/test_spec_gui_ch5.py -v   # 右パネル
+uv run pytest -m spec tests/test_spec_gui_ch6.py -v   # 縦断線形ウィンドウ
+
+# spec マーカーの全テスト
+uv run pytest -m spec -v
+```
+
+> **注意**: 仕様適合テストは CI では除外されます（`pyproject.toml` の `addopts = "-m 'not spec'"`）。
+
 ### カバレッジ計測
 
 ```bash
-# ターミナルに未カバー行を表示
+# ターミナルに未カバー行を表示（spec テストは除外）
 uv run pytest --cov=src --cov-branch --cov-report=term-missing
 
 # HTML レポートを生成（htmlcov/index.html で確認）
 uv run pytest --cov=src --cov-branch --cov-report=html
+
+# 通常テスト＋仕様適合テストを合算する場合
+uv run pytest
+uv run pytest -m spec --cov-append
 ```
 
 ### Windows での注意
@@ -118,6 +144,8 @@ uv run pytest
 
 ### テスト構成
 
+#### 通常テスト（CI 対象）
+
 | ファイル | 対象 | 件数 |
 |---|---|---|
 | `test_models.py` | データモデル・計算ロジック | 280件 |
@@ -128,6 +156,14 @@ uv run pytest
 | `test_road_viewer.py` | 3D 中心線生成（Panda3D なしでスキップ） | 31件 |
 | `test_main_window.py` | ウィンドウの操作ロジック | 83件 |
 | `test_main.py` | エントリーポイント | 15件 |
+
+#### 仕様適合テスト（手動・`-m spec`）
+
+| ファイル | 対象仕様書章 | 件数 |
+|---|---|---|
+| `test_spec_gui_ch4.py` | 第4章 平面線形編集（モード切替・直線/円・削除・Undo） | 23件 |
+| `test_spec_gui_ch5.py` | 第5章 右パネル（マウス座標・プロパティ・削除ダイアログ・ニックネーム） | 21件 |
+| `test_spec_gui_ch6.py` | 第6章 縦断線形ウィンドウ（モード切替・Undo/Redo） | 20件 |
 
 ## CI
 
