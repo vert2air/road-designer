@@ -1384,13 +1384,14 @@ class VerticalAlignmentWindow(QMainWindow):
     def keyPressEvent(self, event):
         k = event.key()
         mods = event.modifiers()
-        if k == Qt.Key.Key_Z and mods & Qt.KeyboardModifier.ControlModifier:
-            self._canvas._undo()
-            self._refresh_props()
-        elif k in (Qt.Key.Key_Y, Qt.Key.Key_Z) and \
-                mods & Qt.KeyboardModifier.ControlModifier and \
-                mods & Qt.KeyboardModifier.ShiftModifier:
+        ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        # Redo を先に判定する（Ctrl+Shift+Z は Undo より前にチェックが必要）
+        if ctrl and (k == Qt.Key.Key_Y or (k == Qt.Key.Key_Z and shift)):
             self._canvas._redo()
+            self._refresh_props()
+        elif ctrl and k == Qt.Key.Key_Z:
+            self._canvas._undo()
             self._refresh_props()
         elif k == Qt.Key.Key_S:
             self._set_select_mode()
