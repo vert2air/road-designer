@@ -1052,6 +1052,24 @@ class TestTrafficMethods:
         # render が MagicMock なので内部で _add_traffic_car が走ってもクラッシュしない
         assert len(v._traffic) == 1
 
+    def test_add_traffic_car_negative_offset_no_name_error(self):
+        """負オフセット時の while init_dist < 0 ループで _elem_fwd_vec が正しく呼ばれる。
+
+        修正前は _fwd_vec（未定義）が使われており NameError が発生していた（バグ修正確認）。
+        """
+        eg1 = _elem(eid=1, start=(0.0, 0.0), end=(0.0, 100.0), pl=100.0)
+        eg2 = _elem(eid=2, start=(0.0, -100.0), end=(0.0, 0.0), pl=100.0)
+        v = _make_viewer(elem_graph=eg1 and [eg1, eg2])
+        v._elem_graph = [eg1, eg2]
+        v._ad_cl = [(0.0, 0.0, 0.0, 0.0), (0.0, 100.0, 0.0, 100.0)]
+        v._ad_total = 100.0
+        v._ad_dist = 0.0
+        v._ad_cur_id = 1
+        v._ad_forward = True
+        # 負オフセットを渡して while init_dist < 0 ループに入る
+        # NameError が出なければ修正済み
+        v._add_traffic_car(offset=-10.0)   # 0.0 + (-10.0) = -10 < 0 → ループ突入
+
 
 # ═══════════════════════════════════════════════════════════════
 #   prepare_viewer_data

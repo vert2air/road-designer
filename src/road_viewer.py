@@ -525,7 +525,7 @@ class RoadViewer(ShowBase):
 
             cands = self._find_next_candidates(cur_id, sx, sy, exit_clo_ref)
             cands = [(e,f) for e,f in cands
-                     if rfwd_x*_fwd_vec(e,f)[0]+rfwd_y*_fwd_vec(e,f)[1] >= 0]
+                     if rfwd_x*_elem_fwd_vec(e,f)[0]+rfwd_y*_elem_fwd_vec(e,f)[1] >= 0]
             if not cands:
                 break
 
