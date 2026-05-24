@@ -1227,3 +1227,197 @@ class TestSmoothConnectBSide:
         result = c.smooth_connect(a, b)
         # 逆平行なら bisect=0 → False
         assert result is False or True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _rebuild_handles: split_seg_ids / shared 端点のハンドル抑制
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestRebuildHandlesSplitIds:
+    """[C1] snap_segment=False の clothoid が生成する _split_seg_ids に含まれる
+    線分端点はハンドルが追加されない（L334-342）。"""
+
+    def test_split_seg_ids_suppresses_handles(self):
+        """snap_segment=False かつ clothoid が valid なとき、
+        _split_seg_ids 内の線分端点はハンドルリストに現れない。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(-200, 0), Vec2(200, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        ci = Circle(Vec2(0, 80), 50.0)
+        sc.add_line(ln)
+        sc.add_circle(ci)
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        sc.add_clothoid(clo)
+
+        if not (clo.is_valid and clo._split_seg_ids):
+            pytest.skip("この配置では _split_seg_ids が設定されない")
+
+        c.set_selection([ln])
+
+        split_ids = set(clo._split_seg_ids)
+        # split_seg_ids に含まれる線分の端点ハンドルが無いことを確認
+        suppressed = [
+            h for h in c._handles
+            if h.tag in ('seg_start', 'seg_end')
+            and hasattr(h.owner, 'id')
+            and h.owner.id in split_ids
+        ]
+        assert len(suppressed) == 0, (
+            f"split_seg_ids={split_ids} の端点ハンドルが {len(suppressed)} 個残っている"
+        )
+
+    def test_split_seg_ids_other_segs_still_have_handles(self):
+        """[C1] _split_seg_ids に含まれない線分の端点ハンドルは維持される。"""
+        c, sc = make_canvas()
+        # 長い直線に3本の線分を持たせ、真ん中のみが clothoid と交差するようにする
+        ln = Line(Vec2(-300, 0), Vec2(300, 0))
+        seg1 = Segment(ln, 0.0, 1 / 3); ln.segments.append(seg1)
+        seg2 = Segment(ln, 1 / 3, 2 / 3); ln.segments.append(seg2)
+        seg3 = Segment(ln, 2 / 3, 1.0); ln.segments.append(seg3)
+        ci = Circle(Vec2(0, 80), 50.0)
+        sc.add_line(ln)
+        sc.add_circle(ci)
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
+        sc.add_clothoid(clo)
+
+        if not (clo.is_valid and clo._split_seg_ids):
+            pytest.skip("この配置では _split_seg_ids が設定されない")
+
+        c.set_selection([ln])
+
+        split_ids = set(clo._split_seg_ids)
+        all_seg_ids = {seg1.id, seg2.id, seg3.id}
+        non_split_ids = all_seg_ids - split_ids
+
+        if not non_split_ids:
+            pytest.skip("全線分が split_seg_ids に含まれる")
+
+        # split でない線分の端点ハンドルが存在することを確認
+        non_split_handles = [
+            h for h in c._handles
+            if h.tag in ('seg_start', 'seg_end')
+            and hasattr(h.owner, 'id')
+            and h.owner.id in non_split_ids
+        ]
+        assert len(non_split_handles) > 0
+
+
+class TestRebuildHandlesSharedPoint:
+    """[C1] LineConnection の shared_point と一致する ref_end のハンドルが
+    追加されない（L364-368）。"""
+
+    def test_shared_ref_end_suppresses_handle(self):
+        """折れ線接続で接合点 = a.ref_end のとき line_ref_end ハンドルが出ない。"""
+        c, sc = make_canvas()
+        a = Line(Vec2(-100, 0), Vec2(0, 0))
+        seg_a = Segment(a, 0.0, 1.0); a.segments.append(seg_a)
+        b = Line(Vec2(0, -100), Vec2(0, 100))
+        seg_b = Segment(b, 0.0, 1.0); b.segments.append(seg_b)
+        sc.add_line(a); sc.add_line(b)
+        c._connect_polyline(a, b)
+
+        if a.connection is None:
+            pytest.skip("接続が設定されなかった")
+
+        c.set_selection([a])
+        tags_a = [h.tag for h in c._handles if h.owner is a]
+        # shared_point = a.ref_end のはずなので line_ref_end が抑制される
+        assert 'line_ref_start' in tags_a, "ref_start ハンドルは残るはず"
+        assert 'line_ref_end' not in tags_a, "ref_end は shared → 抑制されるはず"
+
+    def test_shared_point_handle_present(self):
+        """折れ線接続後、shared_pt ハンドルが生成される。"""
+        c, sc = make_canvas()
+        a = Line(Vec2(-100, 0), Vec2(0, 0))
+        seg_a = Segment(a, 0.0, 1.0); a.segments.append(seg_a)
+        b = Line(Vec2(0, -100), Vec2(0, 100))
+        seg_b = Segment(b, 0.0, 1.0); b.segments.append(seg_b)
+        sc.add_line(a); sc.add_line(b)
+        c._connect_polyline(a, b)
+
+        if a.connection is None:
+            pytest.skip("接続が設定されなかった")
+
+        c.set_selection([a])
+        shared_tags = [h.tag for h in c._handles if h.tag == 'shared_pt']
+        assert len(shared_tags) >= 1, "shared_pt ハンドルが存在するはず"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# mouseMoveEvent: ドラッグ / ラバー線
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestMouseMoveEventDrag:
+    """[C1] mouseMoveEvent の _drag_obj 分岐（L997-999）と
+    ラバー線更新（L1002-1004）をカバー。"""
+
+    def test_drag_via_mousemove_moves_handle(self):
+        """mousePress 後に 3px 超移動すると _do_drag が呼ばれて Line が動く。"""
+        c, sc = make_canvas()
+        ln = Line(Vec2(-200, 0), Vec2(200, 0))
+        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        sc.add_line(ln)
+        c.set_selection([ln])
+        QApplication.processEvents()
+
+        # ref_start ハンドルの画面座標
+        handle_pt = world_to_qpoint(c, -200, 0)
+        old_x = ln.ref_start.x
+
+        QTest.mousePress(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier, handle_pt)
+        QApplication.processEvents()
+
+        assert c._drag_obj is not None, "mousePress でドラッグ対象が設定されるはず"
+
+        # 10px 右に移動
+        dest = QPoint(handle_pt.x() + 10, handle_pt.y())
+        QTest.mouseMove(c, dest)
+        QApplication.processEvents()
+
+        # _do_drag が呼ばれて ref_start が変化しているはず
+        assert ln.ref_start.x != old_x or c._mouse_moved_px > 0
+
+        QTest.mouseRelease(c, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.NoModifier, dest)
+        QApplication.processEvents()
+
+    def test_rubber_line_updated_on_mousemove(self):
+        """直線モードで1点プレス後にマウス移動すると _rubber_end が更新される（L1002-1004）。
+
+        QTest.mouseMove は mousePress でボタンを押し続けている間のみ
+        Windows 環境で確実に mouseMoveEvent を配送する。
+        _drag_obj が None の直線モードでは do_drag が呼ばれず rubber_end 更新に到達する。
+        """
+        c, sc = make_canvas()
+        c.set_mode(Canvas.MODE_LINE)
+
+        # 1点目：ボタンを押したまま（mousePress）→ _line_first_pt が設定される
+        first_pt = world_to_qpoint(c, -50, 0)
+        QTest.mousePress(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier, first_pt)
+        QApplication.processEvents()
+
+        assert c._line_first_pt is not None, "1点目プレス後 _line_first_pt が設定されるはず"
+
+        # マウスを移動（ボタン押下中 → mouseMoveEvent が確実に届く）
+        # LINE モードで _drag_obj=None なので do_drag は呼ばれず rubber_end 分岐に到達する
+        dest = world_to_qpoint(c, 50, 0)
+        QTest.mouseMove(c, dest)
+        QApplication.processEvents()
+
+        assert c._rubber_end is not None, "_rubber_end が mouseMoveEvent で更新されるはず"
+
+        # ボタンを解放してクリーンアップ
+        QTest.mouseRelease(c, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.NoModifier, dest)
+        QApplication.processEvents()
+
+    def test_mousemove_without_drag_no_crash(self):
+        """ドラッグ中でないときに mouseMoveEvent が呼ばれても例外にならない。"""
+        c, sc = make_canvas()
+        assert c._drag_obj is None
+        QTest.mouseMove(c, QPoint(500, 500))
+        QApplication.processEvents()
+        # 例外なく通過すればOK

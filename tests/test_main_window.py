@@ -1229,3 +1229,203 @@ class TestBuildInitializedDict:
         assert all(len(l.segments) == 1 for l in sc2.lines)
         assert all(len(c.arcs) == 0 for c in sc2.circles)
         assert all(not c.snap_segment and not c.snap_arc for c in sc2.clothoids)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _do_add_arcs
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDoAddArcs:
+    """[仕様] _do_add_arcs が Arc を Circle に追加して scene_changed を emit する（L489-493）。"""
+
+    def test_do_add_arcs_appends_arc_to_circle(self):
+        """arc が ci.arcs に追加される。"""
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 20.0)
+        w.scene.add_circle(ci)
+        arc = Arc(ci, 0.0, math.pi / 2)
+
+        w._do_add_arcs(ci, [arc])
+
+        assert arc in ci.arcs
+
+    def test_do_add_arcs_emits_scene_changed(self):
+        """scene_changed シグナルが emit される。"""
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 20.0)
+        w.scene.add_circle(ci)
+        arc = Arc(ci, 0.0, math.pi / 2)
+
+        emitted = []
+        w._canvas.scene_changed.connect(lambda: emitted.append(1))
+        w._do_add_arcs(ci, [arc])
+
+        assert len(emitted) >= 1
+
+    def test_do_add_arcs_multiple(self):
+        """複数の arc が一括追加される。"""
+        w = make_window()
+        ci = Circle(Vec2(0, 0), 30.0)
+        w.scene.add_circle(ci)
+        arc1 = Arc(ci, 0.0, math.pi / 4)
+        arc2 = Arc(ci, math.pi / 4, math.pi / 2)
+
+        w._do_add_arcs(ci, [arc1, arc2])
+
+        assert arc1 in ci.arcs
+        assert arc2 in ci.arcs
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _do_delete_objects: ループの False 分岐（non-matching clothoid）
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDoDeleteObjectsLoopFalseBranch:
+    """[C1] Segment/Arc 削除ループで clothoid が別の line/circle を参照する
+    False 分岐（L552→551, L563→562）をカバー。"""
+
+    def test_segment_loop_visits_non_matching_clothoid(self):
+        """[C1] Segment 削除時、clo.line is ln が False の clothoid がループで訪れられる。"""
+        w = make_window()
+
+        # ln1 の線分を削除対象にする
+        ln1 = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg1 = Segment(ln1, 0.0, 0.5); seg2 = Segment(ln1, 0.5, 1.0)
+        ln1.segments.extend([seg1, seg2])
+
+        # ln2: 別の直線（clothoid2 がこちらに紐付く）
+        ln2 = Line(Vec2(-100, 50), Vec2(100, 50))
+        seg_ln2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg_ln2)
+
+        ci1 = Circle(Vec2(0, 30), 20.0)
+        ci2 = Circle(Vec2(0, 70), 20.0)
+
+        # clo1 は ln1、clo2 は ln2 → seg1 削除後のループで clo2 は False 分岐を通る
+        clo1 = Clothoid(ln1, ci1, snap_segment=False, snap_arc=False)
+        clo2 = Clothoid(ln2, ci2, snap_segment=False, snap_arc=False)
+
+        w.scene.add_line(ln1); w.scene.add_line(ln2)
+        w.scene.add_circle(ci1); w.scene.add_circle(ci2)
+        w.scene.add_clothoid(clo1); w.scene.add_clothoid(clo2)
+
+        # seg1 を削除 → ln1 に seg2 が残るので clothoid ループが走る
+        w._do_delete_objects([seg1])
+
+        assert seg1 not in ln1.segments, "seg1 が削除されているはず"
+        assert seg2 in ln1.segments, "seg2 は残るはず"
+
+    def test_arc_loop_visits_non_matching_clothoid(self):
+        """[C1] Arc 削除時、clo.circle is ci が False の clothoid がループで訪れられる。"""
+        w = make_window()
+
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+
+        ci1 = Circle(Vec2(0, 50), 20.0)
+        arc1 = Arc(ci1, -0.5, 0.0); arc2 = Arc(ci1, 0.0, 0.5)
+        ci1.arcs.extend([arc1, arc2])
+
+        # ci2: 別の円（clothoid2 がこちらに紐付く）
+        ci2 = Circle(Vec2(0, -50), 20.0)
+
+        # clo1 は ci1、clo2 は ci2 → arc1 削除後のループで clo2 は False 分岐を通る
+        clo1 = Clothoid(ln, ci1, snap_segment=False, snap_arc=False)
+        clo2 = Clothoid(ln, ci2, snap_segment=False, snap_arc=False)
+
+        w.scene.add_line(ln)
+        w.scene.add_circle(ci1); w.scene.add_circle(ci2)
+        w.scene.add_clothoid(clo1); w.scene.add_clothoid(clo2)
+
+        # arc1 を削除 → ci1 に arc2 が残るので clothoid ループが走る
+        w._do_delete_objects([arc1])
+
+        assert arc1 not in ci1.arcs, "arc1 が削除されているはず"
+        assert arc2 in ci1.arcs, "arc2 は残るはず"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _save_initialized
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestSaveInitialized:
+    """[仕様/C1] _save_initialized のファイル書き出し・キャンセル・例外処理（L322-335）。"""
+
+    def test_save_initialized_writes_file(self):
+        """[仕様] ダイアログで有効パスを返すとファイルが書き出される。"""
+        import tempfile
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QFileDialog
+
+        w = make_window()
+        with tempfile.NamedTemporaryFile(suffix='.rdjson', delete=False) as f:
+            path = f.name
+
+        try:
+            with patch.object(QFileDialog, 'getSaveFileName',
+                              return_value=(path, 'JSON')):
+                w._save_initialized()
+
+            assert os.path.exists(path), "ファイルが存在するはず"
+            assert os.path.getsize(path) > 0, "ファイルサイズが 0 より大きいはず"
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_save_initialized_cancel_does_nothing(self):
+        """[C1] ダイアログがキャンセルされた（空文字列）場合は早期リターンする。"""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QFileDialog
+
+        w = make_window()
+        # 例外も書き出しも発生しなければOK
+        with patch.object(QFileDialog, 'getSaveFileName',
+                          return_value=('', '')):
+            w._save_initialized()
+
+    def test_save_initialized_exception_shows_critical(self):
+        """[C1] 書き出し中に例外が発生すると QMessageBox.critical を呼び出す。"""
+        from unittest.mock import patch, MagicMock
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        w = make_window()
+        with patch.object(QFileDialog, 'getSaveFileName',
+                          return_value=('/fake/nonexistent/path.rdjson', 'JSON')):
+            with patch('builtins.open', side_effect=IOError("disk full")):
+                with patch.object(QMessageBox, 'critical') as mock_crit:
+                    w._save_initialized()
+
+        mock_crit.assert_called_once()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _launch_viewer: 表示対象なし → QMessageBox.information
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestLaunchViewerEmpty:
+    """[仕様] 表示できる図形がないとき _launch_viewer が QMessageBox.information を表示する
+    （L746-751）。"""
+
+    def test_launch_viewer_no_elements_shows_message(self):
+        """シーンが空のとき launch_viewer を呼ばずに情報メッセージを表示する。"""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+
+        w = make_window()
+        # シーンは空（make_window でクリア済み）
+        with patch.object(QMessageBox, 'information') as mock_info:
+            w._open_3d_viewer()
+
+        mock_info.assert_called_once()
+
+    def test_launch_viewer_no_elements_does_not_call_launch(self):
+        """シーンが空のとき road_viewer.launch_viewer は呼ばれない。"""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+        import road_viewer
+
+        w = make_window()
+        with patch.object(QMessageBox, 'information'):
+            with patch.object(road_viewer, 'launch_viewer') as mock_launch:
+                w._open_3d_viewer()
+
+        mock_launch.assert_not_called()
