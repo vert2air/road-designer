@@ -22,7 +22,10 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--tb=short --cov --cov-report=term-missing"
+addopts = "--tb=short --cov --cov-report=term-missing -m 'not spec'"
+markers = [
+    "spec: 要求仕様書との適合確認テスト（CI 除外）。手動実行: uv run pytest -m spec",
+]
 
 [tool.coverage.run]
 source = ["src"]
