@@ -1177,7 +1177,6 @@ class RoadViewer(ShowBase):
             self.camera.look_at(look)
 
     @staticmethod
-    @staticmethod
     def _bearing_str(fwd_x: float, fwd_y: float) -> str:
         """モジュールレベルの :func:`bearing_str` に委譲する。"""
         return bearing_str(fwd_x, fwd_y)

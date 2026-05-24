@@ -2169,6 +2169,13 @@ class TestTransformPair:
         rs, re = _transform_pair(rs, re, "flip_y")
         assert abs(rs.x - s.x) < 1e-6 and abs(rs.y - s.y) < 1e-6
 
+    def test_unknown_mode_returns_original(self):
+        """[エッジ] 未知モードは変換せず元の座標をそのまま返す（L138）。"""
+        s, e = Vec2(3.0, 7.0), Vec2(-5.0, 2.0)
+        ts, te = _transform_pair(s, e, "no_such_mode")
+        assert abs(ts.x - s.x) < 1e-9 and abs(ts.y - s.y) < 1e-9
+        assert abs(te.x - e.x) < 1e-9 and abs(te.y - e.y) < 1e-9
+
 
 class TestCopyPasteClipboard:
     """クリップボードへの Copy / Paste テスト。"""
@@ -3025,6 +3032,76 @@ class TestCalcFreeArcIntervals:
         largest = max(free, key=lambda a: a.arc_angle())
         # 最大は 135°(3π/4): 225→360° の区間
         assert largest.arc_angle() > math.pi / 2
+
+    def test_clothoid_on_different_circle_triggers_continue(self):
+        """[C1] 別の円に紐付くクロソイドは接点収集でスキップされる（L784 continue）。"""
+        # ci: テスト対象の円（弧なし）
+        ci = Circle(Vec2(0, 0), 20.0)
+        # ci2: 別の円に接続するクロソイドを用意する
+        ci2 = Circle(Vec2(200, 0), 20.0)
+        ln  = Line(Vec2(100, -100), Vec2(100, 100))
+        sc = Scene()
+        sc.add_circle(ci); sc.add_circle(ci2); sc.add_line(ln)
+        clo = Clothoid(ln, ci2)   # clo.circle is ci2 ≠ ci → L784 continue
+        sc.add_clothoid(clo)
+        p, _ = make_panel()
+        p.scene = sc
+        # clo は ci に無関係なので接点なし → 弧なし・接点なし → 全円周が空き
+        free = p._calc_free_arc_intervals(ci)
+        assert len(free) == 1
+        assert abs(free[0].arc_angle() - self.TWO_PI) < 1e-6
+
+    def test_clothoid_valid_but_no_circle_pt_skips_angle(self):
+        """[C1] 有効クロソイドでも _circle_pt=None のとき接点角度を収集しない（L785→782）。"""
+        ci = Circle(Vec2(0, 30), 20.0)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        sc = Scene()
+        sc.add_circle(ci); sc.add_line(ln)
+        clo = Clothoid(ln, ci)
+        sc.add_clothoid(clo)
+        # 有効な接点を強制的に None にして L785 の False ブランチを通す
+        clo._circle_pt = None
+        p, _ = make_panel()
+        p.scene = sc
+        # _circle_pt がないので接点角度は収集されない → 弧なし・境界なし → 全円周
+        free = p._calc_free_arc_intervals(ci)
+        assert len(free) == 1
+        assert abs(free[0].arc_angle() - self.TWO_PI) < 1e-6
+
+    def test_is_covered_hits_full_circle_arc_branch(self):
+        """[C1] span≥2π の弧がある場合 is_covered が L803 で return True を返す。
+
+        全円周弧（span≈2π）と部分弧が共存すると all(span≥2π) が False になり
+        is_covered が呼ばれる。全円周弧により L803 で即時 True を返す。
+        """
+        ci = Circle(Vec2(0, 0), 20.0)
+        # 全円周弧（L803 をトリガー）+ 45° の部分弧（境界点を生成して is_covered を呼ばせる）
+        ci.arcs.append(Arc(ci, 0.0, self.TWO_PI - 1e-12))  # span≈2π
+        ci.arcs.append(Arc(ci, 0.0, math.pi / 4))           # 45°
+        sc = self._make_scene(ci)
+        p, _ = make_panel()
+        p.scene = sc
+        # 全円周弧があるため全区間が覆われ空き区間なし
+        free = p._calc_free_arc_intervals(ci)
+        assert free == []
+
+    def test_wraparound_arc_free_zone_not_covered(self):
+        """[C1] 折り返しあり弧（end<start）の自由ゾーン中点は覆われない（L809→801）。
+
+        弧: start=3π/2, span=π → end=(3π/2+π)%2π=π/2 < start → 折り返し弧。
+        自由ゾーン [π/2, 3π/2] の中点 π で is_covered を呼ぶと
+        L809 の条件が False → L801（ループ継続）の分岐が通る。
+        """
+        ci = Circle(Vec2(0, 0), 20.0)
+        # 折り返し弧: 270°→90°（時計回りに 180° 覆う）
+        ci.arcs.append(Arc(ci, 3 * math.pi / 2, 3 * math.pi / 2 + math.pi))
+        sc = self._make_scene(ci)
+        p, _ = make_panel()
+        p.scene = sc
+        # 自由区間は π/2～3π/2（中心角180°）の1区間
+        free = p._calc_free_arc_intervals(ci)
+        assert len(free) == 1
+        assert abs(free[0].arc_angle() - math.pi) < 1e-6
 
 
 class TestArcAddButtons:

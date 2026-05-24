@@ -906,6 +906,32 @@ class TestMakeElemCl:
         # dist は plan_length にスケーリング: 末端 dist = 10.0
         assert approx(cl[-1][3], 10.0)
 
+    # [エッジ] heights=[] → _elev が空リスト早期リターン（L162）で常に 0.0
+    def test_empty_heights_returns_zero_elev(self):
+        from road_viewer import make_elem_cl
+        elem = {
+            "plan_length": 10.0,
+            "start": [0.0, 0.0], "end": [10.0, 0.0],
+            "heights": [],  # 空リスト → _elev: if not heights: return 0.0
+        }
+        cl, _ = make_elem_cl(elem, True)
+        for pt in cl:
+            assert approx(pt[2], 0.0), f"elev should be 0.0, got {pt[2]}"
+
+    # [エッジ] d が heights 末尾を超えるとき → _elev が最後の elev を返す（L170）
+    def test_elev_beyond_last_heights_entry(self):
+        from road_viewer import make_elem_cl
+        # plan_length=20 だが heights は dist=10 までしかない
+        # → d=20 のとき heights[-1][1]=5.0 を返す
+        elem = {
+            "plan_length": 20.0,
+            "start": [0.0, 0.0], "end": [20.0, 0.0],
+            "heights": [[0.0, 0.0], [10.0, 5.0]],  # dist=10 が最大
+        }
+        cl, _ = make_elem_cl(elem, True)
+        # 末尾の d=20 は heights 範囲外 → heights[-1][1] = 5.0
+        assert approx(cl[-1][2], 5.0), f"expected 5.0, got {cl[-1][2]}"
+
 
 # ══════════════════════════════════════════════════════════════
 # find_next_candidates — 次の走行候補を検索
