@@ -1521,140 +1521,219 @@ ep = make_empty_profile()   # ElementProfile(grade_lines=[], vertical_curves=[])
 ## 6. road_viewer.py — 3D走行ビューア
 
 `road_viewer.py` は以下の責務を持つ:
-- `_elem_fwd_vec()`: 走行方向ベクトル計算ユーティリティ
-- `RoadViewer` クラス: Panda3D ShowBase を継承した走行ビューア
-- `prepare_viewer_data()` / `launch_viewer()` / `_main_from_file()`: データ準備・プロセス起動
+
+- **純粋ロジック関数群（モジュールレベル）**: Panda3D 不要・単体テスト可能
+- **`_elem_fwd_vec()`**: 走行方向ベクトル計算ユーティリティ
+- **`RoadViewer` クラス**: Panda3D ShowBase を継承した走行ビューア（オートドライブ・トラフィック対応）
+- **`prepare_viewer_data()` / `launch_viewer()` / `_main_from_file()`**: データ準備・プロセス起動
 
 メッシュ生成（`build_centerline`・`build_road_mesh`・`build_piers` 等）は `_road_mesh.py` に分離されている（7章参照）。
 
-### 6.1 モジュールレベル関数
+### 6.1 モジュールレベル純粋関数
+
+これらは Panda3D の表示ウィンドウを必要とせず、単体テストが可能。`RoadViewer` の対応メソッドはすべてこれらへの薄いラッパーとして実装されている。
 
 #### `_elem_fwd_vec(elem: dict, forward: bool) -> tuple[float, float]`
 
-走行チェーンの要素辞書から進行方向の単位ベクトルを計算する。`prepare_viewer_data()` 内部で隣接要素との接続向き判定に使用する。
+走行チェーンの要素辞書から進行方向の単位ベクトルを計算する。`_ad_advance()` 内部で隣接要素との接続向き判定に使用する。
 
 - `forward=True`: 要素の始端方向（`points_xy` が 2 点以上あれば先頭 2 点、なければ `start`→`end`）
 - `forward=False`: 終端方向（末尾 2 点の逆）
 - 長さゼロのベクトルは `(1.0, 0.0)` にフォールバック
 
+#### `interp_cl(cl: list, dist: float) -> tuple`
+
+中心線点列 `cl = [(x, y, z, dist), ...]` 上の累積距離 `dist` に対応する位置・方向を線形補間して返す。
+
+- 戻り値: `(pos, fwd, right)` — 各要素は `(float, float, float)` のタプル
+- `cl` が空のとき: `(0,0,0), (1,0,0), (0,-1,0)` を返す
+- `dist` が末尾を超えるとき: 末尾点の位置・デフォルト方向 `(1,0,0)` を返す
+- `right` は `fwd` の XY 平面直交ベクトル `(fwd.y, -fwd.x, 0)`
+
+#### `bearing_str(fwd_x: float, fwd_y: float) -> str`
+
+進行方向ベクトル `(fwd_x, fwd_y)` を N / NE / E / SE / S / SW / W / NW の 8 方位文字列に変換する。座標系は x=東・y=北。
+
+#### `make_elem_cl(elem: dict, forward: bool) -> tuple[list, float]`
+
+要素辞書から 3D 中心線を生成して `(cl, total)` を返す。
+
+- `pts_xy` がある場合: 累積距離を計算して `plan_length` にスケーリング
+- `pts_xy` がない場合: `start`→`end` の直線を `max(2, int(pl*0.5))` 分割
+- `forward=False` のとき点列・heights を逆順にしてから生成
+- `heights` が空リストのとき標高は常に `0.0`
+- `dist` が `heights` 末尾を超えるとき `heights[-1][1]` を返す
+
+#### `find_next_candidates(elem_graph, cur_id, ex, ey, exit_clo_ref, ad_tol=1.0) -> list`
+
+隣接する走行候補要素を `[(elem, forward), ...]` で返す。
+
+- `exit_clo_ref` がある場合: `clothoid_id` + `side` の両方が一致する要素を最優先で収集（座標距離判定より優先）
+- `exit_clo_ref` がない場合: 末端座標から `ad_tol` m 以内の端点を持つ要素を収集
+- `elem["id"] == cur_id` の要素は除外
+
 #### `prepare_viewer_data(scene, elements, profiles, rev_flags, all_display=None) -> dict`
 
-I/O なしで走行データを計算する純粋関数。
+I/O なしで走行データを計算する純粋関数。`launch_viewer()` から呼ばれる。
 
 戻り値:
 ```python
 {
-  "centerline_3d":    [(x, y, z, dist), ...],  # 走行チェーンの3D中心線
-  "display_segments": [[(x, y, z, dist), ...], ...]  # 背景要素の独立点列
+  "centerline_3d":    [(x, y, z, dist), ...],   # 走行チェーンの3D中心線
+  "display_segments": [[(x, y, z, dist), ...], ...],  # 背景要素の独立点列
+  "elem_graph":       [{...}, ...],              # オートドライブ用全要素グラフ
+  "start_info":       {"id": int, "forward": bool} | None  # 走行開始要素情報
 }
 ```
 
-背景要素の EP: `scene.element_profiles` から `element_id` で検索し、なければダミー（grade_lines なし）を使用。
+`elem_graph` の各要素は `{id, type, nickname, start, end, plan_length, heights, points_xy, start_clo_ref, end_clo_ref}` の辞書。`start_clo_ref` / `end_clo_ref` は Clothoid 接点参照 `{"clothoid_id": int, "side": "line"|"circle"}` または `None`。
 
-#### `launch_viewer(scene, elements, profiles, rev_flags, all_display=None)`
+#### `launch_viewer(scene, elements, profiles, rev_flags, all_display=None, warp_boundary=None)`
 
-`prepare_viewer_data()` を呼び、結果を `tempfile`（JSON）に書き出して `road_viewer.py` を別プロセスで起動する。
+`prepare_viewer_data()` を呼び、結果を `tempfile`（JSON）に書き出して `road_viewer.py` を別プロセスで起動する。`warp_boundary` を指定すると `RoadViewer` のワープ境界距離を上書きできる。
 
 #### `_main_from_file(path)`
 
-tempfile から走行データを読み込み `RoadViewer` を起動するエントリーポイント。
+tempfile から走行データを読み込み `RoadViewer` を起動するエントリーポイント。`__main__` ブロックから呼ばれる。
 
 ### 6.2 `RoadViewer` クラス
 
-Panda3D の `ShowBase` を継承した走行ビューア。`ShowBase` はウィンドウ生成・OpenGL コンテキスト・イベントループ・タスクチェーンを一括管理する Panda3D の基底クラスであり、継承するだけで描画ウィンドウが立ち上がる。走行アニメーションは `taskMgr.add(_move_task)` で登録したタスク関数を毎フレーム呼び出すことで実現する（イベント駆動ではなくポーリング方式）。
+Panda3D の `ShowBase` を継承した走行ビューア。走行アニメーションは `taskMgr.add(_move_task)` で登録したタスク関数を毎フレーム呼び出すことで実現する（イベント駆動ではなくポーリング方式）。
 
-#### `__init__(centerline, display_segs=None)`
+#### クラス定数
 
-- `self.cl`: 走行チェーンの 3D 点列
-- `self.disp_segs`: 背景要素の点列リスト
-- `self.dist`: 現在の累積距離（初期値 `0.0`）
-- `self.speed`: 走行速度（初期値 `20.0` m/s）
-- `self.paused`: 一時停止フラグ（初期値 `False`）
-- `self.view_mode`: `"follow"` または `"onboard"`（初期値 `"follow"`）
-- `self._total`: `cl[-1][3]` (チェーン全長)
-- `self._surface_nodes`: 路面メッシュの NodePath リスト（on/off 制御用）
+| 定数 | 値 | 説明 |
+|---|---|---|
+| `SPEED_DEFAULT` | `30.0` m/s | 走行速度初期値 |
+| `CAM_BEHIND` | `20.0` m | 追従視点: 後方距離 |
+| `CAM_ABOVE` | `6.0` m | 追従視点: 高さ |
+| `CAM_EYE_H` | `1.5` m | 車載視点: 目の高さ |
+| `CAM_OVERVIEW_H` | `500.0` m | 俯瞰視点: 初期高度 |
+| `WARP_BOUNDARY` | `500.0` m | ワープ境界距離 |
+| `AD_TOL` | `1.0` m | 隣接判定の距離閾値 |
+| `TRAFFIC_EACH` | `5` 台 | 初期周囲車両台数（前後各） |
+| `TRAFFIC_GAP` | `20.0` m | 初期車間距離 |
+
+#### `__init__(centerline, display_segs=None, elem_graph=None, start_info=None, warp_boundary=None)`
+
+| 属性 | 説明 |
+|---|---|
+| `self.cl` | 走行チェーンの 3D 点列 |
+| `self.disp_segs` | 背景要素の点列リスト |
+| `self.dist` | 現在の累積距離（初期値 `0.0`） |
+| `self.speed` | 走行速度（初期値 `SPEED_DEFAULT`） |
+| `self.paused` | 一時停止フラグ |
+| `self.view_mode` | カメラモード（`"follow"` / `"onboard"` / `"overview"` / `"overview_fixed"`） |
+| `self._total` | チェーン全長 `cl[-1][3]` |
+| `self._surface_nodes` | 路面メッシュ NodePath リスト |
+| `self._auto_drive` | オートドライブモード（`elem_graph` がある場合 True） |
+| `self._elem_graph` | 全要素グラフ辞書リスト |
+| `self._ad_cl` | 現在走行中の中心線 |
+| `self._ad_total` | 現在チェーンの全長 |
+| `self._ad_dist` | 現在チェーン内の走行距離 |
+| `self._ad_cur_id` | 現在走行中の要素 ID |
+| `self._ad_forward` | 現在の走行方向 |
+| `self._ad_history` | 走行履歴スタック（最大 `_AD_HISTORY_MAX=10` 件） |
+| `self._ad_history_idx` | 履歴参照インデックス（-1: 最新） |
+| `self._traffic` | 周囲車両状態辞書のリスト |
+| `self._warp_boundary` | ワープ境界距離（引数 or `WARP_BOUNDARY`） |
+| `self._overview_pos` | 固定俯瞰視点のカメラ XY 座標 |
 
 #### `_build_scene()`
 
-1. `_surface_nodes = []` で初期化
-2. 背景要素ごとに `build_road_mesh` + `build_center_line_node` + `build_road_markings` + `build_piers` を呼んでノードをアタッチ。路面ノードは `_surface_nodes` に追加、`set_two_sided(True)`, `set_light_off()` を設定
-3. 走行チェーンの路面・中心線・白線・橋脚を同様に構築
-4. 全点から AABB の重心を計算して `build_ground` を配置
-5. 車ダミー（CardMaker）を作成
-6. `_apply_surface_visible(ROAD_SURFACE)` で初期表示状態を設定
+1. 背景要素ごとに `build_road_mesh` + `build_center_line_node` + `build_road_markings` + `build_piers` を生成
+2. 走行チェーンの路面・中心線・白線・橋脚を同様に構築
+3. `_apply_surface_visible(ROAD_SURFACE)` で初期表示状態を設定
+4. 全点の重心に `build_ground` を配置
+5. 自車ダミー（直方体）を生成
+6. `_init_traffic()` で周囲車両を初期配置
 
-#### `_apply_surface_visible(visible)`
+#### `_apply_surface_visible(visible)` / `_toggle_surface()`
 
-`_surface_nodes` の全ノードに対して `show()` または `hide()` を呼ぶ。
-
-#### `_toggle_surface()`
-
-`ROAD_SURFACE` フラグを反転し `_apply_surface_visible()` を呼ぶ。
-
-#### `_setup_lighting()`
-
-環境光（`AmbientLight`）と平行光（`DirectionalLight`）を設定する。
-
-#### `_setup_hud()`
-
-左上に `OnscreenText` で HUD を作成する。
+`_surface_nodes` の全ノードを一括 show/hide する。`R` キーで `ROAD_SURFACE` フラグを反転して呼ばれる。
 
 #### `_setup_keys()`
 
 | キー | メソッド |
 |---|---|
 | `Escape` | `sys.exit` |
-| `v` | `_toggle_view` |
+| `v` | `_toggle_view`（follow ↔ onboard） |
+| `o` | `_toggle_overview`（follow/onboard → overview → overview_fixed → follow） |
 | `r` | `_toggle_surface` |
 | `space` | `_toggle_pause` |
-| `arrow_up` | `_change_speed(+10)` |
-| `arrow_down` | `_change_speed(-10)` |
-| `arrow_left` | `_rewind` |
-| `arrow_right` | `_forward` |
+| `a` | `_toggle_auto_drive` |
+| `arrow_up` / `arrow_down` | `_change_speed(±10)` |
+| `arrow_left` | `_rewind`（100m 後退 / 履歴を戻る） |
+| `arrow_right` | `_forward`（100m 前進 / 履歴を進む） |
+| `p` | `_add_one_traffic` |
+| `shift-p` | `_remove_one_traffic` |
+| `i` / `k` | `_overview_zoom_in` / `_overview_zoom_out` |
 
 #### `_move_task(task)`
 
-毎フレーム呼ばれる走行タスク（Panda3D タスクチェーン）。
+毎フレーム呼ばれる走行タスク。
 
-- `paused=True` のとき何もしない
-- `dt = globalClock.dt`（フレーム間隔）
-- `dist += speed * dt`。`dist > _total` で停止
-- `_update_car_pose(dist)` と `_update_hud()` を呼ぶ
+1. `view_mode == "overview_fixed"` のとき `_overview_pan()` でマウスパン処理
+2. `paused=False` かつ `_auto_drive=True` → `_ad_step(dt)` でオートドライブ進行
+3. `paused=False` かつ `_auto_drive=False` → `dist = (dist + speed * dt) % _total`（ループ）
+4. `_update_car_pose_cl(cur_cl, cur_dist)` と `_update_camera_cl(cur_cl, cur_dist)` で自車・カメラ更新
+5. 周囲車両を `_step_traffic_car()` + `_update_traffic_car_pose()` で更新
+6. `_update_hud()` で HUD を更新
 
-#### `_update_car_pose(dist)`
+#### オートドライブ
 
-`_interp(dist)` で位置・接線方向を取得し、カメラ・車ダミーを配置する。
+`_auto_drive=True` のとき `elem_graph` を使って交差点でランダム選択しながら走行を継続する。
 
-- **追従視点（follow）**: カメラを車の後方 `15m`・上方 `5m` に配置し車を注視
-- **車載視点（onboard）**: カメラを車の前方 `0.5m`・上方 `1.5m` に配置し前方を注視
+**`_ad_step(dt)`**: `_ad_dist += speed * dt`。末端超過時に `_ad_advance(overflow)` を呼ぶ。
 
-#### `_interp(dist) -> tuple`
+**`_ad_advance(overflow)`**: 次の要素を決定する。
 
-`dist` に対応する位置 `(x, y, z)` と接線方向 `(tx, ty, tz)` を点列から線形補間して返す。
+1. 末端座標から `find_next_candidates()` で候補を収集（Clothoid 接点参照 → 座標距離の順）
+2. 候補がゼロのとき: 座標距離でフォールバック再検索
+3. 進行方向と内積が負の候補を除外（逆走防止）
+4. 候補あり → `random.choice()` → `_ad_start_elem(elem, forward, overflow)`
+5. 候補なし → `_ad_warp(...)` でワープ（パックマン式: 境界を超えた軸の符号を反転）
 
-- `dist < 0` → 先頭点の情報
-- `dist >= _total` → 末尾点の情報
-- それ以外: `cl[i][3] ≤ dist ≤ cl[i+1][3]` となる区間で線形補間
+**`_ad_start_elem(elem, forward, overflow)`**: 要素の中心線を生成して `_ad_cl` を更新。内部で `heights` から標高を線形補間する（現在は `_ad_advance` 内のロジックと同等: `make_elem_cl` には委譲しない独立実装）。
 
-#### `_update_hud()`
+**`_ad_warp(ex, ey, fwd_x, fwd_y, overflow)`**: `|ex| > WARP_BOUNDARY` なら `x` 符号反転、`|ey| > WARP_BOUNDARY` なら `y` 符号反転。同じ方向で仮の直線チェーン 100m を生成。
 
-HUD テキストを現在の状態に更新する。
+**履歴**: `_ad_advance()` を呼ぶ前に `_ad_history_push()` でスナップショットを積む（最大 10 件）。`←` キーで `_ad_history_idx` を戻り履歴を復元、`→` キーで進む（`_ad_history_idx == -1` でリアルタイム走行に復帰）。
 
-#### `_toggle_view()`
+#### 周囲車両（トラフィック）
 
-`view_mode` を `"follow"` ↔ `"onboard"` で切り替える。
+`_traffic` は各車の状態辞書 `{np, cl, total, dist, cur_id, forward, speed_mul}` のリスト。
 
-#### `_toggle_pause()`
+**`_init_traffic()`**: チェーン全長 ÷ `TRAFFIC_GAP` 台を前方に均等配置。
 
-`paused` フラグを反転する。
+**`_add_traffic_car(offset)`**: `offset` 分だけ前方（または後方）の要素を `elem_graph` で解決し、車両を追加。
 
-#### `_change_speed(delta)`
+**`_step_traffic_car(car, dt)`**: `dist += speed * speed_mul * dt`。末端超過時に次の要素に遷移（`_find_next_candidates` を使用）。候補なしのときワープ。
 
-`speed = max(1.0, speed + delta)` で速度を変更する。下限 1 m/s。
+#### 補間・座標変換（薄いラッパー）
 
-#### `_rewind()`
+| メソッド | 委譲先 |
+|---|---|
+| `_interp_cl(cl, dist)` | モジュールレベル `interp_cl()` |
+| `_interp(dist)` | `_interp_cl(self.cl, dist)`（後方互換） |
+| `_make_elem_cl(elem, forward)` | モジュールレベル `make_elem_cl()` |
+| `_find_next_candidates(cur_id, ex, ey, exit_clo_ref)` | モジュールレベル `find_next_candidates()` |
+| `_bearing_str(fwd_x, fwd_y)` | モジュールレベル `bearing_str()`（staticmethod） |
 
-`dist = max(0.0, dist - 100.0)` で 100m 後退する。
+#### カメラ
+
+**`_update_camera_cl(cl, dist)`**: `view_mode` に応じてカメラを配置する。
+
+| モード | 動作 |
+|---|---|
+| `"follow"` | 後方 `CAM_BEHIND` m・上方 `CAM_ABOVE` m から前方 5m を注視 |
+| `"onboard"` | 前方 2m・高さ `CAM_EYE_H` m の運転席視点 |
+| `"overview"` | 自車真上 `CAM_OVERVIEW_H` m から鉛直下向き（自車追従） |
+| `"overview_fixed"` | `_overview_pos` の真上から鉛直下向き（マウスパン可能） |
+
+**`_overview_pan()`**: 右クリック or 中クリックドラッグで `_overview_pos` を移動。
+
+**`_overview_zoom_in()` / `_overview_zoom_out()`**: `CAM_OVERVIEW_H` を 0.8 倍 / 1.25 倍（`I` / `K` キー）。
 
 ---
 

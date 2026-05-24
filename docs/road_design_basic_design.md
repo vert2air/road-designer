@@ -555,13 +555,20 @@ screen_y = -elev * scale_y + offset.y   # y 軸反転
 
 ### 7.4 RoadViewer クラス（Panda3D ShowBase 継承）
 
-| メソッド | 役割 |
+`__init__(centerline, display_segs=None, elem_graph=None, start_info=None, warp_boundary=None)`
+
+| メソッド/グループ | 役割 |
 |---|---|
-| `__init__` | 中心線・表示セグメントを受け取り `_build_scene()` を呼ぶ |
-| `_build_scene()` | 路面・白線・橋脚・地面・HUD・キー設定を構築 |
-| `_move_task(task)` | 毎フレーム呼ばれる走行タスク。`dist` を更新して `_update_car_pose()` を呼ぶ |
-| `_update_car_pose(dist)` | `dist` の位置・姿勢を点列から補間してカメラ・車を配置 |
-| `_toggle_surface()` | 路面メッシュ（`_surface_nodes`）の表示/非表示を切り替え |
+| `_build_scene()` | 路面・白線・橋脚・地面・HUD・キー設定と周囲車両（`_init_traffic()`）を構築 |
+| `_move_task(task)` | 毎フレーム呼ばれる走行タスク。オートドライブ / 通常ループを切り替え、自車・カメラ・周囲車両を更新 |
+| `_ad_step(dt)` / `_ad_advance(overflow)` | オートドライブ: チェーン末端超過時に `elem_graph` から次の要素をランダム選択して遷移。候補なしのときワープ |
+| `_ad_start_elem()` / `_ad_warp()` | オートドライブ走行開始 / パックマン式ワープ（境界超過軸の符号を反転） |
+| `_ad_history_push()` / `_rewind()` / `_forward()` | 走行履歴スタック（最大 10 件）。`←` で過去要素を復元、`→` で最新に戻る |
+| `_init_traffic()` / `_add_traffic_car()` / `_step_traffic_car()` | 周囲車両の初期化・追加・フレーム更新（個別速度係数付き） |
+| `_update_car_pose_cl()` / `_update_camera_cl()` | 自車・カメラ位置姿勢の更新（follow / onboard / overview / overview_fixed の 4 モード） |
+| `_overview_pan()` / `_overview_zoom_in()` / `_overview_zoom_out()` | 固定俯瞰視点のマウスパン・ズーム |
+| `_toggle_surface()` / `_apply_surface_visible()` | 路面メッシュ（`_surface_nodes`）の表示/非表示を切り替え |
+| `_interp_cl()` / `_make_elem_cl()` / `_find_next_candidates()` / `_bearing_str()` | モジュールレベル純粋関数への薄いラッパー |
 
 ---
 
@@ -574,7 +581,11 @@ screen_y = -elev * scale_y + offset.y   # y 軸反転
 | `resolve_chain(elems, eps)` | `models.py` | 要素リストからチェーン順序と `reversed_flags` を解決して返す。`SNAP_TOL=1.0m`、貪欲法 |
 | `plan_length_of(obj)` | `vertical_profile.py` | `Segment` / `Arc` / `Clothoid` の平面長を計算して返す（`models.py` から再エクスポート） |
 | `make_empty_profile()` | `vertical_profile.py` | `GradeLine` / `VerticalCurve` を持たない空の `ElementProfile` を生成する（`models.py` から再エクスポート） |
-| `prepare_viewer_data(...)` | `road_viewer.py` | 3D 中心線と表示セグメントを計算して `dict` で返す（I/O なし、テスト可能） |
+| `interp_cl(cl, dist)` | `road_viewer.py` | 中心線点列上の累積距離に対応する位置・方向・右ベクトルを線形補間（Panda3D 不要、テスト可能） |
+| `bearing_str(fwd_x, fwd_y)` | `road_viewer.py` | 進行方向ベクトルを 8 方位文字列に変換（Panda3D 不要、テスト可能） |
+| `make_elem_cl(elem, forward)` | `road_viewer.py` | 要素辞書から 3D 中心線を生成して `(cl, total)` を返す（Panda3D 不要、テスト可能） |
+| `find_next_candidates(graph, cur_id, ex, ey, exit_clo_ref)` | `road_viewer.py` | 隣接走行候補要素を検索して `[(elem, forward), ...]` を返す（Panda3D 不要、テスト可能） |
+| `prepare_viewer_data(...)` | `road_viewer.py` | 3D 中心線・表示セグメント・`elem_graph`・`start_info` を計算して `dict` で返す（I/O なし、テスト可能） |
 | `OffsetConstraint.solve()` | `models.py` | `off_a`・`off_b`・`_eps_a`・`_eps_b` から直線 S の参照点を再計算する |
 | `OffsetConstraint.calc_offsets_from_current()` | `models.py` | 現在の直線と 2 円の位置関係から `off_a`・`off_b`・`_eps_a`・`_eps_b` を算出して設定する |
 | `Scene._fix_duplicate_ids()` | `models.py` | `to_dict()` の前に全図形の ID 重複を検出して振り直す |
@@ -620,6 +631,10 @@ screen_y = -elev * scale_y + offset.y   # y 軸反転
 | `tangent_at()` / `entry_tangent()` | 各図形タイプでの接線ベクトル方向 |
 | `Scene.to_dict()` / `from_dict()` | 往復シリアライズ・ID 衝突の自動修正 |
 | `Scene._fix_duplicate_ids()` | メモリ上の ID 重複を検出・修正できること |
+| `interp_cl()` | 空リスト・中間点・z 補間・境界値・末尾超過 |
+| `bearing_str()` | N/NE/E/SE/S/SW/W/NW 全 8 方位 |
+| `make_elem_cl()` | pts_xy あり/なし・forward/reverse・高さ補間・空 heights・末尾超過 |
+| `find_next_candidates()` | 座標一致・Clothoid ref 一致・許容誤差外・複数候補 |
 | `prepare_viewer_data()` | 中心線点数・標高の連続性（段差 < 0.01m） |
 | `VerticalCurve.elevation_at()` | VPC〜VPT 内の放物線値・範囲外の NaN 返却 |
 
