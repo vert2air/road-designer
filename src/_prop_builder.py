@@ -10,11 +10,11 @@ from __future__ import annotations
 import math
 import json as _json
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
+    QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
     QDoubleSpinBox, QGroupBox, QFrame, QLineEdit,
     QCheckBox, QComboBox, QSizePolicy, QMenu, QApplication,
 )
-from PySide6.QtCore import Qt
+
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid)
 
 
@@ -38,7 +38,7 @@ def _encode_point_pair(start, end) -> str:
         ``{"sx": ..., "sy": ..., "ex": ..., "ey": ...}`` 形式の JSON 文字列。
     """
     return _json.dumps({"sx": start.x, "sy": start.y,
-                        "ex": end.x,   "ey": end.y})
+                        "ex": end.x, "ey": end.y})
 
 
 def _decode_point_pair(text: str):
@@ -117,7 +117,6 @@ def _transform_pair(start, end, mode: str):
         変換後の (start, end) タプル。
     """
     from models import Vec2
-    import math
 
     def tr(v):
         x, y = v.x, v.y
@@ -141,8 +140,8 @@ def _transform_pair(start, end, mode: str):
 
 
 def _add_copy_paste_buttons(lay, get_start, get_end,
-                             set_start, set_end,
-                             on_change, push_undo):
+                            set_start, set_end,
+                            on_change, push_undo):
     """Copy / Paste ボタン行を lay に追加するヘルパー。
 
     Parameters
@@ -185,12 +184,12 @@ def _add_copy_paste_buttons(lay, get_start, get_end,
     btn_paste.setMaximumWidth(80)
 
     _PASTE_MODES = [
-        ("rot90",        "原点で 90° 回転してペースト"),
-        ("rot180",       "原点で 180° 回転してペースト"),
-        ("rot270",       "原点で -90° 回転してペースト"),
-        ("flip_y",       "y=0 で線対称してペースト"),
-        ("flip_x",       "x=0 で線対称してペースト"),
-        ("flip_yx",      "y=x で線対称してペースト"),
+        ("rot90", "原点で 90° 回転してペースト"),
+        ("rot180", "原点で 180° 回転してペースト"),
+        ("rot270", "原点で -90° 回転してペースト"),
+        ("flip_y", "y=0 で線対称してペースト"),
+        ("flip_x", "x=0 で線対称してペースト"),
+        ("flip_yx", "y=x で線対称してペースト"),
         ("flip_y_neg_x", "y=-x で線対称してペースト"),
     ]
 
@@ -236,7 +235,8 @@ def _add_copy_paste_buttons(lay, get_start, get_end,
     cb.dataChanged.connect(refresh_paste_enabled)
 
     # ウィジェット破棄時にシグナル接続を切断（RuntimeError の根本対策）
-    btn_paste.destroyed.connect(lambda: cb.dataChanged.disconnect(refresh_paste_enabled))
+    btn_paste.destroyed.connect(
+        lambda: cb.dataChanged.disconnect(refresh_paste_enabled))
 
     refresh_paste_enabled()
 
@@ -244,6 +244,7 @@ def _add_copy_paste_buttons(lay, get_start, get_end,
     row.addWidget(btn_copy)
     row.addWidget(btn_paste)
     lay.addLayout(row)
+
 
 class _FlexSpinBox(QDoubleSpinBox):
     """パネル幅に追従する QDoubleSpinBox。
@@ -332,7 +333,6 @@ def _style_disabled(btn: QPushButton, disabled: bool):
         btn.setStyleSheet("")
 
 
-
 class PropBuilderMixin:
     """``RightPanel`` に組み込む図形プロパティ UI ビルダー群。
 
@@ -365,6 +365,7 @@ class PropBuilderMixin:
             clo.snap_segment = bool(v)
             clo.compute()
             self.scene_changed.emit()
+
         def on_arc(v):
             clo.snap_arc = bool(v)
             clo.compute()
@@ -413,7 +414,6 @@ class PropBuilderMixin:
         表示内容: 平面長・始終端標高・GradeLine 一覧・VerticalCurve 一覧。
         ElementProfile が存在しない場合は何も表示しない。
         """
-        from models import ElementProfile
         oid = getattr(obj, 'id', None)
         if oid is None:
             return
@@ -438,7 +438,8 @@ class PropBuilderMixin:
             lay.addWidget(QLabel(f"縦断曲線数: {len(ep.vertical_curves)}"))
             for vc in ep.vertical_curves:
                 lay.addWidget(QLabel(
-                    f"  PVI={vc.pvi_dist:.1f}m  L={vc.length:.1f}m  K={vc.K:.1f}"))
+                    f"  PVI={vc.pvi_dist:.1f}m"
+                    f"  L={vc.length:.1f}m  K={vc.K:.1f}"))
         self._prop_layout.addWidget(grp)
 
     def _add_nickname_editor(self, obj):
@@ -472,6 +473,7 @@ class PropBuilderMixin:
         edit = QLineEdit()
         if oid is not None:
             edit.setText(self.scene.nicknames.get(oid, ""))
+
         def on_change(text):
             if oid is not None:
                 self.scene.set_nickname(oid, text)
@@ -508,11 +510,13 @@ class PropBuilderMixin:
             btn_row = QHBoxLayout()
             btn_sel = QPushButton("選択")
             btn_sel.setFixedWidth(44)
-            btn_sel.clicked.connect(lambda _, r=rel: self.request_select.emit([r]))
+            btn_sel.clicked.connect(
+                lambda _, r=rel: self.request_select.emit([r]))
             btn_add = QPushButton("選択追加")
             btn_add.setFixedWidth(66)
-            btn_add.clicked.connect(lambda _, r=rel:
-                                     self.request_select.emit(self._selected + [r]))
+            btn_add.clicked.connect(
+                lambda _, r=rel:
+                self.request_select.emit(self._selected + [r]))
             btn_row.addStretch()
             btn_row.addWidget(btn_sel)
             btn_row.addWidget(btn_add)
@@ -547,28 +551,37 @@ class PropBuilderMixin:
                 Vec2 を受け取るセッター関数。
             """
             lay.addWidget(QLabel(label))
-            row = QHBoxLayout()
             sbx = _make_spinbox(get_fn().x)
             sby = _make_spinbox(get_fn().y)
             _undo_pushed = [False]
+
             def on_x(v):
-                if self._block: return
+                if self._block:
+                    return
                 if not _undo_pushed[0]:
-                    self.request_push_undo.emit(); _undo_pushed[0] = True
+                    self.request_push_undo.emit()
+                    _undo_pushed[0] = True
                 old = get_fn()
                 set_fn(Vec2(v, old.y))
                 self.scene_changed.emit()
+
             def on_y(v):
-                if self._block: return
+                if self._block:
+                    return
                 if not _undo_pushed[0]:
-                    self.request_push_undo.emit(); _undo_pushed[0] = True
+                    self.request_push_undo.emit()
+                    _undo_pushed[0] = True
                 old = get_fn()
                 set_fn(Vec2(old.x, v))
                 self.scene_changed.emit()
             sbx.valueChanged.connect(on_x)
             sby.valueChanged.connect(on_y)
-            row_x = QHBoxLayout(); row_x.addWidget(QLabel("X:")); row_x.addWidget(sbx)
-            row_y = QHBoxLayout(); row_y.addWidget(QLabel("Y:")); row_y.addWidget(sby)
+            row_x = QHBoxLayout()
+            row_x.addWidget(QLabel("X:"))
+            row_x.addWidget(sbx)
+            row_y = QHBoxLayout()
+            row_y.addWidget(QLabel("Y:"))
+            row_y.addWidget(sby)
             lay.addLayout(row_x)
             lay.addLayout(row_y)
 
@@ -614,8 +627,8 @@ class PropBuilderMixin:
         lay.setSpacing(4)
         for seg in segs:
             start = seg.start
-            end   = seg.end
-            nick  = self.scene.get_nickname(seg.id, 'seg')
+            end = seg.end
+            nick = self.scene.get_nickname(seg.id, 'seg')
 
             # 外側: ボタンを右端に固定、ラベルは残り幅を使う
             row = QHBoxLayout()
@@ -648,7 +661,8 @@ class PropBuilderMixin:
                 QSizePolicy.Policy.Fixed,
                 QSizePolicy.Policy.Fixed)
             btn_add.clicked.connect(
-                lambda _, s=seg: self.request_select.emit(self._selected + [s]))
+                lambda _, s=seg:
+                self.request_select.emit(self._selected + [s]))
 
             # ラベルを上段、ボタンを下段右寄せに配置
             lay.addWidget(lbl)
@@ -680,25 +694,34 @@ class PropBuilderMixin:
         row_cx = QHBoxLayout()
         sb_cx = _make_spinbox(ci.center.x)
         sb_cy = _make_spinbox(ci.center.y)
-        sb_r  = _make_spinbox(ci.radius, 0.001, 1e6, 0.5)
+        sb_r = _make_spinbox(ci.radius, 0.001, 1e6, 0.5)
 
         _undo_pushed = [False]
+
         def on_cx(v):
-            if self._block: return
+            if self._block:
+                return
             if not _undo_pushed[0]:
-                self.request_push_undo.emit(); _undo_pushed[0] = True
+                self.request_push_undo.emit()
+                _undo_pushed[0] = True
             ci.center = Vec2(v, ci.center.y)
             self.scene_changed.emit()
+
         def on_cy(v):
-            if self._block: return
+            if self._block:
+                return
             if not _undo_pushed[0]:
-                self.request_push_undo.emit(); _undo_pushed[0] = True
+                self.request_push_undo.emit()
+                _undo_pushed[0] = True
             ci.center = Vec2(ci.center.x, v)
             self.scene_changed.emit()
+
         def on_r(v):
-            if self._block: return
+            if self._block:
+                return
             if not _undo_pushed[0]:
-                self.request_push_undo.emit(); _undo_pushed[0] = True
+                self.request_push_undo.emit()
+                _undo_pushed[0] = True
             ci.radius = max(0.001, v)
             self.scene_changed.emit()
 
@@ -706,13 +729,16 @@ class PropBuilderMixin:
         sb_cy.valueChanged.connect(on_cy)
         sb_r.valueChanged.connect(on_r)
 
-        row_cx.addWidget(QLabel("中心X:")); row_cx.addWidget(sb_cx)
+        row_cx.addWidget(QLabel("中心X:"))
+        row_cx.addWidget(sb_cx)
         row_cy = QHBoxLayout()
-        row_cy.addWidget(QLabel("中心Y:")); row_cy.addWidget(sb_cy)
+        row_cy.addWidget(QLabel("中心Y:"))
+        row_cy.addWidget(sb_cy)
         lay.addLayout(row_cx)
         lay.addLayout(row_cy)
         row_r = QHBoxLayout()
-        row_r.addWidget(QLabel("半径:")); row_r.addWidget(sb_r)
+        row_r.addWidget(QLabel("半径:"))
+        row_r.addWidget(sb_r)
         lay.addLayout(row_r)
 
         # ── 円弧追加ボタン ────────────────────────────────────────
@@ -768,12 +794,12 @@ class PropBuilderMixin:
         """
         from models import Arc as _Arc
         TWO_PI = 2 * math.pi
-        EPS    = 1e-9
+        EPS = 1e-9
 
         # 既存弧の占有区間を (start, span) で収集（start ∈ [0, 2π), span > 0）
         occupied = []          # [(start, span), ...]
         for arc in ci.arcs:
-            s    = arc.angle_start % TWO_PI
+            s = arc.angle_start % TWO_PI
             span = arc.arc_angle()   # 常に正
             occupied.append((s, span))
 
@@ -783,7 +809,7 @@ class PropBuilderMixin:
             if not clo.is_valid or clo.circle is not ci:
                 continue
             if clo._circle_pt is not None:
-                cp  = clo._circle_pt
+                cp = clo._circle_pt
                 ang = math.atan2(cp.y - ci.center.y,
                                  cp.x - ci.center.x) % TWO_PI
                 tangent_angles.add(ang)
@@ -832,7 +858,8 @@ class PropBuilderMixin:
         free_arcs = []
         for i in range(n):
             seg_s = sorted_bounds[i]
-            seg_e = sorted_bounds[(i + 1) % n] if i < n - 1 else sorted_bounds[0] + TWO_PI
+            seg_e = sorted_bounds[(i + 1) % n] if i < n - \
+                1 else sorted_bounds[0] + TWO_PI
 
             span = seg_e - seg_s
             if span < EPS:
@@ -843,7 +870,7 @@ class PropBuilderMixin:
             if is_covered(mid):
                 continue
 
-            a_s  = seg_s % TWO_PI
+            a_s = seg_s % TWO_PI
             # arc_angle() = (end - start) % 2π が 0 にならないよう span を制限
             span = min(span, TWO_PI - 1e-12)
             new_arc = _Arc(ci, a_s, a_s + span)
@@ -868,9 +895,9 @@ class PropBuilderMixin:
         lay = QVBoxLayout(grp)
         lay.setSpacing(4)
         for arc in arcs:
-            nick    = self.scene.get_nickname(arc.id, 'arc')
-            ang_s   = math.degrees(arc.angle_start)
-            ang_e   = math.degrees(arc.angle_end)
+            nick = self.scene.get_nickname(arc.id, 'arc')
+            ang_s = math.degrees(arc.angle_start)
+            ang_e = math.degrees(arc.angle_end)
             arc_len = arc.arc_length()
 
             lbl = QLabel(
@@ -898,7 +925,8 @@ class PropBuilderMixin:
                 QSizePolicy.Policy.Fixed,
                 QSizePolicy.Policy.Fixed)
             btn_add.clicked.connect(
-                lambda _, a=arc: self.request_select.emit(self._selected + [a]))
+                lambda _, a=arc:
+                self.request_select.emit(self._selected + [a]))
 
             # ラベルを上段、ボタンを下段右寄せに配置
             lay.addWidget(lbl)
@@ -930,9 +958,10 @@ class PropBuilderMixin:
         # 状態表示
         curve_dir = "左カーブ" if clo.is_left_curve else "右カーブ"
         valid_str = "有効" if clo.is_valid else "【無効 - 配置条件不満足】"
-        rev_str   = "反転あり" if clo.reversed_flag else "反転なし"
+        rev_str = "反転あり" if clo.reversed_flag else "反転なし"
         lbl_info = QLabel(f"方向: {curve_dir}  /  {rev_str}\n状態: {valid_str}")
-        lbl_info.setStyleSheet("color: #80e080;" if clo.is_valid else "color: #e08080;")
+        lbl_info.setStyleSheet(
+            "color: #80e080;" if clo.is_valid else "color: #e08080;")
         lbl_info.setWordWrap(True)
         lay.addWidget(lbl_info)
 
@@ -960,13 +989,14 @@ class PropBuilderMixin:
                 if clo.is_left_curve:
                     diff = math.hypot(cp.x - arc.start.x, cp.y - arc.start.y)
                     match_str = f"arc.start との距離: {diff:.6f}"
-                    match_ok  = diff < 0.01
+                    match_ok = diff < 0.01
                 else:
                     diff = math.hypot(cp.x - arc.end.x, cp.y - arc.end.y)
                     match_str = f"arc.end との距離: {diff:.6f}"
-                    match_ok  = diff < 0.01
+                    match_ok = diff < 0.01
                 lbl_match = QLabel(f"  ({match_str})")
-                lbl_match.setStyleSheet("color: #80e080;" if match_ok else "color: #e08080;")
+                lbl_match.setStyleSheet(
+                    "color: #80e080;" if match_ok else "color: #e08080;")
                 lay.addWidget(lbl_match)
 
         lay.addWidget(_separator())
@@ -1009,7 +1039,7 @@ class PropBuilderMixin:
         """
         grp = QGroupBox("線分プロパティ")
         lay = QVBoxLayout(grp)
-        ln  = seg.line
+        ln = seg.line
 
         # 親の直線情報（読み取り専用）
         ln_nick = self.scene.get_nickname(ln.id, 'line')
@@ -1018,7 +1048,7 @@ class PropBuilderMixin:
         btn_sel_ln = QPushButton("直線を選択")
         btn_sel_ln.setFixedWidth(80)
         btn_sel_ln.clicked.connect(lambda checked=False, _ln=ln:
-            self.request_select.emit([_ln]))
+                                   self.request_select.emit([_ln]))
         row_ln = QHBoxLayout()
         row_ln.addWidget(lbl_ln, 1)
         row_ln.addWidget(btn_sel_ln)
@@ -1050,15 +1080,18 @@ class PropBuilderMixin:
             row_y = QHBoxLayout()
             sb_x = _make_spinbox(pt.x, step=0.1, decimals=4)
             sb_y = _make_spinbox(pt.y, step=0.1, decimals=4)
-            sb_t = _make_spinbox(get_t(), lo=0.0, hi=1.0, step=0.001, decimals=6)
+            sb_t = _make_spinbox(get_t(), lo=0.0, hi=1.0,
+                                 step=0.001, decimals=6)
             lbl_t = QLabel(f"割合: {get_t():.6f}")
 
             _undo_pushed = [False]
 
             def on_x(v):
-                if self._block: return
+                if self._block:
+                    return
                 if not _undo_pushed[0]:
-                    self.request_push_undo.emit(); _undo_pushed[0] = True
+                    self.request_push_undo.emit()
+                    _undo_pushed[0] = True
                 from models import Vec2
                 current = ln.point_at(get_t())
                 t = ln.project_t(Vec2(v, current.y))
@@ -1067,9 +1100,11 @@ class PropBuilderMixin:
                 self.scene_changed.emit()
 
             def on_y(v):
-                if self._block: return
+                if self._block:
+                    return
                 if not _undo_pushed[0]:
-                    self.request_push_undo.emit(); _undo_pushed[0] = True
+                    self.request_push_undo.emit()
+                    _undo_pushed[0] = True
                 from models import Vec2
                 current = ln.point_at(get_t())
                 t = ln.project_t(Vec2(current.x, v))
@@ -1078,9 +1113,11 @@ class PropBuilderMixin:
                 self.scene_changed.emit()
 
             def on_t(v):
-                if self._block: return
+                if self._block:
+                    return
                 if not _undo_pushed[0]:
-                    self.request_push_undo.emit(); _undo_pushed[0] = True
+                    self.request_push_undo.emit()
+                    _undo_pushed[0] = True
                 set_t(v)
                 self._refresh_seg_display(sb_x, sb_y, sb_t, lbl_t, ln, get_t)
                 self.scene_changed.emit()
@@ -1089,16 +1126,18 @@ class PropBuilderMixin:
             sb_y.valueChanged.connect(on_y)
             sb_t.valueChanged.connect(on_t)
 
-            row_x.addWidget(QLabel("X:")); row_x.addWidget(sb_x)
-            row_y.addWidget(QLabel("Y:")); row_y.addWidget(sb_y)
+            row_x.addWidget(QLabel("X:"))
+            row_x.addWidget(sb_x)
+            row_y.addWidget(QLabel("Y:"))
+            row_y.addWidget(sb_y)
             lay.addLayout(row_x)
             lay.addLayout(row_y)
             lay.addWidget(lbl_t)
 
         def set_t_start(v): seg.t_start = v
-        def set_t_end(v):   seg.t_end   = v
+        def set_t_end(v): seg.t_end = v
         add_endpoint("始点", lambda: seg.t_start, set_t_start, lambda: seg.t_end)
-        add_endpoint("終点", lambda: seg.t_end,   set_t_end,   lambda: seg.t_start)
+        add_endpoint("終点", lambda: seg.t_end, set_t_end, lambda: seg.t_start)
 
         # ── Copy / Paste ボタン ────────────────────────────────────
         _add_copy_paste_buttons(
@@ -1106,7 +1145,7 @@ class PropBuilderMixin:
             get_start=lambda: seg.start,
             get_end=lambda: seg.end,
             set_start=lambda v: setattr(seg, 't_start', seg.line.project_t(v)),
-            set_end=lambda v: setattr(seg, 't_end',   seg.line.project_t(v)),
+            set_end=lambda v: setattr(seg, 't_end', seg.line.project_t(v)),
             on_change=lambda: self.scene_changed.emit(),
             push_undo=lambda: self.request_push_undo.emit(),
         )
@@ -1134,7 +1173,6 @@ class PropBuilderMixin:
         get_t : callable
             現在の t 値を返すゲッター。
         """
-        from models import Vec2
         self._block = True
         pt = ln.point_at(get_t())
         sb_x.setValue(pt.x)
@@ -1157,7 +1195,7 @@ class PropBuilderMixin:
         """
         grp = QGroupBox("円弧プロパティ")
         lay = QVBoxLayout(grp)
-        ci  = arc.circle
+        ci = arc.circle
 
         # 親の円情報（読み取り専用）
         ci_nick = self.scene.get_nickname(ci.id, 'circle')
@@ -1166,7 +1204,7 @@ class PropBuilderMixin:
         btn_sel_ci = QPushButton("円を選択")
         btn_sel_ci.setFixedWidth(66)
         btn_sel_ci.clicked.connect(lambda checked=False, _ci=ci:
-            self.request_select.emit([_ci]))
+                                   self.request_select.emit([_ci]))
         row_ci = QHBoxLayout()
         row_ci.addWidget(lbl_ci, 1)
         row_ci.addWidget(btn_sel_ci)
@@ -1174,7 +1212,7 @@ class PropBuilderMixin:
 
         # 弧長角・弧長 (読み取り専用)
         lbl_span = QLabel(f"弧長角: {math.degrees(arc.arc_angle()):.4f}°")
-        lbl_len  = QLabel(f"弧長: {arc.arc_length():.4f} m")
+        lbl_len = QLabel(f"弧長: {arc.arc_length():.4f} m")
         lay.addWidget(lbl_span)
         lay.addWidget(lbl_len)
         lay.addWidget(_separator())
@@ -1193,17 +1231,18 @@ class PropBuilderMixin:
             """
             lay.addWidget(QLabel(label))
             ang_deg = math.degrees(get_angle())
-            pt      = Vec2(ci.center.x + ci.radius * math.cos(get_angle()),
-                           ci.center.y + ci.radius * math.sin(get_angle()))
+            pt = Vec2(ci.center.x + ci.radius * math.cos(get_angle()),
+                      ci.center.y + ci.radius * math.sin(get_angle()))
 
             row_ang = QHBoxLayout()
-            row_x   = QHBoxLayout()
-            row_y   = QHBoxLayout()
-            sb_ang = _make_spinbox(ang_deg, lo=-360.0, hi=360.0, step=0.1, decimals=4)
-            sb_x   = _make_spinbox(pt.x, step=0.1, decimals=4)
-            sb_y   = _make_spinbox(pt.y, step=0.1, decimals=4)
+            row_x = QHBoxLayout()
+            row_y = QHBoxLayout()
+            sb_ang = _make_spinbox(
+                ang_deg, lo=-360.0, hi=360.0, step=0.1, decimals=4)
+            sb_x = _make_spinbox(pt.x, step=0.1, decimals=4)
+            sb_y = _make_spinbox(pt.y, step=0.1, decimals=4)
             lbl_ang_ro = QLabel(f"  角度: {ang_deg:.4f}°")
-            lbl_coord  = QLabel(f"  ({pt.x:.4f}, {pt.y:.4f})")
+            lbl_coord = QLabel(f"  ({pt.x:.4f}, {pt.y:.4f})")
 
             def refresh_display():
                 self._block = True
@@ -1222,17 +1261,21 @@ class PropBuilderMixin:
             _undo_pushed = [False]
 
             def on_ang(v):
-                if self._block: return
+                if self._block:
+                    return
                 if not _undo_pushed[0]:
-                    self.request_push_undo.emit(); _undo_pushed[0] = True
+                    self.request_push_undo.emit()
+                    _undo_pushed[0] = True
                 set_angle(math.radians(v))
                 refresh_display()
                 self.scene_changed.emit()
 
             def on_x(v):
-                if self._block: return
+                if self._block:
+                    return
                 if not _undo_pushed[0]:
-                    self.request_push_undo.emit(); _undo_pushed[0] = True
+                    self.request_push_undo.emit()
+                    _undo_pushed[0] = True
                 cur_a = get_angle()
                 # 円上: x固定でyを2候補から近い方を選ぶ
                 dx = v - ci.center.x
@@ -1240,23 +1283,33 @@ class PropBuilderMixin:
                     return
                 dy = math.sqrt(max(0.0, ci.radius**2 - dx**2))
                 cur_y = ci.center.y + ci.radius * math.sin(cur_a)
-                new_y = ci.center.y + dy if abs(cur_y - (ci.center.y + dy)) < abs(cur_y - (ci.center.y - dy)) else ci.center.y - dy
+                _dist_p = abs(cur_y - (ci.center.y + dy))
+                _dist_m = abs(cur_y - (ci.center.y - dy))
+                new_y = (
+                    ci.center.y + dy if _dist_p < _dist_m
+                    else ci.center.y - dy)
                 a = math.atan2(new_y - ci.center.y, v - ci.center.x)
                 set_angle(a)
                 refresh_display()
                 self.scene_changed.emit()
 
             def on_y(v):
-                if self._block: return
+                if self._block:
+                    return
                 if not _undo_pushed[0]:
-                    self.request_push_undo.emit(); _undo_pushed[0] = True
+                    self.request_push_undo.emit()
+                    _undo_pushed[0] = True
                 cur_a = get_angle()
                 dy = v - ci.center.y
                 if abs(dy) > ci.radius:
                     return
                 dx = math.sqrt(max(0.0, ci.radius**2 - dy**2))
                 cur_x = ci.center.x + ci.radius * math.cos(cur_a)
-                new_x = ci.center.x + dx if abs(cur_x - (ci.center.x + dx)) < abs(cur_x - (ci.center.x - dx)) else ci.center.x - dx
+                _dist_p = abs(cur_x - (ci.center.x + dx))
+                _dist_m = abs(cur_x - (ci.center.x - dx))
+                new_x = (
+                    ci.center.x + dx if _dist_p < _dist_m
+                    else ci.center.x - dx)
                 a = math.atan2(v - ci.center.y, new_x - ci.center.x)
                 set_angle(a)
                 refresh_display()
@@ -1266,9 +1319,12 @@ class PropBuilderMixin:
             sb_x.valueChanged.connect(on_x)
             sb_y.valueChanged.connect(on_y)
 
-            row_ang.addWidget(QLabel("角度(°):")); row_ang.addWidget(sb_ang)
-            row_x.addWidget(QLabel("X:"));         row_x.addWidget(sb_x)
-            row_y.addWidget(QLabel("Y:"));         row_y.addWidget(sb_y)
+            row_ang.addWidget(QLabel("角度(°):"))
+            row_ang.addWidget(sb_ang)
+            row_x.addWidget(QLabel("X:"))
+            row_x.addWidget(sb_x)
+            row_y.addWidget(QLabel("Y:"))
+            row_y.addWidget(sb_y)
             lay.addLayout(row_ang)
             lay.addLayout(row_x)
             lay.addLayout(row_y)
@@ -1330,22 +1386,26 @@ class PropBuilderMixin:
         combo.setMaximumWidth(240)
         for p in pairs:
             status = ""
-            if p['blocked_a']: status += f"  ★A.{p['end_a']}束縛"
-            if p['blocked_b']: status += f"  ★B.{p['end_b']}束縛"
+            if p['blocked_a']:
+                status += f"  ★A.{p['end_a']}束縛"
+            if p['blocked_b']:
+                status += f"  ★B.{p['end_b']}束縛"
             combo.addItem(p['label'] + status)
         lay.addWidget(combo)
 
         btn = QPushButton("結合する")
+
         def do_merge(checked=False, _c=combo, _p=pairs, _a=seg_a, _b=seg_b):
             p = _p[_c.currentIndex()]
             if p['blocked_a'] or p['blocked_b']:
                 from PySide6.QtWidgets import QMessageBox
                 # blocked でないペアがあるか確認
-                unblocked = [q for q in _p if not q['blocked_a'] and not q['blocked_b']]
+                unblocked = [q for q in _p if not q['blocked_a']
+                             and not q['blocked_b']]
                 hint = (f"\n\n「{unblocked[0]['label']}」を選んで試してください。"
                         if unblocked else "")
                 QMessageBox.warning(self, "結合不可",
-                    "選択した端点は他の図形に束縛されているため結合できません。" + hint)
+                                    "選択した端点は他の図形に束縛されているため結合できません。" + hint)
                 return
             self._merge_segments(_a, _b, p['end_a'], p['end_b'])
             self.scene_changed.emit()
@@ -1384,8 +1444,10 @@ class PropBuilderMixin:
                 continue
             if clo.line is seg.line and clo._line_pt is not None:
                 t_x = clo.line.project_t(clo._line_pt)
-                if end == 'end'   and abs(seg.t_end   - t_x) < 1e-4: return True
-                if end == 'start' and abs(seg.t_start - t_x) < 1e-4: return True
+                if end == 'end' and abs(seg.t_end - t_x) < 1e-4:
+                    return True
+                if end == 'start' and abs(seg.t_start - t_x) < 1e-4:
+                    return True
             if seg.id in clo._split_seg_ids:
                 return True
         return False
@@ -1406,24 +1468,31 @@ class PropBuilderMixin:
         Returns
         -------
         list[dict]
-            各要素は ``{'end_a', 'end_b', 'dist', 'blocked_a', 'blocked_b', 'label'}``
+            各要素は
+            ``{'end_a', 'end_b', 'dist', 'blocked_a', 'blocked_b', 'label'}``
             のキーを持つ辞書。束縛ありのペアが後ろ（距離昇順の次）に来るようソートされる。
         """
         candidates = []
         for end_a, pt_a in [('start', seg_a.start), ('end', seg_a.end)]:
-            for end_b, pt_b in [('start', seg_b.start), ('end', seg_b.end)]:
+            for end_b, pt_b in [
+                ('start', seg_b.start), ('end', seg_b.end)
+            ]:
                 dist = math.hypot(pt_a.x - pt_b.x, pt_a.y - pt_b.y)
                 candidates.append({
                     'end_a': end_a, 'end_b': end_b, 'dist': dist,
                     'blocked_a': self._seg_end_blocked(seg_a, end_a),
                     'blocked_b': self._seg_end_blocked(seg_b, end_b),
-                    'label': (f"A.{end_a}({pt_a.x:.1f},{pt_a.y:.1f}) ↔ "
-                              f"B.{end_b}({pt_b.x:.1f},{pt_b.y:.1f})  d={dist:.1f}m"),
+                    'label': (
+                        f"A.{end_a}({pt_a.x:.1f},{pt_a.y:.1f}) ↔ "
+                        f"B.{end_b}({pt_b.x:.1f},{pt_b.y:.1f})"
+                        f"  d={dist:.1f}m"),
                 })
-        return sorted(candidates, key=lambda c: (c['blocked_a'] or c['blocked_b'], c['dist']))
+        return sorted(
+            candidates,
+            key=lambda c: (c['blocked_a'] or c['blocked_b'], c['dist']))
 
     def _merge_segments(self, seg_a: Segment, seg_b: Segment,
-                         end_a: str, end_b: str):
+                        end_a: str, end_b: str):
         """seg_b を seg_a に結合（吸収）する。
 
         seg_b を削除し、seg_a の end_a 側を seg_b の反対端まで延長する。
@@ -1499,21 +1568,25 @@ class PropBuilderMixin:
         combo.setMaximumWidth(240)
         for p in pairs:
             status = ""
-            if p['blocked_a']: status += f"  ★A.{p['end_a']}束縛"
-            if p['blocked_b']: status += f"  ★B.{p['end_b']}束縛"
+            if p['blocked_a']:
+                status += f"  ★A.{p['end_a']}束縛"
+            if p['blocked_b']:
+                status += f"  ★B.{p['end_b']}束縛"
             combo.addItem(p['label'] + status)
         lay.addWidget(combo)
 
         btn = QPushButton("結合する")
+
         def do_merge(checked=False, _c=combo, _p=pairs, _a=arc_a, _b=arc_b):
             p = _p[_c.currentIndex()]
             if p['blocked_a'] or p['blocked_b']:
                 from PySide6.QtWidgets import QMessageBox
-                unblocked = [q for q in _p if not q['blocked_a'] and not q['blocked_b']]
+                unblocked = [q for q in _p if not q['blocked_a']
+                             and not q['blocked_b']]
                 hint = (f"\n\n「{unblocked[0]['label']}」を選んで試してください。"
                         if unblocked else "")
                 QMessageBox.warning(self, "結合不可",
-                    "選択した端点は他の図形に束縛されているため結合できません。" + hint)
+                                    "選択した端点は他の図形に束縛されているため結合できません。" + hint)
                 return
             self._merge_arcs(_a, _b, p['end_a'], p['end_b'])
             self.scene_changed.emit()
@@ -1555,9 +1628,11 @@ class PropBuilderMixin:
                 continue
             if clo.circle is arc.circle and clo._circle_pt is not None:
                 ang = math.atan2(clo._circle_pt.y - arc.circle.center.y,
-                               clo._circle_pt.x - arc.circle.center.x)
-                if end == 'start' and abs(arc.angle_start - ang) < 1e-4: return True
-                if end == 'end'   and abs(arc.angle_end   - ang) < 1e-4: return True
+                                 clo._circle_pt.x - arc.circle.center.x)
+                if end == 'start' and abs(arc.angle_start - ang) < 1e-4:
+                    return True
+                if end == 'end' and abs(arc.angle_end - ang) < 1e-4:
+                    return True
             if arc.id in clo._split_arc_ids:
                 return True
         return False
@@ -1578,23 +1653,32 @@ class PropBuilderMixin:
         Returns
         -------
         list[dict]
-            各要素は ``{'end_a', 'end_b', 'dist', 'blocked_a', 'blocked_b', 'label'}``
+            各要素は
+            ``{'end_a', 'end_b', 'dist', 'blocked_a', 'blocked_b', 'label'}``
             のキーを持つ辞書。束縛ありのペアが後ろに来るようソートされる。
         """
         candidates = []
-        for end_a, ang_a, pt_a in [('start', arc_a.angle_start, arc_a.start),
-                                     ('end',   arc_a.angle_end,   arc_a.end)]:
-            for end_b, ang_b, pt_b in [('start', arc_b.angle_start, arc_b.start),
-                                         ('end',   arc_b.angle_end,   arc_b.end)]:
+        for end_a, ang_a, pt_a in [
+            ('start', arc_a.angle_start, arc_a.start),
+            ('end', arc_a.angle_end, arc_a.end)
+        ]:
+            for end_b, ang_b, pt_b in [
+                ('start', arc_b.angle_start, arc_b.start),
+                ('end', arc_b.angle_end, arc_b.end)
+            ]:
                 dist = math.hypot(pt_a.x - pt_b.x, pt_a.y - pt_b.y)
                 candidates.append({
                     'end_a': end_a, 'end_b': end_b, 'dist': dist,
                     'blocked_a': self._arc_end_blocked(arc_a, end_a),
                     'blocked_b': self._arc_end_blocked(arc_b, end_b),
-                    'label': (f"A.{end_a}({math.degrees(ang_a):.1f}°) ↔ "
-                              f"B.{end_b}({math.degrees(ang_b):.1f}°)  d={dist:.1f}m"),
+                    'label': (
+                        f"A.{end_a}({math.degrees(ang_a):.1f}°) ↔ "
+                        f"B.{end_b}({math.degrees(ang_b):.1f}°)"
+                        f"  d={dist:.1f}m"),
                 })
-        return sorted(candidates, key=lambda c: (c['blocked_a'] or c['blocked_b'], c['dist']))
+        return sorted(
+            candidates,
+            key=lambda c: (c['blocked_a'] or c['blocked_b'], c['dist']))
 
     def _merge_arcs(self, arc_a: Arc, arc_b: Arc, end_a: str, end_b: str):
         """arc_b を arc_a に結合（吸収）する。
@@ -1615,7 +1699,8 @@ class PropBuilderMixin:
 
         Notes
         -----
-        例: end_a='end', end_b='start' → arc_a.angle_end = arc_b.angle_end; del arc_b
+        例: end_a='end', end_b='start'
+        → arc_a.angle_end = arc_b.angle_end; del arc_b
         """
         far_angle = arc_b.angle_start if end_b == 'end' else arc_b.angle_end
         if end_a == 'end':
@@ -1628,7 +1713,7 @@ class PropBuilderMixin:
 
     # ─── 2直線 ───────────────────────────────────────────────
     def _build_offset_constraint(self, ln: 'Line',
-                                  ci_a: 'Circle', ci_b: 'Circle'):
+                                 ci_a: 'Circle', ci_b: 'Circle'):
         """2 円 + 1 直線が選択されたときのオフセット拘束パネルを構築する。
 
         スムーズ接続で生成された円（``bisector_dir`` が設定された円）は
@@ -1654,8 +1739,6 @@ class PropBuilderMixin:
         ci_b : Circle
             円 B（スムーズ接続の円は不可）。
         """
-        from models import OffsetConstraint
-
         self._prop_layout.addWidget(QLabel("─ オフセット拘束 ─"))
 
         # スムーズ接続の円は不可
@@ -1676,17 +1759,19 @@ class PropBuilderMixin:
         grp = QGroupBox("オフセット拘束")
         form = QFormLayout(grp)
 
-        nick_ln = self.scene.get_nickname(ln.id,   "line")
-        nick_a  = self.scene.get_nickname(ci_a.id, "circle")
-        nick_b  = self.scene.get_nickname(ci_b.id, "circle")
-        form.addRow("直線:",  QLabel(nick_ln))
+        nick_ln = self.scene.get_nickname(ln.id, "line")
+        nick_a = self.scene.get_nickname(ci_a.id, "circle")
+        nick_b = self.scene.get_nickname(ci_b.id, "circle")
+        form.addRow("直線:", QLabel(nick_ln))
         form.addRow("円 A:", QLabel(nick_a))
         form.addRow("円 B:", QLabel(nick_b))
 
         off_a_init = existing.off_a if existing else 0.0
         off_b_init = existing.off_b if existing else 0.0
-        sb_a = _make_spinbox(off_a_init, lo=-1000, hi=1000, step=0.1, decimals=3)
-        sb_b = _make_spinbox(off_b_init, lo=-1000, hi=1000, step=0.1, decimals=3)
+        sb_a = _make_spinbox(off_a_init, lo=-1000,
+                             hi=1000, step=0.1, decimals=3)
+        sb_b = _make_spinbox(off_b_init, lo=-1000,
+                             hi=1000, step=0.1, decimals=3)
         form.addRow("off_a [m]:", sb_a)
         form.addRow("off_b [m]:", sb_b)
         self._prop_layout.addWidget(grp)
@@ -1765,8 +1850,10 @@ class PropBuilderMixin:
         btn_disc.setEnabled(has_conn)
         _style_disabled(btn_disc, not has_conn)
 
-        btn_poly.clicked.connect(lambda: self.request_polyline_connect.emit(a, b))
-        btn_smoo.clicked.connect(lambda: self.request_smooth_connect.emit(a, b))
+        btn_poly.clicked.connect(
+            lambda: self.request_polyline_connect.emit(a, b))
+        btn_smoo.clicked.connect(
+            lambda: self.request_smooth_connect.emit(a, b))
         btn_disc.clicked.connect(lambda: self.request_disconnect.emit(a, b))
 
         lay.addWidget(btn_poly)
@@ -1810,10 +1897,12 @@ class PropBuilderMixin:
         elif n == 1:
             clo = clothoids[0]
             curve_dir = "左カーブ" if clo.is_left_curve else "右カーブ"
-            valid_str  = "有効" if clo.is_valid else "【無効 - 配置条件不満足】"
-            rev_str    = "（反転）" if clo.reversed_flag else ""
-            state_txt  = f"クロソイド 1本: {curve_dir}{rev_str}  {valid_str}"
-            state_css  = "color: #80e080;" if clo.is_valid else "color: #e08080;"
+            valid_str = "有効" if clo.is_valid else "【無効 - 配置条件不満足】"
+            rev_str = "（反転）" if clo.reversed_flag else ""
+            state_txt = f"クロソイド 1本: {curve_dir}{rev_str}  {valid_str}"
+            state_css = (
+                "color: #80e080;" if clo.is_valid
+                else "color: #e08080;")
         else:
             c0, c1 = clothoids[0], clothoids[1]
             state_txt = (f"クロソイド 2本: "

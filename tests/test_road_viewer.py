@@ -12,17 +12,16 @@ prepare_viewer_data）を重点的にテストする。
   [C1]   C1 カバレッジを高めるための追加試験
 """
 from __future__ import annotations
+from models import (
+    Vec2, Line, Segment, Circle, Arc, Clothoid,
+    ElementProfile, GradeLine, Scene,
+)
+import pytest
 import math
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
-
-import pytest
-from models import (
-    Vec2, Line, Segment, Circle, Arc, Clothoid,
-    ElementProfile, GradeLine, VerticalCurve, Scene,
-)
 
 
 def approx(a, b, tol=1e-4):
@@ -31,16 +30,18 @@ def approx(a, b, tol=1e-4):
 
 def make_gl(d0, e0, d1, e1):
     gl = GradeLine()
-    gl.dist_start = d0; gl.elev_start = e0
-    gl.dist_end   = d1; gl.elev_end   = e1
+    gl.dist_start = d0
+    gl.elev_start = e0
+    gl.dist_end = d1
+    gl.elev_end = e1
     return gl
 
 
 def make_ep(plan_length, gls=None, vcs=None, rev=False):
     ep = ElementProfile()
-    ep.plan_length   = plan_length
+    ep.plan_length = plan_length
     ep.reversed_flag = rev
-    ep.grade_lines     = gls or []
+    ep.grade_lines = gls or []
     ep.vertical_curves = vcs or []
     return ep
 
@@ -51,7 +52,7 @@ def make_seg_elem(length, elev_start=0.0, elev_end=10.0):
     seg = Segment(ln, 0.0, 1.0)
     ln.segments.append(seg)
     ep = make_ep(length, [make_gl(0, elev_start, length, elev_end)])
-    ep.element_id   = seg.id
+    ep.element_id = seg.id
     ep.element_type = 'segment'
     return seg, ep
 
@@ -112,7 +113,8 @@ class TestElevAtDist:
         ep = make_ep(100.0, [make_gl(0, 0, 100, 10)])
         offsets = [0.0]
         # dist = plan_length + 1e-9 → 処理される
-        assert approx(_elev_at_dist(100.0 + 1e-9, [ep], offsets), 10.0, tol=0.01)
+        assert approx(_elev_at_dist(
+            100.0 + 1e-9, [ep], offsets), 10.0, tol=0.01)
         # dist = plan_length + 1e-8 → 0.0（許容超過）
         assert _elev_at_dist(100.0 + 1e-8, [ep], offsets) == 0.0
 
@@ -144,7 +146,7 @@ class TestBuildCenterline:
         seg, ep = make_seg_elem(100.0)
         pts = build_centerline([seg], [ep], [False])
         dists = [p[3] for p in pts]
-        assert all(dists[i] <= dists[i+1] for i in range(len(dists)-1))
+        assert all(dists[i] <= dists[i + 1] for i in range(len(dists) - 1))
 
     # [仕様] 始点座標が Segment の start と一致
     def test_start_position(self):
@@ -165,18 +167,19 @@ class TestBuildCenterline:
         seg_tiny = Segment(ln_tiny, 0.0, 1.0)
         ln_tiny.segments.append(seg_tiny)
         ep_tiny = make_ep(0.0001, [make_gl(0, 0, 0.0001, 0)])
-        ep_tiny.element_id   = seg_tiny.id
+        ep_tiny.element_id = seg_tiny.id
         ep_tiny.element_type = 'segment'
 
         ln2 = Line(Vec2(0.0001, 0), Vec2(50.0001, 0))
         seg2 = Segment(ln2, 0.0, 1.0)
         ln2.segments.append(seg2)
         ep2 = make_ep(50.0, [make_gl(0, 10, 50, 15)])
-        ep2.element_id   = seg2.id
+        ep2.element_id = seg2.id
         ep2.element_type = 'segment'
 
         # ep_tiny は L < 0.001 なのでスキップされ、seg2 だけの点列が生成される
-        pts = build_centerline([seg_tiny, seg2], [ep_tiny, ep2], [False, False])
+        pts = build_centerline(
+            [seg_tiny, seg2], [ep_tiny, ep2], [False, False])
         # tiny はスキップされるが ep2 から点が生成される
         assert len(pts) > 0
         # dist は ep_tiny.plan_length (0.0001) から始まる(offsets[1]=0.0001)
@@ -189,7 +192,7 @@ class TestBuildCenterline:
         seg2, ep2 = make_seg_elem(50.0, 10.0, 15.0)
         # seg2 は seg1 の終端に接続
         seg2.line.ref_start = Vec2(100, 0)
-        seg2.line.ref_end   = Vec2(150, 0)
+        seg2.line.ref_end = Vec2(150, 0)
         pts = build_centerline([seg1, seg2], [ep1, ep2], [False, False])
         # 境界点（seg2 の最初の点）は seg1 の最後の z と等しい
         # pts を dist でグループ化して確認
@@ -218,7 +221,7 @@ class TestBuildCenterline:
         arc = Arc(ci, 0.0, math.pi / 2)
         ci.arcs.append(arc)
         ep = make_ep(arc.arc_length(), [make_gl(0, 0, arc.arc_length(), 5)])
-        ep.element_id   = arc.id
+        ep.element_id = arc.id
         ep.element_type = 'arc'
         pts = build_centerline([arc], [ep], [False])
         assert len(pts) > 0
@@ -236,7 +239,7 @@ class TestBuildCenterline:
         if not clo.is_valid:
             pytest.skip("Clothoid not valid")
         ep = make_ep(clo._tau * 2 * 30, [make_gl(0, 0, 100, 5)])
-        ep.element_id   = clo.id
+        ep.element_id = clo.id
         ep.element_type = 'clothoid'
         pts = build_centerline([clo], [ep], [False])
         assert len(pts) > 0
@@ -258,7 +261,7 @@ class TestBuildCenterline:
         seg1, ep1 = make_seg_elem(100.0, 0.0, 10.0)
         seg2, ep2 = make_seg_elem(50.0, 10.0, 15.0)
         seg2.line.ref_start = Vec2(100, 0)
-        seg2.line.ref_end   = Vec2(150, 0)
+        seg2.line.ref_end = Vec2(150, 0)
         pts = build_centerline([seg1, seg2], [ep1, ep2], [False, False])
         # 全長 150m → dist の最大値が 150 付近
         max_dist = max(p[3] for p in pts)
@@ -268,7 +271,7 @@ class TestBuildCenterline:
     def test_n_per_m_affects_density(self):
         from road_viewer import build_centerline
         seg, ep = make_seg_elem(100.0)
-        pts_low  = build_centerline([seg], [ep], [False], n_per_m=0.1)
+        pts_low = build_centerline([seg], [ep], [False], n_per_m=0.1)
         pts_high = build_centerline([seg], [ep], [False], n_per_m=2.0)
         assert len(pts_high) > len(pts_low)
 
@@ -287,7 +290,7 @@ class TestPrepareViewerData:
         sc.add_line(seg.line)
         sc.element_profiles.append(ep)
         result = prepare_viewer_data(sc, [seg], [ep], [False])
-        assert 'centerline_3d'    in result
+        assert 'centerline_3d' in result
         assert 'display_segments' in result
 
     # [仕様] centerline_3d は (x, y, z, dist) のリスト
@@ -308,7 +311,8 @@ class TestPrepareViewerData:
         sc = Scene()
         seg, ep = make_seg_elem(100.0)
         sc.add_line(seg.line)
-        result = prepare_viewer_data(sc, [seg], [ep], [False], all_display=None)
+        result = prepare_viewer_data(
+            sc, [seg], [ep], [False], all_display=None)
         assert result['display_segments'] == []
 
     # [仕様] all_display を渡すと display_segments に点列が含まれる
@@ -318,7 +322,7 @@ class TestPrepareViewerData:
         seg1, ep1 = make_seg_elem(100.0)
         seg2, ep2 = make_seg_elem(50.0)
         seg2.line.ref_start = Vec2(100, 0)
-        seg2.line.ref_end   = Vec2(150, 0)
+        seg2.line.ref_end = Vec2(150, 0)
         sc.add_line(seg1.line)
         sc.add_line(seg2.line)
         sc.element_profiles.append(ep1)
@@ -343,17 +347,20 @@ class TestPrepareViewerData:
         seg1, ep1 = make_seg_elem(100.0, 0.0, 10.0)
         seg2, ep2 = make_seg_elem(50.0, 10.0, 15.0)
         seg2.line.ref_start = Vec2(100, 0)
-        seg2.line.ref_end   = Vec2(150, 0)
+        seg2.line.ref_end = Vec2(150, 0)
         sc.add_line(seg1.line)
         sc.add_line(seg2.line)
         sc.element_profiles.append(ep1)
         sc.element_profiles.append(ep2)
-        result = prepare_viewer_data(sc, [seg1, seg2], [ep1, ep2], [False, False])
+        result = prepare_viewer_data(
+            sc, [seg1, seg2], [ep1, ep2], [False, False])
         cl = result['centerline_3d']
         # 連続した点間の z の差が 0.5m 未満であることを確認
         for i in range(len(cl) - 1):
-            assert abs(cl[i+1][2] - cl[i][2]) < 0.5, \
-                f"z jump at dist={cl[i][3]:.1f}: {cl[i][2]:.3f} → {cl[i+1][2]:.3f}"
+            assert abs(cl[i + 1][2] - cl[i][2]) < 0.5, (
+                f"z jump at dist={cl[i][3]:.1f}:"
+                f" {cl[i][2]:.3f} → {cl[i+1][2]:.3f}"
+            )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -405,8 +412,10 @@ class TestBuildCenterlineBranches:
         ln2.segments.append(seg2)
         ep1 = make_ep(100.0, [make_gl(0, 0, 100, 10)])
         ep2 = make_ep(50.0, [make_gl(0, 10, 50, 15)])
-        ep1.element_id = seg1.id; ep1.element_type = 'segment'
-        ep2.element_id = seg2.id; ep2.element_type = 'segment'
+        ep1.element_id = seg1.id
+        ep1.element_type = 'segment'
+        ep2.element_id = seg2.id
+        ep2.element_type = 'segment'
         pts = build_centerline([seg1, seg2], [ep1, ep2], [False, False])
         # dist ≈ 100 付近の z は 10m 付近（ep1 の末端）
         boundary = [p for p in pts if abs(p[3] - 100.0) < 2.0]
@@ -420,7 +429,8 @@ class TestBuildCenterlineBranches:
         clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
         assert not clo.is_valid
         ep = make_ep(50.0)
-        ep.element_id = clo.id; ep.element_type = 'clothoid'
+        ep.element_id = clo.id
+        ep.element_type = 'clothoid'
         pts = build_centerline([clo], [ep], [False])
         assert pts == []
 
@@ -454,7 +464,8 @@ class TestPrepareViewerDataBranches:
         seg2 = Segment(ln2, 0.0, 1.0)
         ln2.segments.append(seg2)
         ep2 = make_ep(0.0)
-        ep2.element_id = seg2.id; ep2.element_type = 'segment'
+        ep2.element_id = seg2.id
+        ep2.element_type = 'segment'
         sc.add_line(ln2)
         sc.element_profiles.append(ep2)
         result = prepare_viewer_data(
@@ -667,7 +678,8 @@ class TestElemFwdVec:
     # [C1] points_xy に 1点だけ → フォールバックして start/end を使う
     def test_single_point_falls_back_to_start_end(self):
         from road_viewer import _elem_fwd_vec
-        elem = {"points_xy": [(0.0, 0.0)], "start": (0.0, 0.0), "end": (1.0, 0.0)}
+        elem = {"points_xy": [(0.0, 0.0)], "start": (
+            0.0, 0.0), "end": (1.0, 0.0)}
         dx, dy = _elem_fwd_vec(elem, True)
         assert approx(dx, 1.0) and approx(dy, 0.0)
 
@@ -695,7 +707,8 @@ class TestInterpCl:
         from road_viewer import interp_cl
         cl = [(0.0, 0.0, 0.0, 0.0), (10.0, 0.0, 0.0, 10.0)]
         pos, fwd, right = interp_cl(cl, 5.0)
-        assert approx(pos[0], 5.0) and approx(pos[1], 0.0) and approx(pos[2], 0.0)
+        assert approx(pos[0], 5.0) and approx(
+            pos[1], 0.0) and approx(pos[2], 0.0)
         assert approx(fwd[0], 1.0) and approx(fwd[1], 0.0)
 
     # [仕様] Z 方向の補間（坂道）
@@ -745,7 +758,7 @@ class TestInterpCl:
     def test_multiple_segments(self):
         from road_viewer import interp_cl
         cl = [
-            (0.0,  0.0, 0.0,  0.0),
+            (0.0, 0.0, 0.0, 0.0),
             (10.0, 0.0, 0.0, 10.0),
             (10.0, 5.0, 0.0, 15.0),
         ]
@@ -756,7 +769,10 @@ class TestInterpCl:
     # [エッジ] 区間長ゼロ（d0==d1）→ t=0 で補間（先端座標）
     def test_zero_length_segment(self):
         from road_viewer import interp_cl
-        cl = [(5.0, 3.0, 1.0, 0.0), (5.0, 3.0, 1.0, 0.0), (10.0, 0.0, 0.0, 10.0)]
+        cl = [
+            (5.0, 3.0, 1.0, 0.0), (5.0, 3.0, 1.0, 0.0),
+            (10.0, 0.0, 0.0, 10.0),
+        ]
         pos, _, _ = interp_cl(cl, 0.0)
         assert approx(pos[0], 5.0) and approx(pos[1], 3.0)
 
@@ -773,29 +789,33 @@ class TestBearingStr:
         return bearing_str(fx, fy)
 
     # [仕様] 北: fwd_y > 0, fwd_x ≈ 0
-    def test_north(self):  assert self._bs(0.0,  1.0) == "N"
+    def test_north(self): assert self._bs(0.0, 1.0) == "N"
     # [仕様] 南: fwd_y < 0, fwd_x ≈ 0
-    def test_south(self):  assert self._bs(0.0, -1.0) == "S"
+    def test_south(self): assert self._bs(0.0, -1.0) == "S"
     # [仕様] 東: fwd_x > 0, fwd_y ≈ 0
-    def test_east(self):   assert self._bs(1.0,  0.0) == "E"
+    def test_east(self): assert self._bs(1.0, 0.0) == "E"
     # [仕様] 西: fwd_x < 0, fwd_y ≈ 0
-    def test_west(self):   assert self._bs(-1.0, 0.0) == "W"
+    def test_west(self): assert self._bs(-1.0, 0.0) == "W"
     # [仕様] 北東
+
     def test_northeast(self):
         v = math.sqrt(0.5)
-        assert self._bs(v,  v) == "NE"
+        assert self._bs(v, v) == "NE"
     # [仕様] 南東
+
     def test_southeast(self):
         v = math.sqrt(0.5)
         assert self._bs(v, -v) == "SE"
     # [仕様] 南西
+
     def test_southwest(self):
         v = math.sqrt(0.5)
         assert self._bs(-v, -v) == "SW"
     # [仕様] 北西
+
     def test_northwest(self):
         v = math.sqrt(0.5)
-        assert self._bs(-v,  v) == "NW"
+        assert self._bs(-v, v) == "NW"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -943,9 +963,9 @@ def _mk_elem(eid, sx, sy, ex, ey, s_ref=None, e_ref=None):
         "id": eid,
         "plan_length": math.hypot(ex - sx, ey - sy),
         "start": [sx, sy],
-        "end":   [ex, ey],
+        "end": [ex, ey],
         "start_clo_ref": s_ref,
-        "end_clo_ref":   e_ref,
+        "end_clo_ref": e_ref,
     }
 
 

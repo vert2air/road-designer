@@ -12,22 +12,20 @@ ProfileCanvas の UI 非依存ロジック（座標変換・snap・ハンドル�
   [C1]   C1 カバレッジを高めるための追加試験
 """
 from __future__ import annotations
+from vertical_profile import make_empty_profile as _make_empty_profile
+from vertical_window import ProfileCanvas
+from models import (
+    Vec2, Line, Segment, Circle, Arc, Clothoid,
+    ElementProfile, GradeLine, VerticalCurve, Scene,
+)
+from PySide6.QtWidgets import QApplication
 import math
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-import pytest
-from PySide6.QtWidgets import QApplication
 _app = QApplication.instance() or QApplication(sys.argv)
-
-from models import (
-    Vec2, Line, Segment, Circle, Arc, Clothoid,
-    ElementProfile, GradeLine, VerticalCurve, Scene,
-)
-from vertical_window import ProfileCanvas
-from vertical_profile import make_empty_profile as _make_empty_profile
 
 
 def approx(a, b, tol=1e-6):
@@ -37,8 +35,10 @@ def approx(a, b, tol=1e-6):
 def make_gl(d0, e0, d1, e1):
     """GradeLine を生成するヘルパー。"""
     gl = GradeLine()
-    gl.dist_start = d0; gl.elev_start = e0
-    gl.dist_end   = d1; gl.elev_end   = e1
+    gl.dist_start = d0
+    gl.elev_start = e0
+    gl.dist_end = d1
+    gl.elev_end = e1
     return gl
 
 
@@ -46,7 +46,7 @@ def make_ep(plan_length, gls=None, vcs=None):
     """ElementProfile を生成するヘルパー。"""
     ep = ElementProfile()
     ep.plan_length = plan_length
-    ep.grade_lines     = gls or []
+    ep.grade_lines = gls or []
     ep.vertical_curves = vcs or []
     return ep
 
@@ -56,7 +56,7 @@ def make_canvas():
     c = ProfileCanvas(sc)
     c._scale_x = 1.0
     c._scale_y = 1.0
-    c._offset  = Vec2(0.0, 0.0)
+    c._offset = Vec2(0.0, 0.0)
     return c, sc
 
 
@@ -68,7 +68,7 @@ class TestMakeEmptyProfile:
     # [仕様] 空の ElementProfile を返す
     def test_empty_lists(self):
         ep = _make_empty_profile()
-        assert ep.grade_lines     == []
+        assert ep.grade_lines == []
         assert ep.vertical_curves == []
 
     def test_returns_element_profile(self):
@@ -90,16 +90,18 @@ class TestProfileCanvasCoordTransform:
 
     def test_w2s_y_inverted(self):
         c, _ = make_canvas()
-        c._scale_x = 2.0; c._scale_y = 3.0
-        c._offset  = Vec2(0, 0)
+        c._scale_x = 2.0
+        c._scale_y = 3.0
+        c._offset = Vec2(0, 0)
         pt = c.w2s(5.0, 4.0)
         assert approx(pt.x(), 10.0) and approx(pt.y(), -12.0)
 
     # [仕様] s2w は w2s の逆変換
     def test_s2w_roundtrip(self):
         c, _ = make_canvas()
-        c._scale_x = 2.0; c._scale_y = 5.0
-        c._offset  = Vec2(50, 100)
+        c._scale_x = 2.0
+        c._scale_y = 5.0
+        c._offset = Vec2(50, 100)
         for d, e in [(10.0, 3.0), (0.0, 0.0), (100.0, -5.0)]:
             pt = c.w2s(d, e)
             d2, e2 = c.s2w(pt.x(), pt.y())
@@ -157,7 +159,7 @@ class TestGradeLinesSorted:
         c, _ = make_canvas()
         c._grade_lines = [
             make_gl(50, 5, 100, 10),
-            make_gl(0,  0,  50,  5),
+            make_gl(0, 0, 50, 5),
         ]
         result = c._grade_lines_sorted()
         assert result[0].dist_start == 0
@@ -195,7 +197,11 @@ class TestVcForPvi:
     def test_exact_match(self):
         c, _ = make_canvas()
         vc = VerticalCurve()
-        vc.pvi_dist = 50.0; vc.pvi_elev = 5.0; vc.g1 = 2; vc.g2 = 0; vc.length = 20
+        vc.pvi_dist = 50.0
+        vc.pvi_elev = 5.0
+        vc.g1 = 2
+        vc.g2 = 0
+        vc.length = 20
         c._vertical_curves = [vc]
         assert c._vc_for_pvi(50.0) is vc
 
@@ -203,7 +209,11 @@ class TestVcForPvi:
     def test_near_match(self):
         c, _ = make_canvas()
         vc = VerticalCurve()
-        vc.pvi_dist = 50.0; vc.pvi_elev = 5.0; vc.g1 = 2; vc.g2 = 0; vc.length = 20
+        vc.pvi_dist = 50.0
+        vc.pvi_elev = 5.0
+        vc.g1 = 2
+        vc.g2 = 0
+        vc.length = 20
         c._vertical_curves = [vc]
         assert c._vc_for_pvi(50.009) is vc
 
@@ -211,7 +221,11 @@ class TestVcForPvi:
     def test_too_far(self):
         c, _ = make_canvas()
         vc = VerticalCurve()
-        vc.pvi_dist = 50.0; vc.pvi_elev = 5.0; vc.g1 = 2; vc.g2 = 0; vc.length = 20
+        vc.pvi_dist = 50.0
+        vc.pvi_elev = 5.0
+        vc.g1 = 2
+        vc.g2 = 0
+        vc.length = 20
         c._vertical_curves = [vc]
         assert c._vc_for_pvi(50.011) is None
 
@@ -225,7 +239,11 @@ class TestVcForPvi:
 class TestVcAt:
     def _make_vc(self, pvi=50.0, L=40.0):
         vc = VerticalCurve()
-        vc.pvi_dist = pvi; vc.pvi_elev = 5.0; vc.g1 = 2; vc.g2 = 0; vc.length = L
+        vc.pvi_dist = pvi
+        vc.pvi_elev = 5.0
+        vc.g1 = 2
+        vc.g2 = 0
+        vc.length = L
         return vc  # vpc=30, vpt=70
 
     # [仕様] VPC〜VPT の範囲内を返す
@@ -279,7 +297,11 @@ class TestElevationAt:
         gl = make_gl(0, 0, 100, 10)
         c._grade_lines = [gl]
         vc = VerticalCurve()
-        vc.pvi_dist = 50; vc.pvi_elev = 5; vc.g1 = 10; vc.g2 = 0; vc.length = 40
+        vc.pvi_dist = 50
+        vc.pvi_elev = 5
+        vc.g1 = 10
+        vc.g2 = 0
+        vc.length = 40
         c._vertical_curves = [vc]
         # dist=50 は VC 範囲内 → VC を使う
         result = c._elevation_at(50.0)
@@ -292,7 +314,11 @@ class TestElevationAt:
         gl = make_gl(0, 0, 100, 10)
         c._grade_lines = [gl]
         vc = VerticalCurve()
-        vc.pvi_dist = 80; vc.pvi_elev = 8; vc.g1 = 10; vc.g2 = 0; vc.length = 20
+        vc.pvi_dist = 80
+        vc.pvi_elev = 8
+        vc.g1 = 10
+        vc.g2 = 0
+        vc.length = 20
         c._vertical_curves = [vc]
         # dist=10 は GL 範囲内、VC 範囲外
         result = c._elevation_at(10.0)
@@ -440,8 +466,8 @@ class TestGetHandles:
         c._grade_lines = [make_gl(0, 0, 100, 10)]
         handles = c._get_handles()
         for h in handles:
-            assert 'dist'     in h
-            assert 'elev'     in h
+            assert 'dist' in h
+            assert 'elev' in h
             assert 'partners' in h
 
 
@@ -462,8 +488,9 @@ class TestHitHandle:
     def test_hit_at_handle_position(self):
         c, _ = make_canvas()
         c._mode = 'select'
-        c._scale_x = 1.0; c._scale_y = 1.0
-        c._offset  = Vec2(0, 0)
+        c._scale_x = 1.0
+        c._scale_y = 1.0
+        c._offset = Vec2(0, 0)
         gl = make_gl(0, 0, 100, 10)
         c._grade_lines = [gl]
         # dist=0, elev=0 → screen(0, 0)
@@ -474,8 +501,9 @@ class TestHitHandle:
     def test_miss(self):
         c, _ = make_canvas()
         c._mode = 'select'
-        c._scale_x = 1.0; c._scale_y = 1.0
-        c._offset  = Vec2(0, 0)
+        c._scale_x = 1.0
+        c._scale_y = 1.0
+        c._offset = Vec2(0, 0)
         gl = make_gl(0, 0, 100, 10)
         c._grade_lines = [gl]
         result = c._hit_handle(1000.0, 1000.0)
@@ -735,8 +763,11 @@ class TestSaveToProfilesBranches:
         c.set_plan_elements([seg], [ep], [False])
         # VPC=99, VPT=101 → この要素末端(100)とほぼ同じ → スキップ
         vc = VerticalCurve()
-        vc.pvi_dist = 100.0; vc.pvi_elev = 10.0
-        vc.g1 = 2.0; vc.g2 = 0.0; vc.length = 2.0  # vpc=99, vpt=101
+        vc.pvi_dist = 100.0
+        vc.pvi_elev = 10.0
+        vc.g1 = 2.0
+        vc.g2 = 0.0
+        vc.length = 2.0  # vpc=99, vpt=101
         c._vertical_curves = [vc]
         c.save_to_profiles()  # 例外にならない
 
@@ -755,8 +786,11 @@ class TestSaveToProfilesBranches:
         # だが VPT は ep2 の中にあるのでスキップにはならない
         # VPT=0.005 （ep2 内でほぼ始端）→ スキップ
         vc = VerticalCurve()
-        vc.pvi_dist = -0.01; vc.pvi_elev = 0.0
-        vc.g1 = 0.0; vc.g2 = 0.0; vc.length = 0.02  # vpc=-0.02, vpt=0.01
+        vc.pvi_dist = -0.01
+        vc.pvi_elev = 0.0
+        vc.g1 = 0.0
+        vc.g2 = 0.0
+        vc.length = 0.02  # vpc=-0.02, vpt=0.01
         c._vertical_curves = [vc]
         c.save_to_profiles()  # 例外にならない
 
@@ -787,7 +821,8 @@ class TestSaveToProfilesBranches:
 class TestSetPlanElementsBranches:
     # [C1] GL が reversed=True のとき dist/elev が逆順になる（set_plan_elements 内）
     def test_reversed_gl_inverted(self):
-        """rev=True のとき GL の dist_start→dist_end が total_len-dist_end→... に変換される。"""
+        """rev=True のとき GL の dist_start→dist_end が
+        total_len-dist_end→... に変換される。"""
         c, sc = make_canvas()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
         seg = Segment(ln, 0.0, 1.0)
@@ -843,7 +878,11 @@ class TestRecalcVcGradients:
         gl2 = make_gl(50, 5, 100, 0)  # gradient = -10%
         c._grade_lines = [gl1, gl2]
         vc = VerticalCurve()
-        vc.pvi_dist = 50.0; vc.pvi_elev = 5.0; vc.g1 = 0; vc.g2 = 0; vc.length = 20
+        vc.pvi_dist = 50.0
+        vc.pvi_elev = 5.0
+        vc.g1 = 0
+        vc.g2 = 0
+        vc.length = 20
         c._vertical_curves = [vc]
         c._recalc_vc_gradients(vc)
         assert approx(vc.g1, gl1.gradient, tol=1e-4)
@@ -855,7 +894,11 @@ class TestRecalcVcGradients:
         gl = make_gl(50, 5, 100, 10)
         c._grade_lines = [gl]
         vc = VerticalCurve()
-        vc.pvi_dist = 50.0; vc.pvi_elev = 5.0; vc.g1 = 99; vc.g2 = 0; vc.length = 20
+        vc.pvi_dist = 50.0
+        vc.pvi_elev = 5.0
+        vc.g1 = 99
+        vc.g2 = 0
+        vc.length = 20
         c._vertical_curves = [vc]
         c._recalc_vc_gradients(vc)
         # 前の GL がないので g1 は変わらない
@@ -867,7 +910,11 @@ class TestRecalcVcGradients:
         gl = make_gl(0, 0, 50, 5)
         c._grade_lines = [gl]
         vc = VerticalCurve()
-        vc.pvi_dist = 50.0; vc.pvi_elev = 5.0; vc.g1 = 0; vc.g2 = 99; vc.length = 20
+        vc.pvi_dist = 50.0
+        vc.pvi_elev = 5.0
+        vc.g1 = 0
+        vc.g2 = 99
+        vc.length = 20
         c._vertical_curves = [vc]
         c._recalc_vc_gradients(vc)
         # 後の GL がないので g2 は変わらない
@@ -885,7 +932,11 @@ class TestDeleteGradeLine:
         gl = make_gl(0, 0, 100, 10)
         c._grade_lines = [gl]
         vc = VerticalCurve()
-        vc.pvi_dist = 100.0; vc.pvi_elev = 10.0; vc.g1 = 10; vc.g2 = 0; vc.length = 20
+        vc.pvi_dist = 100.0
+        vc.pvi_elev = 10.0
+        vc.g1 = 10
+        vc.g2 = 0
+        vc.length = 20
         c._vertical_curves = [vc]
         c._delete_grade_line(gl)
         assert gl not in c._grade_lines
@@ -962,12 +1013,11 @@ class TestWheelEvent:
 
     def test_wheel_up_increases_scale_x(self):
         """[仕様] wheelEvent でホイール上回転すると _scale_x が増える（L362-365）。"""
-        from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt, QPoint, QPointF
         from PySide6.QtGui import QWheelEvent
-        from PySide6.QtCore import QEvent
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         before = c._scale_x
         # QWheelEvent を直接生成して wheelEvent を呼ぶ
         ev = QWheelEvent(
@@ -985,7 +1035,8 @@ class TestWheelEvent:
         from PySide6.QtCore import Qt, QPoint, QPointF
         from PySide6.QtGui import QWheelEvent
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         before = c._scale_x
         ev = QWheelEvent(
             QPointF(400, 200), QPointF(400, 200),
@@ -1002,7 +1053,8 @@ class TestWheelEvent:
         from PySide6.QtCore import Qt, QPoint, QPointF
         from PySide6.QtGui import QWheelEvent
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         before_y = c._scale_y
         before_x = c._scale_x
         ev = QWheelEvent(
@@ -1029,7 +1081,8 @@ class TestMousePressEvent:
         from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         QTest.mousePress(c, Qt.MouseButton.MiddleButton,
                          Qt.KeyboardModifier.NoModifier, c.rect().center())
         assert c._pan_start is not None
@@ -1039,8 +1092,10 @@ class TestMousePressEvent:
         from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt, QPoint
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
-        c._scale_x = 2.0; c._scale_y = 20.0
+        c.resize(800, 400)
+        c.show()
+        c._scale_x = 2.0
+        c._scale_y = 20.0
         c._offset = Vec2(100, 200)
         gl = make_gl(0, 0, 100, 5)
         c._grade_lines = [gl]
@@ -1058,10 +1113,13 @@ class TestMousePressEvent:
         from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
-        c._scale_x = 2.0; c._scale_y = 20.0
+        c.resize(800, 400)
+        c.show()
+        c._scale_x = 2.0
+        c._scale_y = 20.0
         c._offset = Vec2(0, 200)
-        ep = ElementProfile(element_id=1, element_type='segment', plan_length=200.0)
+        ep = ElementProfile(
+            element_id=1, element_type='segment', plan_length=200.0)
         c._profiles = [ep]
         c.set_mode('grade')
         assert c._grade_first is None
@@ -1074,10 +1132,13 @@ class TestMousePressEvent:
         from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt, QPoint
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
-        c._scale_x = 2.0; c._scale_y = 20.0
+        c.resize(800, 400)
+        c.show()
+        c._scale_x = 2.0
+        c._scale_y = 20.0
         c._offset = Vec2(0, 200)
-        ep = ElementProfile(element_id=1, element_type='segment', plan_length=200.0)
+        ep = ElementProfile(
+            element_id=1, element_type='segment', plan_length=200.0)
         c._profiles = [ep]
         c.set_mode('grade')
         # 1 回目（距離=0付近）
@@ -1102,9 +1163,9 @@ class TestMouseMoveEvent:
     def test_mouse_move_emits_world_pos(self):
         """[仕様] mouseMoveEvent で mouse_world_pos シグナルが emit される（L977）。"""
         from PySide6.QtTest import QTest
-        from PySide6.QtCore import Qt
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         emitted = []
         c.mouse_world_pos.connect(lambda d, e: emitted.append((d, e)))
         QTest.mouseMove(c, c.rect().center())
@@ -1113,11 +1174,11 @@ class TestMouseMoveEvent:
 
     def test_handle_drag_updates_grade_line(self):
         """[仕様] ハンドルドラッグで GradeLine の端点が更新される（L948-961）。"""
-        from PySide6.QtTest import QTest
-        from PySide6.QtCore import Qt, QPoint
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
-        c._scale_x = 2.0; c._scale_y = 20.0
+        c.resize(800, 400)
+        c.show()
+        c._scale_x = 2.0
+        c._scale_y = 20.0
         c._offset = Vec2(0, 200)
         gl = make_gl(0, 0, 100, 5)
         c._grade_lines = [gl]
@@ -1126,7 +1187,6 @@ class TestMouseMoveEvent:
             c._drag_handle = handles[0]
             c._drag_start_screen = Vec2(c.w2s(0, 0).x(), c.w2s(0, 0).y())
             c._mouse_moved_px = 10.0  # 閾値超えを強制
-            before_elev = gl.elev_start
             c._apply_handle_drag(handles[0], 5.0, 3.0)
             # 端点が更新されている
             assert gl.elev_start == 3.0 or gl.dist_start == 5.0
@@ -1359,9 +1419,11 @@ class TestFitAll:
     """ProfileCanvas.fit_all のテスト（L1165-1189）。"""
 
     def test_fit_all_with_grade_lines(self):
-        """[仕様] grade_lines があるとき fit_all で _scale_x/_scale_y が更新される（L1185-1189）。"""
+        """[仕様] grade_lines があるとき fit_all で
+        _scale_x/_scale_y が更新される（L1185-1189）。"""
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         gl = make_gl(0, 0, 200, 10)
         c._grade_lines = [gl]
         old_sx = c._scale_x
@@ -1372,7 +1434,8 @@ class TestFitAll:
     def test_fit_all_no_grade_lines_does_nothing(self):
         """[C1] grade_lines が空のとき fit_all は early return する（L1169-1170）。"""
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         old_sx = c._scale_x
         c.fit_all()  # grade_lines=[] → early return
         assert c._scale_x == old_sx  # 変化しない
@@ -1380,11 +1443,16 @@ class TestFitAll:
     def test_fit_all_with_vertical_curves(self):
         """[C1] vertical_curves がある場合も含めて fit_all が動作する（L1175-1177）。"""
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         gl = make_gl(0, 0, 100, 5)
         c._grade_lines = [gl]
         vc = VerticalCurve()
-        vc.pvi_dist = 50; vc.pvi_elev = 2; vc.g1 = 5; vc.g2 = 0; vc.length = 20
+        vc.pvi_dist = 50
+        vc.pvi_elev = 2
+        vc.g1 = 5
+        vc.g2 = 0
+        vc.length = 20
         c._vertical_curves = [vc]
         c.fit_all()  # 例外にならない
         assert True
@@ -1398,12 +1466,15 @@ class TestSetPlanElementsWithReversedVC:
     """set_plan_elements の逆順フラグあり VC のテスト（L194-209）。"""
 
     def test_reversed_vc_is_mirrored(self):
-        """[C1] rev=True の ElementProfile の VerticalCurve が反転して統合される（L194-199）。"""
+        """[C1] rev=True の ElementProfile の VerticalCurve が
+        反転して統合される（L194-199）。"""
         ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc = Scene()
         sc.add_line(ln)
-        ep = ElementProfile(element_id=seg.id, element_type='segment', plan_length=100.0)
+        ep = ElementProfile(element_id=seg.id,
+                            element_type='segment', plan_length=100.0)
         vc = VerticalCurve(pvi_dist=50, pvi_elev=5, g1=2, g2=-2, length=20)
         ep.vertical_curves.append(vc)
         c, _ = make_canvas()
@@ -1416,10 +1487,12 @@ class TestSetPlanElementsWithReversedVC:
     def test_vc_out_of_range_skipped(self):
         """[C1] vpc_dist >= L の VC はスキップされる（L192-193）。"""
         ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc = Scene()
         sc.add_line(ln)
-        ep = ElementProfile(element_id=seg.id, element_type='segment', plan_length=100.0)
+        ep = ElementProfile(element_id=seg.id,
+                            element_type='segment', plan_length=100.0)
         # vpc_dist が plan_length に近い（範囲外）VC
         # vpc_dist >= plan_length - 0.001 になるよう pvi_dist を plan_length より大きく設定
         vc = VerticalCurve(pvi_dist=200, pvi_elev=5, g1=2, g2=-2, length=20)
@@ -1436,10 +1509,13 @@ class TestGradeClickOverlap:
     def _setup(self):
         """既存の勾配直線を持つ ProfileCanvas を返す。"""
         c, sc = make_canvas()
-        c.resize(800, 400); c.show()
-        c._scale_x = 2.0; c._scale_y = 20.0
+        c.resize(800, 400)
+        c.show()
+        c._scale_x = 2.0
+        c._scale_y = 20.0
         c._offset = Vec2(0, 200)
-        ep = ElementProfile(element_id=1, element_type='segment', plan_length=200.0)
+        ep = ElementProfile(
+            element_id=1, element_type='segment', plan_length=200.0)
         c._profiles = [ep]
         c.set_mode('grade')
         return c
@@ -1463,7 +1539,6 @@ class TestGradeClickOverlap:
         assert c._grade_first is not None
         # 2回目クリック（dist=150付近）
         self._click_at_world(c, 150, 8)
-        dists = [(gl.dist_start, gl.dist_end) for gl in c._grade_lines]
         # 既存が切り取られて複数の GL が存在する
         assert len(c._grade_lines) >= 1
 
@@ -1494,10 +1569,12 @@ class TestMouseMoveEventDetail:
     def test_handle_drag_with_drag_handle_set(self):
         """[C1] _drag_handle が設定されている状態の mouseMoveEvent（L949-961）。"""
         from PySide6.QtTest import QTest
-        from PySide6.QtCore import Qt, QPoint
+        from PySide6.QtCore import QPoint
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
-        c._scale_x = 2.0; c._scale_y = 20.0
+        c.resize(800, 400)
+        c.show()
+        c._scale_x = 2.0
+        c._scale_y = 20.0
         c._offset = Vec2(0, 200)
         gl = make_gl(0, 0, 100, 5)
         c._grade_lines = [gl]
@@ -1516,11 +1593,11 @@ class TestMouseMoveEventDetail:
         from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt, QPoint
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         c.set_mode('grade')
         c._pan_start = Vec2(400, 200)
         c._pan_offset_start = Vec2(c._offset.x, c._offset.y)
-        before = Vec2(c._offset.x, c._offset.y)
         # mouseMoveEvent を呼ぶ（パン距離が 4px 超えるので更新）
         QTest.mousePress(c, Qt.MouseButton.LeftButton,
                          Qt.KeyboardModifier.NoModifier, QPoint(400, 200))
@@ -1530,11 +1607,12 @@ class TestMouseMoveEventDetail:
         assert True
 
     def test_rubber_line_update_in_grade_mode(self):
-        """[C1] grade モードで _grade_first があると mouseMoveEvent で update が呼ばれる（L978-979）。"""
+        """[C1] grade モードで _grade_first があると
+        mouseMoveEvent で update が呼ばれる（L978-979）。"""
         from PySide6.QtTest import QTest
-        from PySide6.QtCore import Qt
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         c.set_mode('grade')
         c._grade_first = (50.0, 5.0)
         QTest.mouseMove(c, c.rect().center())
@@ -1550,8 +1628,10 @@ class TestMouseReleaseEvent:
         from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
-        c._scale_x = 2.0; c._scale_y = 20.0
+        c.resize(800, 400)
+        c.show()
+        c._scale_x = 2.0
+        c._scale_y = 20.0
         c._offset = Vec2(0, 200)
         gl = make_gl(0, 0, 100, 5)
         c._grade_lines = [gl]
@@ -1572,7 +1652,8 @@ class TestMouseReleaseEvent:
         from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         c._pan_start = Vec2(400, 200)
         QTest.mouseRelease(c, Qt.MouseButton.LeftButton,
                            Qt.KeyboardModifier.NoModifier,
@@ -1588,7 +1669,8 @@ class TestKeyPressEventCanvas:
         from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         gl = make_gl(0, 0, 100, 5)
         c._grade_lines = [gl]
         c._selected = gl
@@ -1600,7 +1682,8 @@ class TestKeyPressEventCanvas:
         from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
+        c.resize(800, 400)
+        c.show()
         c._grade_first = (50.0, 5.0)
         QTest.keyClick(c, Qt.Key.Key_Escape)
         assert c._grade_first is None
@@ -1632,8 +1715,10 @@ class TestHitTestWithVC:
     def test_hit_test_finds_vc(self):
         """[C1] _hit_test が VerticalCurve の折れ線近似でヒットを返す（L1124-1139）。"""
         c, _ = make_canvas()
-        c.resize(800, 400); c.show()
-        c._scale_x = 2.0; c._scale_y = 20.0
+        c.resize(800, 400)
+        c.show()
+        c._scale_x = 2.0
+        c._scale_y = 20.0
         c._offset = Vec2(0, 200)
         gl1 = make_gl(0, 0, 100, 5)
         gl2 = make_gl(100, 5, 200, 8)
@@ -1642,7 +1727,7 @@ class TestHitTestWithVC:
         c._vertical_curves = [vc]
         # VC 中央付近のスクリーン座標でヒットを試みる
         pt = c.w2s(100, 5)
-        result = c._hit_test(pt.x(), pt.y())
+        c._hit_test(pt.x(), pt.y())
         # VC または GL がヒットする（VC の折れ線近似が正しく動いている）
         assert True  # ヒット検出のロジックが例外なく動作することを確認
 
@@ -1662,19 +1747,20 @@ class TestGetHandlesMergedEndpoints:
         assert dists.count(100.0) <= 1, \
             f"dist=100 のハンドルが重複: {dists}"
         # パートナーが2つ含まれる（gl1.end + gl2.start）
-        h100 = next((h for h in handles if abs(h['dist'] - 100.0) < 0.01), None)
+        h100 = next((h for h in handles if abs(
+            h['dist'] - 100.0) < 0.01), None)
         if h100:
             assert len(h100['partners']) == 2
 
 
-class TestRecalcVcGradients:
+class TestRecalcVcGradients2:
     """_recalc_vc_gradients のテスト（L1024-1050）。"""
 
     def test_recalc_updates_g1_g2(self):
         """[仕様] _recalc_vc_gradients が前後の GL から g1/g2 を更新する。"""
         c, _ = make_canvas()
         gl1 = make_gl(0, 0, 100, 5)   # gradient = 5%
-        gl2 = make_gl(100, 5, 200, 8) # gradient = 3%
+        gl2 = make_gl(100, 5, 200, 8)  # gradient = 3%
         c._grade_lines = [gl1, gl2]
         vc = VerticalCurve(pvi_dist=100, pvi_elev=5, g1=0, g2=0, length=20)
         c._vertical_curves = [vc]
@@ -1701,7 +1787,6 @@ class TestBuildVcProps:
         # L スピンボックスを探して変更
         l_sbs = [sb for sb in sbs if sb.value() == 20.0]
         if l_sbs:
-            old_vpc = vc.vpc_dist
             l_sbs[0].setValue(40.0)
             # vpc_dist が変化する（L が大きくなると VPC が前にずれる）
             assert vc.length == 40.0 or True
@@ -1717,7 +1802,8 @@ class TestBuildVcProps:
         vc = win._canvas._vertical_curves[0]
         win._canvas._selected = vc
         win._refresh_props()
-        btns = [w for w in win.findChildren(QPushButton) if '縦断曲線を削除' in w.text()]
+        btns = [w for w in win.findChildren(
+            QPushButton) if '縦断曲線を削除' in w.text()]
         if btns:
             btns[0].click()
         assert vc not in win._canvas._vertical_curves
@@ -1734,7 +1820,8 @@ class TestVerticalWindowTitleWithElements:
         arc = Arc(ci, 0.0, math.pi / 2)
         ci.arcs.append(arc)
         sc.add_circle(ci)
-        ep = ElementProfile(element_id=arc.id, element_type='arc', plan_length=50.0)
+        ep = ElementProfile(element_id=arc.id,
+                            element_type='arc', plan_length=50.0)
         from vertical_window import VerticalAlignmentWindow
         win = VerticalAlignmentWindow(sc, [ep], [arc], [False])
         assert '円弧' in win.windowTitle()
@@ -1744,10 +1831,12 @@ class TestVerticalWindowTitleWithElements:
         sc = Scene()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
-        ep = ElementProfile(element_id=clo.id, element_type='clothoid', plan_length=50.0)
+        ep = ElementProfile(element_id=clo.id,
+                            element_type='clothoid', plan_length=50.0)
         from vertical_window import VerticalAlignmentWindow
         win = VerticalAlignmentWindow(sc, [ep], [clo], [False])
         assert 'クロソイド' in win.windowTitle()
@@ -1852,7 +1941,8 @@ class TestUndoRedo:
         from models import VerticalCurve
         c, sc = make_canvas()
         gl = make_gl(0, 0, 100, 10)
-        vc = VerticalCurve(pvi_dist=50.0, pvi_elev=5.0, g1=5.0, g2=-5.0, length=20.0)
+        vc = VerticalCurve(pvi_dist=50.0, pvi_elev=5.0,
+                           g1=5.0, g2=-5.0, length=20.0)
         c._grade_lines.append(gl)
         c._vertical_curves.append(vc)
         c._push_undo()
@@ -1877,7 +1967,8 @@ class TestSetPlanElementsRevBranches:
     def test_rev_false_merges_vc_forward(self):
         from models import VerticalCurve
         c, sc = make_canvas()
-        vc = VerticalCurve(pvi_dist=50.0, pvi_elev=5.0, g1=2.0, g2=-4.0, length=20.0)
+        vc = VerticalCurve(pvi_dist=50.0, pvi_elev=5.0,
+                           g1=2.0, g2=-4.0, length=20.0)
         ep = make_ep(100.0, [make_gl(0, 0, 100, 10)], [vc])
         ln = Line(Vec2(0, 0), Vec2(100, 0))
         seg = Segment(ln, 0.0, 1.0)
@@ -1888,7 +1979,8 @@ class TestSetPlanElementsRevBranches:
         if c._vertical_curves:
             merged_vc = c._vertical_curves[0]
             assert approx(merged_vc.g1, 2.0) and approx(merged_vc.g2, -4.0)
-            assert approx(merged_vc.pvi_dist, 50.0)  # offset=0, so pvi_dist unchanged
+            # offset=0, so pvi_dist unchanged
+            assert approx(merged_vc.pvi_dist, 50.0)
 
     # [仕様] rev=True のとき GradeLine の dist が逆転される（L183-201）
     def test_rev_true_reverses_grade_line(self):
@@ -1911,7 +2003,8 @@ class TestSetPlanElementsRevBranches:
         from models import VerticalCurve
         c, sc = make_canvas()
         # 非対称な g1/g2 を使う
-        vc = VerticalCurve(pvi_dist=50.0, pvi_elev=5.0, g1=2.0, g2=-4.0, length=20.0)
+        vc = VerticalCurve(pvi_dist=50.0, pvi_elev=5.0,
+                           g1=2.0, g2=-4.0, length=20.0)
         ep = make_ep(100.0, [make_gl(0, 0, 100, 10)], [vc])
         ln = Line(Vec2(0, 0), Vec2(100, 0))
         seg = Segment(ln, 0.0, 1.0)
@@ -1934,7 +2027,6 @@ class TestSaveToProfilesRevTrue:
 
     # [仕様] rev=True で grade_lines が逆順に保存される（L252-258）
     def test_save_to_profiles_rev_true_grade_line(self):
-        from models import VerticalCurve
         c, sc = make_canvas()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
         seg = Segment(ln, 0.0, 1.0)
@@ -1952,7 +2044,8 @@ class TestSaveToProfilesRevTrue:
         # rev=True: dist_start = L - (e - offset) = 100 - (100 - 0) = 0
         #           dist_end   = L - (s - offset) = 100 - (0 - 0) = 100
         # elev は逆転: elev_start = e_elev(0), elev_end = s_elev(10)
-        assert approx(saved_gl.elev_start, 0.0) and approx(saved_gl.elev_end, 10.0)
+        assert approx(saved_gl.elev_start, 0.0) and approx(
+            saved_gl.elev_end, 10.0)
 
     # [仕様] rev=True で vertical_curves が逆順に保存される（L274-279）
     def test_save_to_profiles_rev_true_vc(self):
@@ -1963,7 +2056,8 @@ class TestSaveToProfilesRevTrue:
         ln.segments.append(seg)
         sc.add_line(ln)
         ep = make_ep(100.0, [make_gl(0, 0, 100, 10)])
-        vc = VerticalCurve(pvi_dist=50.0, pvi_elev=5.0, g1=2.0, g2=-4.0, length=20.0)
+        vc = VerticalCurve(pvi_dist=50.0, pvi_elev=5.0,
+                           g1=2.0, g2=-4.0, length=20.0)
         ep.vertical_curves = [vc]
         c.set_plan_elements([seg], [ep], [True])
         # rev=True で統合された VC は pvi_dist が逆転される
@@ -2006,7 +2100,8 @@ class TestHitTestGradeLine:
         c, sc = make_canvas()
         c.resize(800, 400)
         c.show()
-        c._scale_x = 2.0; c._scale_y = 20.0
+        c._scale_x = 2.0
+        c._scale_y = 20.0
         c._offset = Vec2(100, 200)
         gl = make_gl(0, 0, 100, 5)
         c._grade_lines = [gl]
@@ -2037,13 +2132,15 @@ class TestMouseMoveHandleDrag:
 
     # [C1] _drag_handle が設定された状態でマウスを動かすと _apply_handle_drag が呼ばれる
     def test_drag_handle_triggers_apply(self):
-        """[C1] _drag_handle 設定済みで mouse move → _apply_handle_drag が呼ばれる（L964-976）。"""
+        """[C1] _drag_handle 設定済みで mouse move →
+        _apply_handle_drag が呼ばれる（L964-976）。"""
         from PySide6.QtTest import QTest
-        from PySide6.QtCore import Qt, QPoint
+        from PySide6.QtCore import QPoint
         c, _ = make_canvas()
         c.resize(800, 400)
         c.show()
-        c._scale_x = 2.0; c._scale_y = 20.0
+        c._scale_x = 2.0
+        c._scale_y = 20.0
         c._offset = Vec2(100, 200)
         gl1 = make_gl(0, 0, 100, 5)
         gl2 = make_gl(100, 5, 200, 8)
@@ -2070,11 +2167,13 @@ class TestMouseMoveHandleDrag:
 
     # [C1] _drag_handle 設定済みで _mouse_moved_px <= 2 → _apply_handle_drag は呼ばれない
     def test_drag_handle_small_move_no_apply(self):
-        """[C1] _mouse_moved_px <= 2 のとき _apply_handle_drag が呼ばれない（L968-971）。"""
+        """[C1] _mouse_moved_px <= 2 のとき
+        _apply_handle_drag が呼ばれない（L968-971）。"""
         c, _ = make_canvas()
         c.resize(800, 400)
         c.show()
-        c._scale_x = 2.0; c._scale_y = 20.0
+        c._scale_x = 2.0
+        c._scale_y = 20.0
         c._offset = Vec2(100, 200)
         gl1 = make_gl(0, 0, 100, 5)
         gl2 = make_gl(100, 5, 200, 8)
@@ -2088,7 +2187,7 @@ class TestMouseMoveHandleDrag:
         dist_before = gl1.dist_end  # 変更前
 
         from PySide6.QtTest import QTest
-        from PySide6.QtCore import Qt, QPoint
+        from PySide6.QtCore import QPoint
         c.set_mode('select')
         pt_start = c.w2s(100, 5)
         c._drag_start_screen = Vec2(pt_start.x(), pt_start.y())
@@ -2107,9 +2206,8 @@ class TestVerticalWindowEventFilter:
 
     def test_event_filter_handles_key_press(self):
         """[C1] KeyPress イベントを eventFilter が処理して True を返す（L1357-1359）。"""
-        from PySide6.QtCore import QEvent, QObject
+        from PySide6.QtCore import QEvent, Qt
         from PySide6.QtGui import QKeyEvent
-        from PySide6.QtCore import Qt
         win, sc, segs, profiles = make_vertical_window(1)
         # QKeyEvent を生成して eventFilter に渡す
         key_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_G,
@@ -2119,7 +2217,7 @@ class TestVerticalWindowEventFilter:
 
     def test_event_filter_ignores_non_key(self):
         """[C1] KeyPress 以外のイベントは False を返す（L1360）。"""
-        from PySide6.QtCore import QEvent, QObject
+        from PySide6.QtCore import QEvent
         win, sc, segs, profiles = make_vertical_window(1)
         # MouseMove イベント（KeyPress ではない）
         other_ev = QEvent(QEvent.Type.MouseMove)
@@ -2186,7 +2284,8 @@ class TestBuildGradePropsBlockGuard:
         assert approx(gl.elev_start, original_elev_start), \
             "_block_grade_sb=True のとき on_elev は早期 return して GL を変更しない"
 
-    # [C1] _block_grade_sb=False（通常状態）のとき on_dist が正常に GL を更新する（L1540 の else 相当）
+    # [C1] _block_grade_sb=False（通常状態）のとき on_dist が正常に GL を更新する
+    # （L1540 の else 相当）
     def test_on_dist_updates_when_not_blocked(self):
         """[C1] _block_grade_sb=False（通常状態）のとき距離スピンボックスの変更が GL に反映される
         （詳細設計書: ガード解除後は正常更新される）。"""
@@ -2219,16 +2318,19 @@ class TestGetHandlesMergeOffsetEndpoints:
 
     # [C1] dist_end と dist_start が 0.01m 未満ずれているが異なるキーを持つ場合に統合される
     def test_merge_when_keys_differ_but_close(self):
-        """[C1] gl1.dist_end=100.006, gl2.dist_start=100.000 のとき統合ハンドルが生成される（L528-535）。"""
+        """[C1] gl1.dist_end=100.006, gl2.dist_start=100.000 のとき
+        統合ハンドルが生成される（L528-535）。"""
         c, _ = make_canvas()
-        # gl1 終点=100.006, gl2 始点=100.000 → round(*100) がそれぞれ 10001 と 10000 → 異なるキー
+        # gl1 終点=100.006, gl2 始点=100.000
+        # → round(*100) がそれぞれ 10001 と 10000 → 異なるキー
         # かつ |100.006 - 100.000| = 0.006 < 0.01 → 統合ロジックが動く
-        gl1 = make_gl(0.0,   0.0, 100.006, 5.0)
-        gl2 = make_gl(100.0, 5.0, 200.0,   8.0)
+        gl1 = make_gl(0.0, 0.0, 100.006, 5.0)
+        gl2 = make_gl(100.0, 5.0, 200.0, 8.0)
         c._grade_lines = [gl1, gl2]
         handles = c._get_handles()
         # 統合後は 3 ハンドル（gl1.start, 統合境界点, gl2.end）
-        assert len(handles) == 3, f"統合後は3ハンドルのはず: {[h['dist'] for h in handles]}"
+        assert len(
+            handles) == 3, f"統合後は3ハンドルのはず: {[h['dist'] for h in handles]}"
         # 統合ハンドルは gl1.dist_end 側のキーを持つ
         boundary = next(
             (h for h in handles if 99.9 < h['dist'] < 100.1),
@@ -2281,7 +2383,8 @@ class TestMouseMoveDragWithLeftButton:
 
     # [C1] _drag_handle が設定されていて LeftButton が保持されていると _apply_handle_drag が呼ばれる
     def test_drag_handle_with_left_button_held(self):
-        """[C1] QMouseEvent で LeftButton を保持した mouseMoveEvent → L963-976 を実行する。"""
+        """[C1] QMouseEvent で LeftButton を保持した mouseMoveEvent
+        → L963-976 を実行する。"""
         from PySide6.QtGui import QMouseEvent
         from PySide6.QtCore import QPointF, Qt, QEvent
         c, _ = make_canvas()
@@ -2351,11 +2454,13 @@ class TestMouseMoveDragWithLeftButton:
 # ══════════════════════════════════════════════════════════════
 
 class TestDrawRubberNoMouseScreen:
-    """grade モードで _grade_first があっても _mouse_screen=None のとき _draw_rubber が早期 return する（L762）。"""
+    """grade モードで _grade_first があっても _mouse_screen=None のとき
+    _draw_rubber が早期 return する（L762）。"""
 
     # [C1] _mouse_screen=None の場合 paintEvent で L762 を通る
     def test_draw_rubber_no_mouse_screen(self):
-        """[C1] grade モードで _grade_first=set, _mouse_screen=None → L762 の early return を通る。"""
+        """[C1] grade モードで _grade_first=set, _mouse_screen=None
+        → L762 の early return を通る。"""
         from PySide6.QtWidgets import QApplication
         c, _ = make_canvas()
         c.resize(400, 300)
@@ -2373,7 +2478,8 @@ class TestDrawRubberNoMouseScreen:
 # ══════════════════════════════════════════════════════════════
 
 class TestDrawProfileZeroLengthGL:
-    """_draw_profile で dist_start == dist_end の GradeLine が continue で飛ばされる（L702）。"""
+    """_draw_profile で dist_start == dist_end の GradeLine が
+    continue で飛ばされる（L702）。"""
 
     # [C1] dist_start == dist_end のとき continue して描画をスキップする
     def test_zero_length_grade_line_continues(self):
@@ -2428,7 +2534,8 @@ class TestGradeSpinboxOnDistBody:
 
     # [C1] on_dist が VC の pvi_dist を更新する（L1585-1586）
     def test_on_dist_updates_matching_vc_pvi_dist(self):
-        """[C1] on_dist が呼ばれたとき pvi_dist が近い VC の pvi_dist が更新される（L1585-1586）。"""
+        """[C1] on_dist が呼ばれたとき pvi_dist が近い VC の
+        pvi_dist が更新される（L1585-1586）。"""
         from PySide6.QtWidgets import QDoubleSpinBox
         win, sc, segs, profiles = make_vertical_window(1)
         gl = make_gl(0.0, 0.0, 100.0, 5.0)
@@ -2506,7 +2613,8 @@ class TestGradeSpinboxOnElevBody:
 
     # [C1] on_elev が pvi_dist 一致の VC の pvi_elev を更新する（L1600-1601）
     def test_on_elev_updates_matching_vc_pvi_elev(self):
-        """[C1] on_elev が呼ばれたとき pvi_dist が gl.dist_start に近い VC の pvi_elev が更新される（L1600-1601）。"""
+        """[C1] on_elev が呼ばれたとき pvi_dist が gl.dist_start に近い
+        VC の pvi_elev が更新される（L1600-1601）。"""
         from PySide6.QtWidgets import QDoubleSpinBox
         win, sc, segs, profiles = make_vertical_window(1)
         gl = make_gl(0.0, 0.0, 100.0, 5.0)

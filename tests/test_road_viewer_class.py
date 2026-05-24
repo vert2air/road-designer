@@ -30,20 +30,21 @@ def _elem(eid=1, start=(0.0, 0.0), end=(0.0, 100.0), pl=100.0,
     pts = [[start[0] + (end[0] - start[0]) * i / 10,
             start[1] + (end[1] - start[1]) * i / 10] for i in range(11)]
     return {
-        "id":            eid,
-        "type":          "Segment",
-        "nickname":      f"seg{eid}",
-        "start":         list(start),
-        "end":           list(end),
-        "plan_length":   pl,
-        "heights":       [[0.0, 0.0], [pl, 0.0]],
-        "points_xy":     pts,
+        "id": eid,
+        "type": "Segment",
+        "nickname": f"seg{eid}",
+        "start": list(start),
+        "end": list(end),
+        "plan_length": pl,
+        "heights": [[0.0, 0.0], [pl, 0.0]],
+        "points_xy": pts,
         "start_clo_ref": start_clo,
-        "end_clo_ref":   end_clo,
+        "end_clo_ref": end_clo,
     }
 
 
-def _make_viewer(cl=None, elem_graph=None, start_info=None, warp_boundary=None):
+def _make_viewer(
+        cl=None, elem_graph=None, start_info=None, warp_boundary=None):
     """ShowBase.__init__ をモックして RoadViewer インスタンスを返す。"""
     from road_viewer import RoadViewer
     from direct.showbase.ShowBase import ShowBase
@@ -52,7 +53,7 @@ def _make_viewer(cl=None, elem_graph=None, start_info=None, warp_boundary=None):
         cl = _cl()
 
     with patch.object(ShowBase, '__init__', return_value=None), \
-         patch('road_viewer.OnscreenText'):
+            patch('road_viewer.OnscreenText'):
         v = RoadViewer.__new__(RoadViewer)
         v.render = MagicMock()
         v.camera = MagicMock()
@@ -145,14 +146,16 @@ class TestBearingStr:
 class TestElemFwdVec:
     def test_with_points_forward(self):
         from road_viewer import _elem_fwd_vec
-        elem = {"points_xy": [[0.0, 0.0], [1.0, 0.0]], "start": [0.0, 0.0], "end": [1.0, 0.0]}
+        elem = {"points_xy": [[0.0, 0.0], [1.0, 0.0]],
+                "start": [0.0, 0.0], "end": [1.0, 0.0]}
         dx, dy = _elem_fwd_vec(elem, True)
         assert dx == pytest.approx(1.0, abs=1e-6)
         assert dy == pytest.approx(0.0, abs=1e-6)
 
     def test_with_points_backward(self):
         from road_viewer import _elem_fwd_vec
-        elem = {"points_xy": [[0.0, 0.0], [1.0, 0.0]], "start": [0.0, 0.0], "end": [1.0, 0.0]}
+        elem = {"points_xy": [[0.0, 0.0], [1.0, 0.0]],
+                "start": [0.0, 0.0], "end": [1.0, 0.0]}
         dx, dy = _elem_fwd_vec(elem, False)
         assert dx == pytest.approx(-1.0, abs=1e-6)
 
@@ -170,7 +173,8 @@ class TestElemFwdVec:
 
     def test_zero_length_no_crash(self):
         from road_viewer import _elem_fwd_vec
-        elem = {"points_xy": [[5.0, 5.0], [5.0, 5.0]], "start": [5.0, 5.0], "end": [5.0, 5.0]}
+        elem = {"points_xy": [[5.0, 5.0], [5.0, 5.0]],
+                "start": [5.0, 5.0], "end": [5.0, 5.0]}
         dx, dy = _elem_fwd_vec(elem, True)  # ZeroDivision しないこと
 
 
@@ -686,8 +690,10 @@ class TestRewindForward:
         v._auto_drive = True
         snap_cl = _cl(n=5)
         v._ad_history = [
-            {"cl": snap_cl, "total": 40.0, "dist": 0.0, "cur_id": 1, "forward": True},
-            {"cl": snap_cl, "total": 40.0, "dist": 0.0, "cur_id": 2, "forward": True},
+            {"cl": snap_cl, "total": 40.0, "dist": 0.0,
+                "cur_id": 1, "forward": True},
+            {"cl": snap_cl, "total": 40.0, "dist": 0.0,
+                "cur_id": 2, "forward": True},
         ]
         v._ad_history_idx = 0
         v._forward()
@@ -709,8 +715,11 @@ class TestRewindForward:
         v._auto_drive = True
         v._ad_dist = 10.0
         snap_cl = _cl(n=5)
-        snaps = [{"cl": snap_cl, "total": 40.0, "dist": 0.0, "cur_id": i, "forward": True}
-                 for i in range(3)]
+        snaps = [
+            {"cl": snap_cl, "total": 40.0, "dist": 0.0,
+             "cur_id": i, "forward": True}
+            for i in range(3)
+        ]
         v._ad_history = snaps
         v._ad_history_idx = 2
         v._rewind()
@@ -817,7 +826,8 @@ class TestAdStartElem:
 
     def test_without_pts_uses_linear(self):
         v = _make_viewer()
-        e = {"id": 7, "plan_length": 20.0, "start": [0.0, 0.0], "end": [20.0, 0.0]}
+        e = {"id": 7, "plan_length": 20.0,
+             "start": [0.0, 0.0], "end": [20.0, 0.0]}
         v._ad_start_elem(e, True, 0.0)
         assert len(v._ad_cl) >= 2
 
@@ -1144,7 +1154,9 @@ class TestPrepareViewerData:
 
     def test_clothoid_in_elem_graph(self):
         from road_viewer import prepare_viewer_data
-        from models import Scene, Vec2, Line, Segment, Circle, Clothoid, ElementProfile
+        from models import (
+            Scene, Vec2, Line, Segment, Circle, Clothoid, ElementProfile,
+        )
         sc = Scene()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         seg = Segment(ln, 0.0, 1.0)
@@ -1160,7 +1172,8 @@ class TestPrepareViewerData:
         sc.element_profiles.append(ep)
         result = prepare_viewer_data(sc, [], [], [])
         if clo.is_valid:
-            clo_entries = [e for e in result["elem_graph"] if e["type"] == "Clothoid"]
+            clo_entries = [e for e in result["elem_graph"]
+                           if e["type"] == "Clothoid"]
             assert len(clo_entries) >= 1
 
     def test_segment_points_xy_in_elem_graph(self):
@@ -1175,7 +1188,9 @@ class TestPrepareViewerData:
     def test_clo_ref_map_in_elem_graph(self):
         """Clothoid 接点を持つ要素に start_clo_ref / end_clo_ref が設定される"""
         from road_viewer import prepare_viewer_data
-        from models import Scene, Vec2, Line, Segment, Circle, Clothoid, ElementProfile
+        from models import (
+            Scene, Vec2, Line, Segment, Circle, Clothoid, ElementProfile,
+        )
         sc = Scene()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         seg = Segment(ln, 0.0, 1.0)

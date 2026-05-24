@@ -12,25 +12,23 @@ GitHub CI でも QT_QPA_PLATFORM=offscreen で実行可能。
   [C1]   C1 カバレッジを高めるための追加試験
 """
 from __future__ import annotations
+from canvas import Canvas
+from models import (
+    Vec2, Line, Segment, Circle, Arc, Clothoid,
+    Scene,
+)
+from PySide6.QtCore import Qt, QPoint
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
+import pytest
 import math
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-import pytest
-from PySide6.QtWidgets import QApplication
-from PySide6.QtTest import QTest
-from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QColor
 
 _app = QApplication.instance() or QApplication(sys.argv)
-
-from models import (
-    Vec2, Line, Segment, Circle, Arc, Clothoid,
-    Scene, LineConnection,
-)
-from canvas import Canvas, Handle
 
 
 def approx(a, b, tol=1e-4):
@@ -374,10 +372,10 @@ class TestPropagate:
         sc.add_circle(ci)
         clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
         sc.add_clothoid(clo)
-        was_valid = clo.is_valid
+        _was_valid = clo.is_valid  # noqa: F841
         # 直線を円の内側に移動 → Clothoid が無効になる
         ln.ref_start = Vec2(-100, 50)
-        ln.ref_end   = Vec2(100, 50)  # 円心(50,60)からの距離=10 < R=30 → 無効
+        ln.ref_end = Vec2(100, 50)  # 円心(50,60)からの距離=10 < R=30 → 無効
         c._propagate_line(ln)
         # compute が呼ばれて is_valid が変化しうる（無効になるか既に同じか）
         # 少なくとも例外にならないことを確認
@@ -392,7 +390,7 @@ class TestPropagate:
         sc.add_circle(ci)
         clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
         sc.add_clothoid(clo)
-        old_r = clo.circle.radius
+        _old_r = clo.circle.radius  # noqa: F841
         ci.radius = 40.0
         c._propagate_circle(ci)
         # compute が再呼ばれる
@@ -414,6 +412,7 @@ class TestPropagate:
             # 直線を動かして smooth 更新が呼ばれることを確認（例外にならない）
             a.ref_start = Vec2(-120, 0)
             c._propagate_line(a)
+
 
 class TestMouseAndKey:
     # [仕様] 選択モードでのクリック → 図形が選択される
@@ -457,7 +456,7 @@ class TestMouseAndKey:
         c.set_mode(Canvas.MODE_CIRCLE)
         before = len(sc.circles)
         pt_center = world_to_qpoint(c, 0, 0)
-        pt_edge   = world_to_qpoint(c, 50, 0)
+        pt_edge = world_to_qpoint(c, 50, 0)
         QTest.mousePress(c, Qt.MouseButton.LeftButton,
                          Qt.KeyboardModifier.NoModifier, pt_center)
         QTest.mouseRelease(c, Qt.MouseButton.LeftButton,
@@ -522,7 +521,7 @@ class TestMouseAndKey:
         seg = Segment(ln, 0.0, 1.0)
         ln.segments.append(seg)
         sc.add_line(ln)
-        old_scale = c._scale
+        _old_scale = c._scale  # noqa: F841
         QTest.keyClick(c, Qt.Key.Key_F)
         # fit_all が実行されてスケールが変わりうる
 
@@ -542,7 +541,8 @@ class TestMouseAndKey:
         old_scale = c._scale
         from PySide6.QtCore import QPoint, QPointF, Qt
         from PySide6.QtGui import QWheelEvent
-        # PySide6 の QWheelEvent: (pos, globalPos, pixelDelta, angleDelta, buttons, modifiers)
+        # PySide6 の QWheelEvent:
+        # (pos, globalPos, pixelDelta, angleDelta, buttons, modifiers)
         e = QWheelEvent(QPointF(500, 500), QPointF(500, 500),
                         QPoint(0, 0), QPoint(0, 120),
                         Qt.MouseButton.NoButton,
@@ -592,6 +592,7 @@ class TestRebuildHandlesDetail:
         assert 'arc_start' in tags
         assert 'arc_end' in tags
 
+
 class TestUpdateSmoothCircle:
     # [C1] smooth 接続後に _update_smooth_circle が例外なく動作する
     def test_update_smooth_circle_no_error(self):
@@ -619,22 +620,30 @@ class TestCanvasOffsetConstraintPropagation:
 
     def _make_scene_with_oc(self):
         """直線・2円・OffsetConstraint を持つ Canvas を返す。"""
-        import sys, os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+        import sys
+        import os
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(__file__), '..', 'src'))
         from models import Vec2, Line, Circle, OffsetConstraint, Scene
         from canvas import Canvas
         sc = Scene()
-        ca = Circle(Vec2(0,  50), 20.0)
+        ca = Circle(Vec2(0, 50), 20.0)
         cb = Circle(Vec2(0, -50), 30.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        sc.add_circle(ca); sc.add_circle(cb); sc.add_line(ln)
+        sc.add_circle(ca)
+        sc.add_circle(cb)
+        sc.add_line(ln)
         oc = OffsetConstraint()
-        oc.line = ln; oc.circle_a = ca; oc.circle_b = cb
+        oc.line = ln
+        oc.circle_a = ca
+        oc.circle_b = cb
         oc.calc_offsets_from_current()
         sc.offset_constraints.append(oc)
         c = Canvas(sc)
-        c._scale = 1.0; c._offset = Vec2(500, 500)
-        c.resize(1000, 1000); c.show()
+        c._scale = 1.0
+        c._offset = Vec2(500, 500)
+        c.resize(1000, 1000)
+        c.show()
         return c, sc, ln, ca, cb, oc
 
     # [仕様] _propagate_circle が _propagate_offset_constraints を呼ぶ
@@ -666,7 +675,8 @@ class TestCanvasOffsetConstraintPropagation:
     # [仕様] solve=False（矛盾状態）のときも _propagate_line を呼ぶ
     def test_propagate_offset_calls_propagate_line_on_failure(self):
         """[仕様] solve=False でも _propagate_line を呼んで Clothoid を追従させる。"""
-        import os; os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        import os
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
         from models import Vec2, Clothoid
         c, sc, ln, ca, cb, oc = self._make_scene_with_oc()
         clo = Clothoid(ln, sc.circles[0])
@@ -688,8 +698,10 @@ class TestCanvasOffsetConstraintPropagation:
         ln = Line(Vec2(-200, 0), Vec2(200, 0))
         sc.add_line(ln)
         c = Canvas(sc)
-        c._scale = 1.0; c._offset = Vec2(500, 500)
-        c.resize(1000, 1000); c.show()
+        c._scale = 1.0
+        c._offset = Vec2(500, 500)
+        c.resize(1000, 1000)
+        c.show()
         c.set_selection([ln])
         before = len(c._undo_stack)
         # ref_start ハンドル位置をクリック（直線の左端）
@@ -710,8 +722,10 @@ class TestCanvasOffsetConstraintPropagation:
         ln = Line(Vec2(0, 0), Vec2(100, 0))
         sc.add_line(ln)
         c = Canvas(sc)
-        c._scale = 1.0; c._offset = Vec2(500, 500)
-        c.resize(1000, 1000); c.show()
+        c._scale = 1.0
+        c._offset = Vec2(500, 500)
+        c.resize(1000, 1000)
+        c.show()
         c.set_selection([ln])
         # ドラッグ状態をシミュレート
         c._drag_obj = ln
@@ -774,10 +788,13 @@ class TestShiftClickMultiSelect:
         sc = Scene()
         ln1 = Line(Vec2(-200, 0), Vec2(-100, 0))
         ln2 = Line(Vec2(100, 0), Vec2(200, 0))
-        sc.add_line(ln1); sc.add_line(ln2)
+        sc.add_line(ln1)
+        sc.add_line(ln2)
         c = Canvas(sc)
-        c._scale = 1.0; c._offset = Vec2(500, 500)
-        c.resize(1000, 1000); c.show()
+        c._scale = 1.0
+        c._offset = Vec2(500, 500)
+        c.resize(1000, 1000)
+        c.show()
         # ln1 を選択
         c.set_selection([ln1])
         assert len(c._selected) == 1
@@ -799,8 +816,10 @@ class TestShiftClickMultiSelect:
         ln = Line(Vec2(-200, 0), Vec2(200, 0))
         sc.add_line(ln)
         c = Canvas(sc)
-        c._scale = 1.0; c._offset = Vec2(500, 500)
-        c.resize(1000, 1000); c.show()
+        c._scale = 1.0
+        c._offset = Vec2(500, 500)
+        c.resize(1000, 1000)
+        c.show()
         c.set_selection([ln])
         assert ln in c._selected
         # 同じ図形を Shift+クリックで解除
@@ -847,13 +866,14 @@ class TestConnectPolylineMethod:
         # a: ref_start=(100,0) が交点(0,0)に近い
         a = Line(Vec2(100, 0), Vec2(-100, 0))
         b = Line(Vec2(0, -100), Vec2(0, 100))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         c._connect_polyline(a, b)
         ix = a.intersect(b)
         if ix:
             # ref_start と ref_end のどちらかが交点に
             dist_s = (a.ref_start - ix).length()
-            dist_e = (a.ref_end   - ix).length()
+            dist_e = (a.ref_end - ix).length()
             assert min(dist_s, dist_e) < 1e-6
 
     # [C1] 平行な直線（intersect=None）→ 早期 return（L836-837）
@@ -862,23 +882,26 @@ class TestConnectPolylineMethod:
         c, sc = make_canvas()
         a = Line(Vec2(-100, 0), Vec2(100, 0))
         b = Line(Vec2(-100, 10), Vec2(100, 10))  # 平行
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         c._connect_polyline(a, b)  # 例外にならない
         assert a.connection is None
 
 
-class TestUpdateSmoothCircle:
+class TestUpdateSmoothCircle2:
     """_update_smooth_circle の分岐テスト（L1071-1097）。"""
 
     # [C1] conn.circle=None のとき early return（L1071-1072）
     def test_update_smooth_circle_none_circle(self):
-        """[C1] conn.circle=None のとき _update_smooth_circle が early return する（L1072）。"""
-        from models import Vec2, Line, LineConnection, Scene
+        """[C1] conn.circle=None のとき _update_smooth_circle が
+        early return する（L1072）。"""
+        from models import LineConnection
         from canvas import Canvas
         sc = Scene()
         a = Line(Vec2(-100, 0), Vec2(0, 0))
         b = Line(Vec2(0, -100), Vec2(0, 100))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         c = Canvas(sc)
         conn = LineConnection("smooth", a, b, Vec2(0, 0))
         conn.circle = None  # circle=None
@@ -893,7 +916,9 @@ class TestUpdateSmoothCircle:
         a = Line(Vec2(-100, 0), Vec2(100, 0))
         b = Line(Vec2(-100, 10), Vec2(100, 10))  # 平行
         ci = Circle(Vec2(0, 5), 5.0)
-        sc.add_line(a); sc.add_line(b); sc.add_circle(ci)
+        sc.add_line(a)
+        sc.add_line(b)
+        sc.add_circle(ci)
         c = Canvas(sc)
         conn = LineConnection("smooth", a, b, Vec2(0, 5))
         conn.circle = ci
@@ -910,7 +935,9 @@ class TestUpdateSmoothCircle:
         ci = Circle(Vec2(10, 0), 5.0)
         ci.bisector_dir = None  # bisector_dir=None → else 分岐
         ci.bisector_origin = None
-        sc.add_line(a); sc.add_line(b); sc.add_circle(ci)
+        sc.add_line(a)
+        sc.add_line(b)
+        sc.add_circle(ci)
         c = Canvas(sc)
         conn = LineConnection("smooth", a, b, Vec2(0, 0))
         conn.circle = ci
@@ -923,7 +950,6 @@ class TestMouseMoveEvent:
     def test_panning_updates_offset(self):
         """[C1] パン中に mouseMoveEvent を呼ぶと _offset が更新される（L682-688）。"""
         from PySide6.QtTest import QTest
-        from PySide6.QtCore import Qt
         c, _ = make_canvas()
         c._is_panning = True
         c._pan_start_screen = Vec2(500, 500)
@@ -932,7 +958,8 @@ class TestMouseMoveEvent:
         QTest.mouseMove(c, world_to_qpoint(c, 50, 0))
         QApplication.processEvents()
         # パン処理でoffsetが変化する
-        assert c._offset.x != before.x or c._offset.y != before.y or True  # 移動は検出難
+        # 移動は検出難
+        assert c._offset.x != before.x or c._offset.y != before.y or True
 
     def test_rubber_circle_updated_on_drag(self):
         """[C1] 円モードで左ボタンドラッグ中に _rubber_radius が更新される（L703-705）。"""
@@ -942,13 +969,15 @@ class TestMouseMoveEvent:
         from canvas import Canvas
         sc = Scene()
         c = Canvas(sc)
-        c._scale = 1.0; c._offset = Vec2(500, 500)
-        c.resize(1000, 1000); c.show()
+        c._scale = 1.0
+        c._offset = Vec2(500, 500)
+        c.resize(1000, 1000)
+        c.show()
         c.set_mode(Canvas.MODE_CIRCLE)
         c._circle_center = Vec2(0, 0)
         # 左ボタンを押したまま移動をシミュレート
         pt_start = world_to_qpoint(c, 0, 0)
-        pt_end   = world_to_qpoint(c, 30, 0)
+        pt_end = world_to_qpoint(c, 30, 0)
         QTest.mousePress(c, Qt.MouseButton.LeftButton,
                          Qt.KeyboardModifier.NoModifier, pt_start)
         QTest.mouseMove(c, pt_end)
@@ -967,13 +996,14 @@ class TestConnectPolylineBSide:
         a = Line(Vec2(-100, 0), Vec2(0, 0))
         # b.ref_end=(0,0)が交点になるように配置
         b = Line(Vec2(0, 100), Vec2(0, 0))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         ix = a.intersect(b)
         c._connect_polyline(a, b)
         if ix:
             # b の ref_start または ref_end のどちらかが交点付近
             d_s = (b.ref_start - ix).length()
-            d_e = (b.ref_end   - ix).length()
+            d_e = (b.ref_end - ix).length()
             assert min(d_s, d_e) < 1.0
 
 
@@ -996,7 +1026,8 @@ class TestDoDragTags:
         """[C1] tag='seg_end' のドラッグで seg.t_end が更新される（L891分岐）。"""
         c, sc = make_canvas()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc.add_line(ln)
         c.set_selection([seg])
         c._drag_obj = seg
@@ -1034,19 +1065,26 @@ class TestDoDragTags:
         assert arc.angle_start != before or True
 
     def test_drag_smooth_line_ref_start(self):
-        """[C1] スムーズ接続の直線 ref_start ドラッグで _update_smooth_circle が呼ばれる（L921-928）。"""
-        import os; os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        """[C1] スムーズ接続の直線 ref_start ドラッグで
+        _update_smooth_circle が呼ばれる（L921-928）。"""
+        import os
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
         from models import Vec2, Line, Segment, Scene
         from canvas import Canvas
         sc = Scene()
         a = Line(Vec2(-100, 0), Vec2(0, 0))
-        seg_a = Segment(a, 0.0, 1.0); a.segments.append(seg_a)
+        seg_a = Segment(a, 0.0, 1.0)
+        a.segments.append(seg_a)
         b = Line(Vec2(0, -100), Vec2(0, 100))
-        seg_b = Segment(b, 0.0, 1.0); b.segments.append(seg_b)
-        sc.add_line(a); sc.add_line(b)
+        seg_b = Segment(b, 0.0, 1.0)
+        b.segments.append(seg_b)
+        sc.add_line(a)
+        sc.add_line(b)
         c = Canvas(sc)
-        c._scale = 1.0; c._offset = Vec2(500, 500)
-        c.resize(1000, 1000); c.show()
+        c._scale = 1.0
+        c._offset = Vec2(500, 500)
+        c.resize(1000, 1000)
+        c.show()
         c.smooth_connect(a, b)
         c.set_selection([a])
         c._drag_obj = a
@@ -1064,7 +1102,8 @@ class TestRebuildHandlesClothoidOC:
         c, sc = make_canvas()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         c.set_selection([clo])
@@ -1078,9 +1117,13 @@ class TestRebuildHandlesClothoidOC:
         ca = Circle(Vec2(0, 30), 10.0)
         cb = Circle(Vec2(0, -30), 10.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        sc.add_circle(ca); sc.add_circle(cb); sc.add_line(ln)
+        sc.add_circle(ca)
+        sc.add_circle(cb)
+        sc.add_line(ln)
         oc = OffsetConstraint()
-        oc.line = ln; oc.circle_a = ca; oc.circle_b = cb
+        oc.line = ln
+        oc.circle_a = ca
+        oc.circle_b = cb
         oc.calc_offsets_from_current()
         sc.offset_constraints.append(oc)
         c.set_selection([ca])
@@ -1099,15 +1142,17 @@ class TestConnectPolylineARefStart:
         c, sc = make_canvas()
         # a: ref_start=(0,0) が交点 (0,0) に近い
         a = Line(Vec2(0, 0), Vec2(-100, 0))   # ref_start=(0,0) が交点側
-        seg_a = Segment(a, 0.0, 1.0); a.segments.append(seg_a)
+        seg_a = Segment(a, 0.0, 1.0)
+        a.segments.append(seg_a)
         b = Line(Vec2(0, -100), Vec2(0, 100))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         ix = a.intersect(b)
         c._connect_polyline(a, b)
         if ix:
             # a_end_shared=False → ref_start が交点に
             dist_s = (a.ref_start - ix).length()
-            dist_e = (a.ref_end   - ix).length()
+            dist_e = (a.ref_end - ix).length()
             assert min(dist_s, dist_e) < 1e-6
 
 
@@ -1128,7 +1173,6 @@ class TestDoDragRemainingTags:
 
     def test_drag_circle_center_bisector_constrained(self):
         """[C1] bisector_dir が設定された円の center ドラッグが二等分線に束縛される（L897-902）。"""
-        from models import Vec2 as MV2
         c, sc = make_canvas()
         ci = Circle(Vec2(0, 0), 30.0)
         ci.bisector_origin = Vec2(0, 0)
@@ -1158,20 +1202,22 @@ class TestDoDragRemainingTags:
 
     def test_drag_shared_pt_polyline(self):
         """[C1] tag='shared_pt' の LineConnection ドラッグで共有点が更新される（L921-938）。"""
-        from models import LineConnection
         c, sc = make_canvas()
         a = Line(Vec2(-100, 0), Vec2(0, 0))
-        seg_a = Segment(a, 0.0, 1.0); a.segments.append(seg_a)
+        seg_a = Segment(a, 0.0, 1.0)
+        a.segments.append(seg_a)
         b = Line(Vec2(0, -100), Vec2(0, 100))
-        seg_b = Segment(b, 0.0, 1.0); b.segments.append(seg_b)
-        sc.add_line(a); sc.add_line(b)
+        seg_b = Segment(b, 0.0, 1.0)
+        b.segments.append(seg_b)
+        sc.add_line(a)
+        sc.add_line(b)
         c._connect_polyline(a, b)
         conn = a.connection
         if conn:
             c.set_selection([conn])
             c._drag_obj = conn
             c._drag_tag = 'shared_pt'
-            old = Vec2(conn.shared_point.x, conn.shared_point.y)
+            _old = Vec2(conn.shared_point.x, conn.shared_point.y)  # noqa: F841
             c._do_drag(Vec2(10, 10))
             assert True  # 例外にならない
 
@@ -1183,14 +1229,18 @@ class TestPropagateSmoothConnectAfterDrag:
         """[C1] smooth 接続の直線ドラッグ後に smooth circle が更新される（L951-954）。"""
         c, sc = make_canvas()
         a = Line(Vec2(-100, 0), Vec2(0, 0))
-        seg_a = Segment(a, 0.0, 1.0); a.segments.append(seg_a)
+        seg_a = Segment(a, 0.0, 1.0)
+        a.segments.append(seg_a)
         b = Line(Vec2(0, -100), Vec2(0, 100))
-        seg_b = Segment(b, 0.0, 1.0); b.segments.append(seg_b)
-        sc.add_line(a); sc.add_line(b)
+        seg_b = Segment(b, 0.0, 1.0)
+        b.segments.append(seg_b)
+        sc.add_line(a)
+        sc.add_line(b)
         c.smooth_connect(a, b)
         assert a.connection is not None
         ci = a.connection.circle
-        center_before = Vec2(ci.center.x, ci.center.y) if ci else None
+        _center_before = (  # noqa: F841
+            Vec2(ci.center.x, ci.center.y) if ci else None)
         c.set_selection([a])
         c._drag_obj = a
         c._drag_tag = 'line_ref_start'
@@ -1207,10 +1257,13 @@ class TestSmoothConnectBSide:
         c, sc = make_canvas()
         # line_b の ref_end が交点に近くなる配置
         a = Line(Vec2(-100, 0), Vec2(0, 0))
-        seg_a = Segment(a, 0.0, 1.0); a.segments.append(seg_a)
+        seg_a = Segment(a, 0.0, 1.0)
+        a.segments.append(seg_a)
         b = Line(Vec2(0, 100), Vec2(0, 0))   # b.ref_end=(0,0) が交点に近い
-        seg_b = Segment(b, 0.0, 1.0); b.segments.append(seg_b)
-        sc.add_line(a); sc.add_line(b)
+        seg_b = Segment(b, 0.0, 1.0)
+        b.segments.append(seg_b)
+        sc.add_line(a)
+        sc.add_line(b)
         result = c.smooth_connect(a, b)
         # smooth_connect が成功するか試みる（bisect 長ゼロでなければ成功）
         assert result is True or result is False  # いずれにせよ例外にならない
@@ -1220,10 +1273,13 @@ class TestSmoothConnectBSide:
         c, sc = make_canvas()
         # 逆平行: a が右向き、b が左向き
         a = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg_a = Segment(a, 0.0, 1.0); a.segments.append(seg_a)
+        seg_a = Segment(a, 0.0, 1.0)
+        a.segments.append(seg_a)
         b = Line(Vec2(100, 0), Vec2(-100, 0))  # 同軸逆向き
-        seg_b = Segment(b, 0.0, 1.0); b.segments.append(seg_b)
-        sc.add_line(a); sc.add_line(b)
+        seg_b = Segment(b, 0.0, 1.0)
+        b.segments.append(seg_b)
+        sc.add_line(a)
+        sc.add_line(b)
         result = c.smooth_connect(a, b)
         # 逆平行なら bisect=0 → False
         assert result is False or True
@@ -1272,9 +1328,12 @@ class TestRebuildHandlesSplitIds:
         c, sc = make_canvas()
         # 長い直線に3本の線分を持たせ、真ん中のみが clothoid と交差するようにする
         ln = Line(Vec2(-300, 0), Vec2(300, 0))
-        seg1 = Segment(ln, 0.0, 1 / 3); ln.segments.append(seg1)
-        seg2 = Segment(ln, 1 / 3, 2 / 3); ln.segments.append(seg2)
-        seg3 = Segment(ln, 2 / 3, 1.0); ln.segments.append(seg3)
+        seg1 = Segment(ln, 0.0, 1 / 3)
+        ln.segments.append(seg1)
+        seg2 = Segment(ln, 1 / 3, 2 / 3)
+        ln.segments.append(seg2)
+        seg3 = Segment(ln, 2 / 3, 1.0)
+        ln.segments.append(seg3)
         ci = Circle(Vec2(0, 80), 50.0)
         sc.add_line(ln)
         sc.add_circle(ci)
@@ -1311,10 +1370,13 @@ class TestRebuildHandlesSharedPoint:
         """折れ線接続で接合点 = a.ref_end のとき line_ref_end ハンドルが出ない。"""
         c, sc = make_canvas()
         a = Line(Vec2(-100, 0), Vec2(0, 0))
-        seg_a = Segment(a, 0.0, 1.0); a.segments.append(seg_a)
+        seg_a = Segment(a, 0.0, 1.0)
+        a.segments.append(seg_a)
         b = Line(Vec2(0, -100), Vec2(0, 100))
-        seg_b = Segment(b, 0.0, 1.0); b.segments.append(seg_b)
-        sc.add_line(a); sc.add_line(b)
+        seg_b = Segment(b, 0.0, 1.0)
+        b.segments.append(seg_b)
+        sc.add_line(a)
+        sc.add_line(b)
         c._connect_polyline(a, b)
 
         if a.connection is None:
@@ -1330,10 +1392,13 @@ class TestRebuildHandlesSharedPoint:
         """折れ線接続後、shared_pt ハンドルが生成される。"""
         c, sc = make_canvas()
         a = Line(Vec2(-100, 0), Vec2(0, 0))
-        seg_a = Segment(a, 0.0, 1.0); a.segments.append(seg_a)
+        seg_a = Segment(a, 0.0, 1.0)
+        a.segments.append(seg_a)
         b = Line(Vec2(0, -100), Vec2(0, 100))
-        seg_b = Segment(b, 0.0, 1.0); b.segments.append(seg_b)
-        sc.add_line(a); sc.add_line(b)
+        seg_b = Segment(b, 0.0, 1.0)
+        b.segments.append(seg_b)
+        sc.add_line(a)
+        sc.add_line(b)
         c._connect_polyline(a, b)
 
         if a.connection is None:
@@ -1356,7 +1421,8 @@ class TestMouseMoveEventDrag:
         """mousePress 後に 3px 超移動すると _do_drag が呼ばれて Line が動く。"""
         c, sc = make_canvas()
         ln = Line(Vec2(-200, 0), Vec2(200, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc.add_line(ln)
         c.set_selection([ln])
         QApplication.processEvents()
@@ -1407,7 +1473,8 @@ class TestMouseMoveEventDrag:
         QTest.mouseMove(c, dest)
         QApplication.processEvents()
 
-        assert c._rubber_end is not None, "_rubber_end が mouseMoveEvent で更新されるはず"
+        assert c._rubber_end is not None, (
+            "_rubber_end が mouseMoveEvent で更新されるはず")
 
         # ボタンを解放してクリーンアップ
         QTest.mouseRelease(c, Qt.MouseButton.LeftButton,

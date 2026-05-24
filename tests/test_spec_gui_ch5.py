@@ -8,7 +8,6 @@ CI では -m 'not spec' により除外されるため、開発者が手動で�
 各テストクラスの docstring に対応する仕様書の節番号と条文を引用する。
 """
 import pytest
-from PySide6.QtCore import Qt
 
 pytestmark = pytest.mark.spec
 
@@ -197,7 +196,8 @@ class TestSpec5_6_DeleteButton:
             pytest.skip(f"コンボにラベルが見つからない: {label!r}")
         cb.setCurrentIndex(idx)
 
-    def test_delete_button_shows_confirmation_dialog(self, make_panel_qt, monkeypatch):
+    def test_delete_button_shows_confirmation_dialog(
+            self, make_panel_qt, monkeypatch):
         """[5.6] 「図形を削除」ボタンを押すと確認ダイアログが表示される。"""
         from PySide6.QtWidgets import QMessageBox
         from models import Line, Vec2, Scene
@@ -213,7 +213,8 @@ class TestSpec5_6_DeleteButton:
             question_called.append(True)
             return QMessageBox.StandardButton.No   # キャンセル
 
-        monkeypatch.setattr(QMessageBox, "question", staticmethod(mock_question))
+        monkeypatch.setattr(QMessageBox, "question",
+                            staticmethod(mock_question))
         panel._delete_selected_objs()
 
         assert question_called, "確認ダイアログが表示されなかった"
@@ -259,7 +260,8 @@ class TestSpec5_6_DeleteButton:
         assert len(deleted_objects) == 1
         assert deleted_objects[0] is ln
 
-    def test_no_selection_in_combo_does_nothing(self, make_panel_qt, monkeypatch):
+    def test_no_selection_in_combo_does_nothing(
+            self, make_panel_qt, monkeypatch):
         """[5.6] コンボに図形が選択されていないとき削除ボタンを押しても何もしない。"""
         from PySide6.QtWidgets import QMessageBox
         from models import Scene
@@ -268,7 +270,11 @@ class TestSpec5_6_DeleteButton:
         question_called = []
         monkeypatch.setattr(
             QMessageBox, "question",
-            staticmethod(lambda *a, **kw: question_called.append(True) or QMessageBox.StandardButton.No))
+            staticmethod(
+                lambda *a, **kw: (
+                    question_called.append(True)
+                    or QMessageBox.StandardButton.No
+                )))
 
         panel._delete_selected_objs()   # 何も選択されていない状態
         assert not question_called, "選択なしのとき確認ダイアログが出てはいけない"

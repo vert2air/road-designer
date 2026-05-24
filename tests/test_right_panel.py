@@ -25,21 +25,27 @@ UI 生成メソッド（_build_*、_rebuild_props 等）はウィジェット描
   [C1]   C1 カバレッジを高めるための追加試験
 """
 from __future__ import annotations
+from right_panel import (
+    _encode_point_pair, _decode_point_pair,
+    _clipboard_has_point_pair, _copy_point_pair, _paste_point_pair,
+    _transform_pair,
+)
+from right_panel import RightPanel
+from models import (
+    Vec2, Line, Segment, Circle, Arc, Clothoid,
+    ElementProfile, Scene, SNAP_TOL, LineConnection,
+)
+from PySide6.QtWidgets import (
+    QApplication, QPushButton, QLabel, QGroupBox, QDoubleSpinBox,
+)
+import pytest
 import math
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-import pytest
-from PySide6.QtWidgets import QApplication, QPushButton, QLabel, QGroupBox, QDoubleSpinBox
 _app = QApplication.instance() or QApplication(sys.argv)
-
-from models import (
-    Vec2, Line, Segment, Circle, Arc, Clothoid,
-    ElementProfile, GradeLine, Scene, SNAP_TOL, LineConnection,
-)
-from right_panel import RightPanel
 
 
 def approx(a, b, tol=1e-6):
@@ -323,7 +329,8 @@ class TestNextIsForward:
         seg1 = make_seg(0, 0, 10, 0)
         seg2 = make_seg(0, 0, 10, 0)  # seg2.end=(10,0) = seg1.end
         result = p._next_is_forward(seg1, True, seg2)
-        # exit_pt=(10,0), seg2.start=(0,0): d_start=10, seg2.end=(10,0): d_end=0
+        # exit_pt=(10,0), seg2.start=(0,0): d_start=10,
+        # seg2.end=(10,0): d_end=0
         # d_start > d_end → False（終点で接続 = 逆順）
         assert result is False
 
@@ -372,7 +379,8 @@ class TestComputeNextForward:
         seg2 = Segment(ln2, 0.0, 1.0)
         ln2.segments.append(seg2)
         result = p._compute_next_forward(seg1, True, seg2)
-        # exit_tan=(1,0), entry_tangent(seg2,True)=start→end=(-1,0), dot=-1 < 0 → False
+        # exit_tan=(1,0), entry_tangent(seg2,True)=start→end=(-1,0),
+        # dot=-1 < 0 → False
         assert result is False
 
     # [エッジ] entry_tangent が None → True（デフォルト）
@@ -536,13 +544,14 @@ class TestSegEndBlocked:
         p.scene = sc
         if clo.is_valid:
             # snap=True なら end か start が接点に固定される
-            blocked_end   = p._seg_end_blocked(seg, 'end')
+            blocked_end = p._seg_end_blocked(seg, 'end')
             blocked_start = p._seg_end_blocked(seg, 'start')
             assert blocked_end or blocked_start
 
     # [仕様] _split_seg_ids に含まれる → True
     def test_not_blocked_by_split_ids_when_snap_off(self):
-        """[仕様] snap_segment=False のクロソイドの _split_seg_ids に含まれても blocked にならない。"""
+        """[仕様] snap_segment=False のクロソイドの _split_seg_ids に含まれても
+        blocked にならない。"""
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         seg = Segment(ln, 0.0, 1.0)
@@ -630,7 +639,8 @@ class TestCandidateSegPairs:
         # 最も近いペアが先頭
         assert pairs[0]['dist'] <= pairs[-1]['dist']
 
-    # [仕様] ペアに 'end_a', 'end_b', 'dist', 'blocked_a', 'blocked_b', 'label' が含まれる
+    # [仕様] ペアに 'end_a', 'end_b', 'dist', 'blocked_a', 'blocked_b',
+    # 'label' が含まれる
     def test_pair_keys(self):
         p, sc = make_panel()
         seg_a = make_seg(0, 0, 10, 0)
@@ -640,7 +650,9 @@ class TestCandidateSegPairs:
         p.scene = sc
         pairs = p._candidate_seg_pairs(seg_a, seg_b)
         for pair in pairs:
-            for key in ('end_a', 'end_b', 'dist', 'blocked_a', 'blocked_b', 'label'):
+            for key in (
+                'end_a', 'end_b', 'dist', 'blocked_a', 'blocked_b', 'label'
+            ):
                 assert key in pair
 
     # [仕様] 最近傍ペアは seg_a.end と seg_b.start（距離 0）
@@ -936,11 +948,21 @@ class TestAdjacentFromObj:
     def test_collects_both_endpoints(self):
         p, sc = make_panel()
         seg1 = make_seg(0, 0, 10, 0)
-        seg2 = make_seg(10, 0, 20, 0)  # seg1.end に接続
-        seg3 = make_seg(0, 0, 0, 10)   # seg1.start に接続
+        seg2 = make_seg(10, 0, 20, 0)  # seg1.end に折れ線接続
+        seg3 = make_seg(0, 0, 0, 10)   # seg1.start に折れ線接続
         sc.add_line(seg1.line)
         sc.add_line(seg2.line)
         sc.add_line(seg3.line)
+        # 折れ線接続を設定して _directly_connected が True になるようにする
+        conn1 = LineConnection(kind='polyline', line_a=seg1.line,
+                               line_b=seg2.line,
+                               shared_point=Vec2(10, 0))
+        seg1.line.connection = conn1
+        seg2.line.connection = conn1
+        conn2 = LineConnection(kind='polyline', line_a=seg3.line,
+                               line_b=seg1.line,
+                               shared_point=Vec2(0, 0))
+        seg3.line.connection = conn2
         p.scene = sc
         result = p._adjacent_from_obj(seg1)
         cands = [c for c, *_ in result]
@@ -981,14 +1003,16 @@ class TestUpdateSelectionOrder:
         """[仕様] 設計画面から1個目選択→直ちに2個目の高優先候補が更新される。"""
         p, sc = make_panel()
         ln1 = Line(Vec2(0, 0), Vec2(100, 0))
-        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
         ln2 = Line(Vec2(100, 0), Vec2(200, 0))
-        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
-        sc.add_line(ln1); sc.add_line(ln2)
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        sc.add_line(ln1)
+        sc.add_line(ln2)
         # 設計画面から seg1 を選択（update_selection 経由）
         p.update_selection([seg1], sc)
         # combo[1] の先頭候補に seg2（隣接）が来ているべき
-        from PySide6.QtWidgets import QDoubleSpinBox
         combo1 = p._nick_combos[1]
         found_adj = False
         for j in range(combo1.count()):
@@ -1015,7 +1039,9 @@ class TestRebuildPropsOffsetConstraint:
         ca = Circle(Vec2(0, 30), 10.0)
         cb = Circle(Vec2(0, -30), 10.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        sc.add_circle(ca); sc.add_circle(cb); sc.add_line(ln)
+        sc.add_circle(ca)
+        sc.add_circle(cb)
+        sc.add_line(ln)
         p.update_selection([ca, cb, ln], sc)
         buttons = [w.text() for w in p.findChildren(QPushButton)
                    if 'オフセット' in w.text()]
@@ -1030,7 +1056,9 @@ class TestRebuildPropsOffsetConstraint:
         ca.bisector_dir = Vec2(1, 0)  # スムーズ接続の円
         cb = Circle(Vec2(0, -30), 10.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        sc.add_circle(ca); sc.add_circle(cb); sc.add_line(ln)
+        sc.add_circle(ca)
+        sc.add_circle(cb)
+        sc.add_line(ln)
         p.update_selection([ca, cb, ln], sc)
         labels = [w.text() for w in p.findChildren(QLabel) if '⚠' in w.text()]
         assert len(labels) >= 1, "警告ラベルがない"
@@ -1044,9 +1072,13 @@ class TestRebuildPropsOffsetConstraint:
         ca = Circle(Vec2(0, 30), 10.0)
         cb = Circle(Vec2(0, -30), 10.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        sc.add_circle(ca); sc.add_circle(cb); sc.add_line(ln)
+        sc.add_circle(ca)
+        sc.add_circle(cb)
+        sc.add_line(ln)
         oc = OffsetConstraint()
-        oc.line = ln; oc.circle_a = ca; oc.circle_b = cb
+        oc.line = ln
+        oc.circle_a = ca
+        oc.circle_b = cb
         oc.calc_offsets_from_current()
         sc.offset_constraints.append(oc)
         p.update_selection([ca, cb, ln], sc)
@@ -1175,7 +1207,7 @@ class TestRemoveNickCombo:
         assert len(p._nick_combos) == 1  # 削除されない
 
 
-class TestFindByNickLabel:
+class TestFindByNickLabel2:
     """_find_by_nick_label の各分岐テスト（L822-825）。"""
 
     # [C1] Arc ラベルで Arc を見つける（L822）
@@ -1196,7 +1228,8 @@ class TestFindByNickLabel:
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         label = p._label_for_obj(clo)
@@ -1213,7 +1246,8 @@ class TestBuildClothoidProps:
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         p.update_selection([clo], sc)
@@ -1228,7 +1262,8 @@ class TestBuildClothoidProps:
         # 円の中心を直線上に置いて d=0 < R にする → is_valid=False
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(0, 0), 30.0)  # 直線上（d=0 < R=30）
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         p.update_selection([clo], sc)
@@ -1277,10 +1312,13 @@ class TestBuildTwoSegments:
         from PySide6.QtWidgets import QLabel
         p, sc = make_panel()
         ln1 = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
         ln2 = Line(Vec2(0, -100), Vec2(0, 100))
-        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
-        sc.add_line(ln1); sc.add_line(ln2)
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        sc.add_line(ln1)
+        sc.add_line(ln2)
         p.update_selection([seg1, seg2], sc)
         labels = [w.text() for w in p.findChildren(QLabel)]
         assert any("結合できません" in t for t in labels)
@@ -1296,7 +1334,8 @@ class TestBuildTwoLines:
         p, sc = make_panel()
         ln1 = Line(Vec2(-100, 0), Vec2(0, 0))
         ln2 = Line(Vec2(0, -100), Vec2(0, 100))
-        sc.add_line(ln1); sc.add_line(ln2)
+        sc.add_line(ln1)
+        sc.add_line(ln2)
         p.update_selection([ln1, ln2], sc)
         labels = [w.text() for w in p.findChildren(QLabel)]
         assert any("接続" in t for t in labels)
@@ -1304,15 +1343,19 @@ class TestBuildTwoLines:
     # [C1] スムーズ接続中の2直線 → 「スムーズ接続中」が表示される（L1889）
     def test_two_lines_smooth_connected(self):
         """[C1] スムーズ接続済みの2直線で「スムーズ接続中」が表示される（L1889）。"""
-        import os; os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-        from PySide6.QtWidgets import QLabel, QApplication
+        import os
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        from PySide6.QtWidgets import QLabel
         from canvas import Canvas
         p, sc = make_panel()
         ln1 = Line(Vec2(-100, 0), Vec2(0, 0))
-        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
         ln2 = Line(Vec2(0, -100), Vec2(0, 100))
-        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
-        sc.add_line(ln1); sc.add_line(ln2)
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        sc.add_line(ln1)
+        sc.add_line(ln2)
         c = Canvas(sc)
         c.smooth_connect(ln1, ln2)
         p.scene = sc
@@ -1350,7 +1393,8 @@ class TestBuildLineCircle:
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         p.update_selection([ln, ci], sc)
         btns = [w.text() for w in p.findChildren(QPushButton)]
         assert any("クロソイドを追加" in t for t in btns)
@@ -1362,7 +1406,8 @@ class TestBuildLineCircle:
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         p.update_selection([ln, ci], sc)
@@ -1375,9 +1420,11 @@ class TestBuildLineCircle:
         from PySide6.QtWidgets import QPushButton
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         p.update_selection([seg, ci], sc)
         btns = [w.text() for w in p.findChildren(QPushButton)]
         assert any("クロソイド" in t for t in btns)
@@ -1389,10 +1436,12 @@ class TestBuildLineCircle:
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo1 = Clothoid(ln, ci, reversed_flag=False)
         clo2 = Clothoid(ln, ci, reversed_flag=True)
-        sc.add_clothoid(clo1); sc.add_clothoid(clo2)
+        sc.add_clothoid(clo1)
+        sc.add_clothoid(clo2)
         p.update_selection([ln, ci], sc)
         btns = [w for w in p.findChildren(QPushButton)
                 if "クロソイドを追加" in w.text()]
@@ -1409,9 +1458,11 @@ class TestBuildSingleWithVerticalProfile:
         from models import ElementProfile, GradeLine
         p, sc = make_panel()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc.add_line(ln)
-        ep = ElementProfile(element_id=seg.id, element_type='segment', plan_length=100.0)
+        ep = ElementProfile(element_id=seg.id,
+                            element_type='segment', plan_length=100.0)
         gl = GradeLine(0.0, 100.0, 10.0, 11.0)
         ep.grade_lines.append(gl)
         sc.element_profiles.append(ep)
@@ -1428,7 +1479,7 @@ class TestBuildMultipleSelection:
         """[C1] 3個の直線を選択すると個数が表示される（L1002分岐）。"""
         from PySide6.QtWidgets import QLabel
         p, sc = make_panel()
-        lns = [Line(Vec2(i*10, 0), Vec2(i*10+10, 0)) for i in range(3)]
+        lns = [Line(Vec2(i * 10, 0), Vec2(i * 10 + 10, 0)) for i in range(3)]
         for ln in lns:
             sc.add_line(ln)
         p.update_selection(lns, sc)
@@ -1444,7 +1495,8 @@ class TestApplyNickSelect:
         """[仕様] 「図形を選択」ボタンで request_select シグナルが emit される。"""
         p, sc = make_panel()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc.add_line(ln)
         selected = []
         p.request_select.connect(lambda s: selected.extend(s))
@@ -1462,7 +1514,7 @@ class TestApplyNickSelect:
         assert isinstance(selected, list)
 
 
-class TestAdjacentFromObj:
+class TestAdjacentFromObj2:
     """_adjacent_from_obj の各分岐テスト（L666-702）。"""
 
     # [C1] Clothoid の _line_pt から隣接図形を検索（L666-669）
@@ -1470,9 +1522,11 @@ class TestAdjacentFromObj:
         """[C1] Clothoid の _line_pt に接続する Segment が隣接として返される（L666-669）。"""
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         if clo.is_valid and clo._line_pt is not None:
@@ -1482,11 +1536,11 @@ class TestAdjacentFromObj:
     # [C1] Arc から隣接クロソイドを検索（L676-687）
     def test_adjacent_from_arc_finds_clothoid(self):
         """[C1] Arc に接する Clothoid が隣接として検索される（L676-687）。"""
-        import math
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         if clo.is_valid and ci.arcs:
@@ -1499,9 +1553,11 @@ class TestAdjacentFromObj:
         """[C1] Segment に接する Clothoid の _line_pt が隣接として検索される（L690-700）。"""
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         adj = p._adjacent_from_obj(seg)
@@ -1516,11 +1572,13 @@ class TestRedrawButton:
     """_redraw のテスト（L769-771）。"""
 
     def test_redraw_calls_compute(self):
-        """[仕様] _redraw() が全クロソイドの compute() を呼び scene_changed を emit する（L769-771）。"""
+        """[仕様] _redraw() が全クロソイドの compute() を呼び
+        scene_changed を emit する（L769-771）。"""
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         p.scene = sc
@@ -1539,7 +1597,8 @@ class TestDeleteSelectedObjs:
         from PySide6.QtWidgets import QMessageBox
         p, sc = make_panel()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc.add_line(ln)
         p._refresh_nick_combos()
         label = p._label_for_obj(seg)
@@ -1559,7 +1618,8 @@ class TestDeleteSelectedObjs:
         from PySide6.QtWidgets import QMessageBox
         p, sc = make_panel()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc.add_line(ln)
         p._refresh_nick_combos()
         label = p._label_for_obj(seg)
@@ -1586,7 +1646,8 @@ class TestBlockTrueGuard:
     """プロパティコールバックの _block=True ガードテスト（L1153, L1205）。"""
 
     def test_line_props_block_prevents_update(self):
-        """[C1] _block=True のとき on_x は早期 return して scene_changed を emit しない（L1153）。"""
+        """[C1] _block=True のとき on_x は早期 return して
+        scene_changed を emit しない（L1153）。"""
         p, sc = make_panel()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
         sc.add_line(ln)
@@ -1629,7 +1690,8 @@ class TestBuildClothoidPropsDetail:
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         # 右カーブ: 円が直線の下側（signed_dist < 0）
         ci = Circle(Vec2(0, -60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         # is_valid かつ右カーブなら詳細を確認、そうでなければスキップ
@@ -1644,7 +1706,8 @@ class TestBuildClothoidPropsDetail:
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci, snap_segment=False, snap_arc=False)
         sc.add_clothoid(clo)
         p.update_selection([clo], sc)
@@ -1661,7 +1724,8 @@ class TestBuildArcPropsCallbacks:
     """_build_arc_props のコールバック実際変更テスト（L1509-1542）。"""
 
     def test_arc_angle_spinbox_change(self):
-        """[C1] arc プロパティで角度スピンボックスを変更すると scene_changed が emit される（L1509-1513）。"""
+        """[C1] arc プロパティで角度スピンボックスを変更すると
+        scene_changed が emit される（L1509-1513）。"""
         import math
         from PySide6.QtWidgets import QDoubleSpinBox
         p, sc = make_panel()
@@ -1678,7 +1742,8 @@ class TestBuildArcPropsCallbacks:
         assert len(emitted) >= 1
 
     def test_arc_x_spinbox_change(self):
-        """[C1] arc プロパティで X スピンボックスを変更すると scene_changed が emit される（L1515-1528）。"""
+        """[C1] arc プロパティで X スピンボックスを変更すると
+        scene_changed が emit される（L1515-1528）。"""
         import math
         from PySide6.QtWidgets import QDoubleSpinBox
         p, sc = make_panel()
@@ -1747,7 +1812,8 @@ class TestBuildTwoArcsDifferentCircle:
         ci2 = Circle(Vec2(50, 0), 10.0)
         arc2 = Arc(ci2, 0.0, math.pi / 2)
         ci2.arcs.append(arc2)
-        sc.add_circle(ci1); sc.add_circle(ci2)
+        sc.add_circle(ci1)
+        sc.add_circle(ci2)
         p.update_selection([arc1, arc2], sc)
         labels = [w.text() for w in p.findChildren(QLabel)]
         assert any("異なる円" in t for t in labels)
@@ -1762,10 +1828,11 @@ class TestBuildLineCircleButtons:
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         p.update_selection([ln, ci], sc)
         added = []
-        p.request_add_clothoid.connect(lambda l, c: added.append((l, c)))
+        p.request_add_clothoid.connect(lambda ln_, c: added.append((ln_, c)))
         btns = [w for w in p.findChildren(QPushButton)
                 if 'クロソイドを追加' in w.text() and w.isEnabled()]
         if btns:
@@ -1778,7 +1845,8 @@ class TestBuildLineCircleButtons:
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         p.update_selection([ln, ci], sc)
@@ -1794,16 +1862,21 @@ class TestOffsetConstraintOffChange:
     """_build_offset_constraint の off 値変更コールバックテスト（L1848-1854）。"""
 
     def test_off_spinbox_change_calls_solve(self):
-        """[C1] off_a スピンボックス変更で oc.solve() が呼ばれ scene_changed が emit される（L1848-1854）。"""
+        """[C1] off_a スピンボックス変更で oc.solve() が呼ばれ
+        scene_changed が emit される（L1848-1854）。"""
         from PySide6.QtWidgets import QDoubleSpinBox
         from models import OffsetConstraint
         p, sc = make_panel()
         ca = Circle(Vec2(0, 30), 10.0)
         cb = Circle(Vec2(0, -30), 10.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        sc.add_circle(ca); sc.add_circle(cb); sc.add_line(ln)
+        sc.add_circle(ca)
+        sc.add_circle(cb)
+        sc.add_line(ln)
         oc = OffsetConstraint()
-        oc.line = ln; oc.circle_a = ca; oc.circle_b = cb
+        oc.line = ln
+        oc.circle_a = ca
+        oc.circle_b = cb
         oc.calc_offsets_from_current()
         sc.offset_constraints.append(oc)
         p.update_selection([ca, cb, ln], sc)
@@ -1821,13 +1894,18 @@ class TestFillAdjacentItemsThirdCombo:
     def test_third_combo_shows_adjacent(self):
         """[C1] 3 個のコンボで 3 個目にも隣接候補が表示される（L520-532分岐）。"""
         p, sc = make_panel()
-        ln1 = Line(Vec2(0, 0),   Vec2(100, 0))
+        ln1 = Line(Vec2(0, 0), Vec2(100, 0))
         ln2 = Line(Vec2(100, 0), Vec2(200, 0))
         ln3 = Line(Vec2(200, 0), Vec2(300, 0))
-        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
-        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
-        seg3 = Segment(ln3, 0.0, 1.0); ln3.segments.append(seg3)
-        sc.add_line(ln1); sc.add_line(ln2); sc.add_line(ln3)
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        seg3 = Segment(ln3, 0.0, 1.0)
+        ln3.segments.append(seg3)
+        sc.add_line(ln1)
+        sc.add_line(ln2)
+        sc.add_line(ln3)
         # 3つ選択して update_selection
         p.update_selection([seg1, seg2, seg3], sc)
         # 3個以上のコンボが生成されているはず
@@ -1845,9 +1923,11 @@ class TestAdjacentFromObjWithArcsAndClothoids:
         """直線・線分・円・円弧・クロソイドが接続されたシーンを生成する。"""
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         return p, sc, ln, seg, ci, clo
@@ -1863,7 +1943,8 @@ class TestAdjacentFromObjWithArcsAndClothoids:
 
     def test_adjacent_from_arc_finds_clothoid_at_endpoint(self):
         """[C1] Arc の端点に接するクロソイドが隣接として検索される（L676-687）。"""
-        import os; os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        import os
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
         p, sc, ln, seg, ci, clo = self._make_connected_scene()
         if clo.is_valid and ci.arcs:
             arc = ci.arcs[0]
@@ -1884,14 +1965,16 @@ class TestAdjacentFromPtReversedConnection:
 
     def test_end_connection_returns_false_forward(self):
         """[C1] 候補の終点に接続するとき (cand, False) が返る（L330-333）。"""
-        import math
         p, sc = make_panel()
         ln1 = Line(Vec2(0, 0), Vec2(100, 0))
-        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
         # seg2 の終点(100,0)が seg1 の終点(100,0)に接続
         ln2 = Line(Vec2(0, 50), Vec2(100, 0))
-        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
-        sc.add_line(ln1); sc.add_line(ln2)
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        sc.add_line(ln1)
+        sc.add_line(ln2)
         # seg1 の終点(100,0)からの隣接を検索
         adj = p._adjacent_from_pt(Vec2(100, 0), excludes=[seg1], prev_obj=seg1)
         fwds = [fwd for obj, fwd in adj if obj is seg2]
@@ -1907,7 +1990,8 @@ class TestAdjacentFromPtReversedConnection:
         ci.arcs.append(arc)
         sc.add_circle(ci)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc.add_line(ln)
         # seg の終点(100,0)から arc.start に接続する場合
         adj = p._adjacent_from_obj(seg)
@@ -1920,12 +2004,13 @@ class TestPrevIsFwdForAdjClothoid:
 
     def test_prev_is_clothoid_circle_pt_connection(self):
         """[C1] prev_obj が Clothoid で cand の端点が _circle_pt に接続（L619-624）。"""
-        import math
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         # 次の直線（clo の circle_pt に接続）
@@ -1936,12 +2021,13 @@ class TestPrevIsFwdForAdjClothoid:
 
     def test_prev_is_arc_cand_is_clothoid(self):
         """[C1] prev_obj が Arc で cand が Clothoid（L627-634）。"""
-        import math
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         if clo.is_valid and ci.arcs:
@@ -1958,9 +2044,11 @@ class TestRebuildPropsCircleAndSegment:
         from PySide6.QtWidgets import QPushButton
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         # Circle が a, Segment が b の順
         p.update_selection([ci, seg], sc)
         btns = [w.text() for w in p.findChildren(QPushButton)]
@@ -1974,11 +2062,14 @@ class TestRebuildPropsCircleAndSegment:
         ln2 = Line(Vec2(-100, 50), Vec2(100, 50))
         ci1 = Circle(Vec2(50, 60), 30.0)
         ci2 = Circle(Vec2(-50, 60), 30.0)
-        sc.add_line(ln1); sc.add_line(ln2)
-        sc.add_circle(ci1); sc.add_circle(ci2)
+        sc.add_line(ln1)
+        sc.add_line(ln2)
+        sc.add_circle(ci1)
+        sc.add_circle(ci2)
         clo1 = Clothoid(ln1, ci1)
         clo2 = Clothoid(ln2, ci2)
-        sc.add_clothoid(clo1); sc.add_clothoid(clo2)
+        sc.add_clothoid(clo1)
+        sc.add_clothoid(clo2)
         p.update_selection([clo1, clo2], sc)
         groups = [w.title() for w in p.findChildren(QGroupBox)]
         # クロソイドプロパティが2つ表示される
@@ -1990,13 +2081,16 @@ class TestBuildLinePropsWithVC:
     """_build_line_props の vertical_curves 表示テスト（L1063-1066）。"""
 
     def test_shows_vc_info_when_ep_has_vertical_curves(self):
-        """[C1] ElementProfile に VerticalCurve があるとき縦断曲線情報が表示される（L1063-1066）。"""
+        """[C1] ElementProfile に VerticalCurve があるとき
+        縦断曲線情報が表示される（L1063-1066）。"""
         from PySide6.QtWidgets import QLabel
         p, sc = make_panel()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc.add_line(ln)
-        ep = ElementProfile(element_id=seg.id, element_type='segment', plan_length=100.0)
+        ep = ElementProfile(element_id=seg.id,
+                            element_type='segment', plan_length=100.0)
         from models import GradeLine, VerticalCurve
         gl1 = GradeLine(0.0, 50.0, 10.0, 12.0)
         gl2 = GradeLine(50.0, 100.0, 12.0, 10.0)
@@ -2019,10 +2113,12 @@ class TestFillAdjacentItemsWithSeparator:
         lns = []
         segs = []
         for i in range(3):
-            ln = Line(Vec2(i*100, 0), Vec2((i+1)*100, 0))
-            seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+            ln = Line(Vec2(i * 100, 0), Vec2((i + 1) * 100, 0))
+            seg = Segment(ln, 0.0, 1.0)
+            ln.segments.append(seg)
             sc.add_line(ln)
-            lns.append(ln); segs.append(seg)
+            lns.append(ln)
+            segs.append(seg)
         p.update_selection(segs, sc)
         # 3個以上のコンボが存在する
         assert len(p._nick_combos) >= 3
@@ -2035,9 +2131,11 @@ class TestAdjacentFromPtWithClothoidLinePt:
         """[C1] Clothoid の _line_pt が線分内部のとき隣接 Segment が検索される（L741-760）。"""
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         if clo.is_valid and clo._line_pt:
@@ -2053,7 +2151,8 @@ class TestFindByNickLabelWithPrefix:
         """[C1] '[順] ' プレフィックス付きラベルでも正しくオブジェクトを返す（L806-810）。"""
         p, sc = make_panel()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc.add_line(ln)
         label = p._label_for_obj(seg)
         result = p._find_by_nick_label('[順] ' + label)
@@ -2063,7 +2162,8 @@ class TestFindByNickLabelWithPrefix:
         """[C1] '[逆] ' プレフィックス付きラベルでも正しくオブジェクトを返す（L806-810）。"""
         p, sc = make_panel()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc.add_line(ln)
         label = p._label_for_obj(seg)
         result = p._find_by_nick_label('[逆] ' + label)
@@ -2073,12 +2173,6 @@ class TestFindByNickLabelWithPrefix:
 # ══════════════════════════════════════════════════════════════
 # 始点/終点ペア Copy/Paste 機能テスト
 # ══════════════════════════════════════════════════════════════
-
-from right_panel import (
-    _encode_point_pair, _decode_point_pair,
-    _clipboard_has_point_pair, _copy_point_pair, _paste_point_pair,
-    _transform_pair,
-)
 
 
 class TestPointPairEncoding:
@@ -2198,7 +2292,7 @@ class TestCopyPasteClipboard:
 
     def test_clipboard_empty_returns_false(self):
         """[境界] クリップボードに無効なテキストがあると False を返す。"""
-        from PySide6.QtWidgets import QApplication, QPushButton, QLabel, QGroupBox, QDoubleSpinBox
+        from PySide6.QtWidgets import QApplication
         QApplication.clipboard().setText("invalid content")
         assert not _clipboard_has_point_pair()
 
@@ -2241,7 +2335,7 @@ class TestCopyButtonInLineProps:
 
     def test_paste_button_disabled_when_clipboard_empty(self):
         """[仕様] クリップボードが空のとき Paste ボタンは無効。"""
-        from PySide6.QtWidgets import QApplication, QPushButton, QLabel, QGroupBox, QDoubleSpinBox
+        from PySide6.QtWidgets import QApplication
         QApplication.clipboard().setText("")
         p, sc = make_panel()
         ln = Line(Vec2(10.0, 20.0), Vec2(100.0, 50.0))
@@ -2346,12 +2440,13 @@ class TestChildSegmentsList:
 
     def test_segments_sorted_by_t_start(self):
         """[仕様] 線分が t_start（始点位置）の昇順で並ぶ。"""
-        import math
         p, sc = make_panel()
         ln, segs = self._make_line_with_segs(sc, n=3)
         p.update_selection([ln], sc)
-        labels = [w.text() for w in p.findChildren(QLabel)
-                  if '→' in w.text() and 'm' in w.text() and '°' not in w.text()]
+        labels = [
+            w.text() for w in p.findChildren(QLabel)
+            if '→' in w.text() and 'm' in w.text() and '°' not in w.text()
+        ]
         # 座標が先頭から小さい順になっているか確認
         # 各ラベルから始点 X を抽出
         import re
@@ -2404,9 +2499,7 @@ class TestChildSegmentsList:
         p.update_selection([ln], sc)
         labels = [w.text() for w in p.findChildren(QLabel)]
         # 長さ 100.000 m が含まれるラベルがある
-        assert any('100.000 m' in l for l in labels)
-
-
+        assert any('100.000 m' in ln for ln in labels)
 
     def test_select_add_button_in_segment_list(self):
         """[仕様] 線分一覧の各行に「選択追加」ボタンが存在する。"""
@@ -2440,6 +2533,7 @@ class TestChildSegmentsList:
         mw = p._prop_widget.minimumSizeHint().width()
         assert mw <= 260, f"幅が広すぎる: {mw}px"
 
+
 class TestChildArcsList:
     """円選択時に子円弧が始点角度順でリストアップされるテスト。"""
 
@@ -2447,7 +2541,8 @@ class TestChildArcsList:
         import math
         ci = Circle(Vec2(0, 0), 20.0)
         if angles is None:
-            angles = [(math.pi, 2 * math.pi), (0, math.pi / 2), (math.pi / 2, math.pi)]
+            angles = [(math.pi, 2 * math.pi), (0, math.pi / 2),
+                      (math.pi / 2, math.pi)]
         for s, e in reversed(angles):   # 逆順で追加
             arc = Arc(ci, s, e)
             ci.arcs.append(arc)
@@ -2456,7 +2551,6 @@ class TestChildArcsList:
 
     def test_arc_list_group_shown(self):
         """[仕様] 円選択時に「円弧一覧」グループが表示される。"""
-        import math
         p, sc = make_panel()
         ci = self._make_circle_with_arcs(sc)
         p.update_selection([ci], sc)
@@ -2465,7 +2559,6 @@ class TestChildArcsList:
 
     def test_arc_count_in_title(self):
         """[仕様] グループタイトルに円弧本数が表示される。"""
-        import math
         p, sc = make_panel()
         ci = self._make_circle_with_arcs(sc)
         p.update_selection([ci], sc)
@@ -2474,7 +2567,7 @@ class TestChildArcsList:
 
     def test_arcs_sorted_by_angle_start(self):
         """[仕様] 円弧が angle_start（始点角度）の昇順で並ぶ。"""
-        import math, re
+        import re
         p, sc = make_panel()
         ci = self._make_circle_with_arcs(sc)
         p.update_selection([ci], sc)
@@ -2498,11 +2591,10 @@ class TestChildArcsList:
         sc.add_circle(ci)
         p.update_selection([ci], sc)
         labels = [w.text() for w in p.findChildren(QLabel)]
-        assert any('62.8' in l for l in labels)
+        assert any('62.8' in ln for ln in labels)
 
     def test_select_button_per_arc(self):
         """[仕様] 各円弧に「選択」ボタンが存在する。"""
-        import math
         p, sc = make_panel()
         ci = self._make_circle_with_arcs(sc)
         p.update_selection([ci], sc)
@@ -2539,7 +2631,6 @@ class TestChildArcsList:
 
     def test_select_add_button_in_arc_list(self):
         """[仕様] 円弧一覧の各行に「選択追加」ボタンが存在する。"""
-        import math
         p, sc = make_panel()
         ci = self._make_circle_with_arcs(sc)
         p.update_selection([ci], sc)
@@ -2566,7 +2657,6 @@ class TestChildArcsList:
 
     def test_arc_panel_fits_within_260px(self):
         """[仕様] 円弧リストを含む円選択時に最小幅が 260px 以内に収まる。"""
-        import math
         p, sc = make_panel()
         ci = self._make_circle_with_arcs(sc)
         p.resize(260, 600)
@@ -2628,7 +2718,8 @@ class TestUndoOnWheelChange:
         p, sc = make_panel()
         ln1 = Line(Vec2(0, 0), Vec2(100, 0))
         ln2 = Line(Vec2(50, 50), Vec2(150, 50))
-        sc.add_line(ln1); sc.add_line(ln2)
+        sc.add_line(ln1)
+        sc.add_line(ln2)
         push_count = []
         p.request_push_undo.connect(lambda: push_count.append(1))
 
@@ -2688,7 +2779,8 @@ class TestUndoOnWheelChange:
         """
         p, sc = make_panel()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc.add_line(ln)
         push_count = []
         p.request_push_undo.connect(lambda: push_count.append(1))
@@ -2709,7 +2801,8 @@ class TestUndoOnWheelChange:
         import math as _math
         p, sc = make_panel()
         ci = Circle(Vec2(0, 0), 20.0)
-        arc = Arc(ci, 0, _math.pi / 2); ci.arcs.append(arc)
+        arc = Arc(ci, 0, _math.pi / 2)
+        ci.arcs.append(arc)
         sc.add_circle(ci)
         push_count = []
         p.request_push_undo.connect(lambda: push_count.append(1))
@@ -2735,10 +2828,13 @@ class TestAdjacentFromPtStrict:
     def _make_two_segs(self, sc, gap=0.0):
         """端点が gap だけ離れた2線分を生成する。"""
         ln1 = Line(Vec2(0, 0), Vec2(10, 0))
-        seg1 = Segment(ln1, 0.0, 1.0); ln1.segments.append(seg1)
+        seg1 = Segment(ln1, 0.0, 1.0)
+        ln1.segments.append(seg1)
         ln2 = Line(Vec2(10 + gap, 0), Vec2(20 + gap, 0))
-        seg2 = Segment(ln2, 0.0, 1.0); ln2.segments.append(seg2)
-        sc.add_line(ln1); sc.add_line(ln2)
+        seg2 = Segment(ln2, 0.0, 1.0)
+        ln2.segments.append(seg2)
+        sc.add_line(ln1)
+        sc.add_line(ln2)
         return seg1, seg2
 
     def test_gap_zero_same_parent_is_adjacent(self):
@@ -2750,7 +2846,8 @@ class TestAdjacentFromPtStrict:
         ln.segments.extend([seg1, seg2])
         sc.add_line(ln)
         p.scene = sc
-        result = p._adjacent_from_pt(Vec2(10, 0), excludes=[seg1], prev_obj=seg1)
+        result = p._adjacent_from_pt(
+            Vec2(10, 0), excludes=[seg1], prev_obj=seg1)
         cands = [c for c, *_ in result]
         assert seg2 in cands
 
@@ -2760,7 +2857,8 @@ class TestAdjacentFromPtStrict:
         seg1, seg2 = self._make_two_segs(sc, gap=0.0)
         p.scene = sc
         # 折れ線接続なし・クロソイドなし → 直接接点なし → 高優先候補に含まれない
-        result = p._adjacent_from_pt(Vec2(10, 0), excludes=[seg1], prev_obj=seg1)
+        result = p._adjacent_from_pt(
+            Vec2(10, 0), excludes=[seg1], prev_obj=seg1)
         cands = [c for c, *_ in result]
         assert seg2 not in cands, "接続なしの別親線分は高優先候補に含まれない"
 
@@ -2774,7 +2872,8 @@ class TestAdjacentFromPtStrict:
         ln.segments.extend([seg1, seg2])
         sc.add_line(ln)
         p.scene = sc
-        result = p._adjacent_from_pt(Vec2(10, 0), excludes=[seg1], prev_obj=seg1)
+        result = p._adjacent_from_pt(
+            Vec2(10, 0), excludes=[seg1], prev_obj=seg1)
         cands = [c for c, *_ in result]
         assert seg2 in cands
 
@@ -2783,16 +2882,19 @@ class TestAdjacentFromPtStrict:
         p, sc = make_panel()
         seg1, seg2 = self._make_two_segs(sc, gap=0.1)
         p.scene = sc
-        result = p._adjacent_from_pt(Vec2(10, 0), excludes=[seg1], prev_obj=seg1)
+        result = p._adjacent_from_pt(
+            Vec2(10, 0), excludes=[seg1], prev_obj=seg1)
         cands = [c for c, *_ in result]
         assert seg2 not in cands
 
     def test_gap_within_snap_tol_but_not_adj_tol_excluded(self):
         """[仕様] SNAP_TOL(1m)内だが ADJ_TOL(0.001m)外の図形は高優先候補に含まれない。"""
         p, sc = make_panel()
-        seg1, seg2 = self._make_two_segs(sc, gap=0.5)  # 0.5m: SNAP_TOL内だがADJ_TOL外
+        seg1, seg2 = self._make_two_segs(
+            sc, gap=0.5)  # 0.5m: SNAP_TOL内だがADJ_TOL外
         p.scene = sc
-        result = p._adjacent_from_pt(Vec2(10, 0), excludes=[seg1], prev_obj=seg1)
+        result = p._adjacent_from_pt(
+            Vec2(10, 0), excludes=[seg1], prev_obj=seg1)
         cands = [c for c, *_ in result]
         assert seg2 not in cands
 
@@ -2801,7 +2903,8 @@ class TestAdjacentFromPtStrict:
         p, sc = make_panel()
         seg1, seg2 = self._make_two_segs(sc, gap=0.0)
         p.scene = sc
-        result = p._adjacent_from_pt(Vec2(10, 0), excludes=[seg1], prev_obj=seg1)
+        result = p._adjacent_from_pt(
+            Vec2(10, 0), excludes=[seg1], prev_obj=seg1)
         for cand, fwd, dist in result:
             if cand is seg2:
                 assert abs(dist) < 1e-9  # gap=0 なので距離は0
@@ -2812,13 +2915,17 @@ class TestAdjacentFromPtStrict:
         p, sc = make_panel()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
         # 3本の線分を同一直線に（始点0 → 端点10、20、30）
-        seg0 = Segment(ln, 0.0, 0.1); ln.segments.append(seg0)  # 0-10m
-        seg1 = Segment(ln, 0.1, 0.2); ln.segments.append(seg1)  # 10-20m
-        seg2 = Segment(ln, 0.2, 0.3); ln.segments.append(seg2)  # 20-30m
+        seg0 = Segment(ln, 0.0, 0.1)
+        ln.segments.append(seg0)  # 0-10m
+        seg1 = Segment(ln, 0.1, 0.2)
+        ln.segments.append(seg1)  # 10-20m
+        seg2 = Segment(ln, 0.2, 0.3)
+        ln.segments.append(seg2)  # 20-30m
         sc.add_line(ln)
         p.scene = sc
         # pt=(10,0): seg0の終点=10m、seg1の始点=10m
-        result = p._adjacent_from_pt(Vec2(10, 0), excludes=[seg0], prev_obj=seg0)
+        result = p._adjacent_from_pt(
+            Vec2(10, 0), excludes=[seg0], prev_obj=seg0)
         cands = [c for c, *_ in result]
         # 同一親(ln)で seg1(dist=0) のみ残り、seg2(dist=10)は除外される
         assert seg1 in cands
@@ -2832,9 +2939,11 @@ class TestDirectlyConnected:
         """[仕様] クロソイドの _line_pt が線分の端点と一致 → 直接接点あり。"""
         p, sc = make_panel()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         ci = Circle(Vec2(50, 60), 30.0)
-        sc.add_line(ln); sc.add_circle(ci)
+        sc.add_line(ln)
+        sc.add_circle(ci)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         p.scene = sc
@@ -2843,14 +2952,18 @@ class TestDirectlyConnected:
 
     def test_polyline_connection_connects(self):
         """[仕様] 折れ線接続(polyline)された2線分 → 直接接点あり。"""
-        import os; os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        import os
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
         from canvas import Canvas
         p, sc = make_panel()
         a = Line(Vec2(-100, 0), Vec2(0, 0))
-        seg_a = Segment(a, 0.0, 1.0); a.segments.append(seg_a)
+        seg_a = Segment(a, 0.0, 1.0)
+        a.segments.append(seg_a)
         b = Line(Vec2(0, -100), Vec2(0, 100))
-        seg_b = Segment(b, 0.0, 1.0); b.segments.append(seg_b)
-        sc.add_line(a); sc.add_line(b)
+        seg_b = Segment(b, 0.0, 1.0)
+        b.segments.append(seg_b)
+        sc.add_line(a)
+        sc.add_line(b)
         c = Canvas(sc)
         c._connect_polyline(a, b)
         p.scene = sc
@@ -2860,14 +2973,18 @@ class TestDirectlyConnected:
 
     def test_smooth_connection_not_directly_connected(self):
         """[仕様] スムーズ接続 → 接点なし（_directly_connected=False）。"""
-        import os; os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        import os
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
         from canvas import Canvas
         p, sc = make_panel()
         a = Line(Vec2(-100, 0), Vec2(0, 0))
-        seg_a = Segment(a, 0.0, 1.0); a.segments.append(seg_a)
+        seg_a = Segment(a, 0.0, 1.0)
+        a.segments.append(seg_a)
         b = Line(Vec2(0, -100), Vec2(0, 100))
-        seg_b = Segment(b, 0.0, 1.0); b.segments.append(seg_b)
-        sc.add_line(a); sc.add_line(b)
+        seg_b = Segment(b, 0.0, 1.0)
+        b.segments.append(seg_b)
+        sc.add_line(a)
+        sc.add_line(b)
         c = Canvas(sc)
         c.smooth_connect(a, b)
         p.scene = sc
@@ -2903,7 +3020,8 @@ class TestDistanceDisplayInCombo:
         """[仕様] 距離付きラベルでも _find_by_nick_label が正しくオブジェクトを返す。"""
         p, sc = make_panel()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
-        seg = Segment(ln, 0.0, 1.0); ln.segments.append(seg)
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
         sc.add_line(ln)
         label = p._label_for_obj(seg)
         # 距離文字列付きラベルでも正しく解決される
@@ -2997,7 +3115,8 @@ class TestCalcFreeArcIntervals:
         ci = Circle(Vec2(0, 30), 20.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         sc = Scene()
-        sc.add_circle(ci); sc.add_line(ln)
+        sc.add_circle(ci)
+        sc.add_line(ln)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         p, _ = make_panel()
@@ -3023,7 +3142,7 @@ class TestCalcFreeArcIntervals:
         """[仕様] 空き区間2本のうち「円弧を追加」は中心角最大の1本を選ぶ。"""
         ci = Circle(Vec2(0, 0), 20.0)
         ci.arcs.append(Arc(ci, 0.0, math.pi / 2))       # 90° 塞ぐ
-        ci.arcs.append(Arc(ci, math.pi, 5 * math.pi / 4)) # 45° 塞ぐ
+        ci.arcs.append(Arc(ci, math.pi, 5 * math.pi / 4))  # 45° 塞ぐ
         sc = self._make_scene(ci)
         p, _ = make_panel()
         p.scene = sc
@@ -3039,9 +3158,11 @@ class TestCalcFreeArcIntervals:
         ci = Circle(Vec2(0, 0), 20.0)
         # ci2: 別の円に接続するクロソイドを用意する
         ci2 = Circle(Vec2(200, 0), 20.0)
-        ln  = Line(Vec2(100, -100), Vec2(100, 100))
+        ln = Line(Vec2(100, -100), Vec2(100, 100))
         sc = Scene()
-        sc.add_circle(ci); sc.add_circle(ci2); sc.add_line(ln)
+        sc.add_circle(ci)
+        sc.add_circle(ci2)
+        sc.add_line(ln)
         clo = Clothoid(ln, ci2)   # clo.circle is ci2 ≠ ci → L784 continue
         sc.add_clothoid(clo)
         p, _ = make_panel()
@@ -3056,7 +3177,8 @@ class TestCalcFreeArcIntervals:
         ci = Circle(Vec2(0, 30), 20.0)
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         sc = Scene()
-        sc.add_circle(ci); sc.add_line(ln)
+        sc.add_circle(ci)
+        sc.add_line(ln)
         clo = Clothoid(ln, ci)
         sc.add_clothoid(clo)
         # 有効な接点を強制的に None にして L785 の False ブランチを通す
@@ -3145,7 +3267,6 @@ class TestArcAddButtons:
 
     def test_add_all_arcs_emits_signal(self):
         """[仕様] 「円弧を全追加」ボタンで request_add_arcs が emit される（全空き区間）。"""
-        TWO_PI = 2 * math.pi
         p, sc = make_panel()
         ci = Circle(Vec2(0, 0), 20.0)
         ci.arcs.append(Arc(ci, 0.0, math.pi / 2))
@@ -3227,7 +3348,8 @@ class TestRoadFollow:
         sc.add_line(ln3)
 
         # ln1 終端 → ln2 始端を折れ線接続（shared_point=(100,0) が seg3 終点とも一致 → 2件の adj）
-        conn = LineConnection(kind='polyline', line_a=ln1, line_b=ln2, shared_point=Vec2(100, 0))
+        conn = LineConnection(kind='polyline', line_a=ln1,
+                              line_b=ln2, shared_point=Vec2(100, 0))
         ln1.connection = conn
         ln2.connection = conn
 
@@ -3265,7 +3387,8 @@ class TestRoadFollow:
         sc.add_line(ln3)
 
         # ln1 終端 → ln2 始端を折れ線接続（shared_point=(100,0) が seg3 始点とも一致 → 2件の adj）
-        conn = LineConnection(kind='polyline', line_a=ln1, line_b=ln2, shared_point=Vec2(100, 0))
+        conn = LineConnection(kind='polyline', line_a=ln1,
+                              line_b=ln2, shared_point=Vec2(100, 0))
         ln1.connection = conn
         ln2.connection = conn
 
@@ -3313,7 +3436,8 @@ class TestFillAdjacentItemsRoadFollow:
         """[仕様] 高優先候補複数件で [順] が 1 件のとき [道なり] アイテムがコンボに追加される
         （詳細設計書 §8: 複数候補・[순]=1 → [道なり] 生成）。"""
         # seg1 の終点 (100,0) に seg2([순]) と seg3([逆]) が接続するシーン。
-        # ln1→ln2 の LineConnection + seg3 終点が shared_point に一致 → 2件の adj を直接接点扱い。
+        # ln1→ln2 の LineConnection + seg3 終点が shared_point に一致
+        # → 2件の adj を直接接点扱い。
         # シーン構築後にパネルを生成して _sync_combos_to_selection が正しく動作するようにする。
         sc = Scene()
         ln1 = Line(Vec2(0, 0), Vec2(100, 0))
@@ -3331,7 +3455,8 @@ class TestFillAdjacentItemsRoadFollow:
         ln3.segments.append(seg3)
         sc.add_line(ln3)
 
-        conn = LineConnection(kind='polyline', line_a=ln1, line_b=ln2, shared_point=Vec2(100, 0))
+        conn = LineConnection(kind='polyline', line_a=ln1,
+                              line_b=ln2, shared_point=Vec2(100, 0))
         ln1.connection = conn
         ln2.connection = conn
 
@@ -3396,7 +3521,8 @@ class TestOnComboChangedRoadFollow:
 
         # [道なり] アイテムのインデックスを探す
         road_idx = next(
-            (j for j in range(cb2.count()) if cb2.itemText(j).startswith("[道なり]")),
+            (j for j in range(cb2.count())
+             if cb2.itemText(j).startswith("[道なり]")),
             -1
         )
         assert road_idx >= 0, "候補1件のとき [道なり] アイテムが存在するはず"
@@ -3426,7 +3552,8 @@ class TestOnComboChangedRoadFollow:
 
         cb2 = p._nick_combos[1]
         road_idx = next(
-            (j for j in range(cb2.count()) if cb2.itemText(j).startswith("[道なり]")),
+            (j for j in range(cb2.count())
+             if cb2.itemText(j).startswith("[道なり]")),
             -1
         )
         assert road_idx >= 0, "候補1件のとき [道なり] アイテムが存在するはず"
@@ -3593,12 +3720,14 @@ class TestDirectlyConnectedOffsetConstraint:
         ln.segments.append(seg)
         sc.add_line(ln)
 
-        ci = Circle(Vec2(50, 0), 50.0)   # radius=50, center y=0, line at y=50 → 接点
+        # radius=50, center y=0, line at y=50 → 接点
+        ci = Circle(Vec2(50, 0), 50.0)
         arc = Arc(ci, 0.0, math.pi)
         ci.arcs.append(arc)
         sc.circles.append(ci)
 
-        oc = OffsetConstraint(line=ln, circle_a=ci, circle_b=None, off_a=0.0, off_b=0.0)
+        oc = OffsetConstraint(line=ln, circle_a=ci,
+                              circle_b=None, off_a=0.0, off_b=0.0)
         sc.offset_constraints.append(oc)
 
         p = RightPanel(sc)
@@ -3618,7 +3747,8 @@ class TestDirectlyConnectedOffsetConstraint:
         ci.arcs.append(arc)
         sc.circles.append(ci)
 
-        oc = OffsetConstraint(line=ln, circle_a=None, circle_b=ci, off_a=1.0, off_b=0.0)
+        oc = OffsetConstraint(line=ln, circle_a=None,
+                              circle_b=ci, off_a=1.0, off_b=0.0)
         sc.offset_constraints.append(oc)
 
         p = RightPanel(sc)
@@ -3638,7 +3768,8 @@ class TestDirectlyConnectedOffsetConstraint:
         ci.arcs.append(arc)
         sc.circles.append(ci)
 
-        oc = OffsetConstraint(line=ln, circle_a=ci, circle_b=None, off_a=10.0, off_b=0.0)
+        oc = OffsetConstraint(line=ln, circle_a=ci,
+                              circle_b=None, off_a=10.0, off_b=0.0)
         sc.offset_constraints.append(oc)
 
         p = RightPanel(sc)
@@ -3682,8 +3813,8 @@ class TestAdjacentElementsWithArcs:
         exclude = Vec2(50, 0)
         adj_all = p._adjacent_elements(seg1)
         adj_excl = p._adjacent_elements(seg1, exclude_pt=exclude)
-        found_all   = [c for c, _ in adj_all   if c is seg2]
-        found_excl  = [c for c, _ in adj_excl  if c is seg2]
+        found_all = [c for c, _ in adj_all if c is seg2]
+        found_excl = [c for c, _ in adj_excl if c is seg2]
         assert found_all, "exclude なしでは seg2 が adj に含まれる"
         assert not found_excl, "終点を exclude したら seg2 は adj に含まれない"
 
@@ -3725,7 +3856,7 @@ class TestComputeNextForwardBranches:
         p = RightPanel(sc)
 
         # prev_is_fwd=True: seg1 → seg2 は同方向 → [순]
-        fwd_true  = p._compute_next_forward(seg1, True,  seg2)
+        fwd_true = p._compute_next_forward(seg1, True, seg2)
         # prev_is_fwd=False: 逆向きで seg1 を通過 → exit_tan が反転
         fwd_false = p._compute_next_forward(seg1, False, seg2)
         # True のとき前向きで続く、False のとき逆向きから来たので逆 ([逆])
@@ -3806,7 +3937,8 @@ class TestPrevIsFwdForAdjClothoidArc:
         result = p._prev_is_fwd_for_adj(clo, seg)
         assert result is True  # circle_pt 側 = 正順
 
-    # [C1] prev_obj=Arc, cand=Clothoid, _circle_pt が prev Arc の終点に近い → True（L932-936）
+    # [C1] prev_obj=Arc, cand=Clothoid, _circle_pt が prev Arc の終点に近い
+    # → True（L932-936）
     def test_arc_to_clothoid_circle_pt_returns_true(self):
         sc = Scene()
         ci = Circle(Vec2(0, 0), 50.0)
@@ -3828,7 +3960,7 @@ class TestPrevIsFwdForAdjClothoidArc:
         # _circle_pt が arc end_pt に近ければ True
         end_pt = arc.end
         dist = math.hypot(clo._circle_pt.x - end_pt.x,
-                         clo._circle_pt.y - end_pt.y)
+                          clo._circle_pt.y - end_pt.y)
         if dist < p.SNAP_TOL:
             assert result is True
         # 近くない場合はデフォルト True が返る（テストとしては成功）
@@ -3916,7 +4048,8 @@ class TestSyncCombosToSelectionPrefix:
     # [C1] 距離付きアイテムのみある場合に _find_by_nick_label fallback で選択される（L1300-1307）
     def test_distance_label_fallback(self):
         """[C1] combo に距離付き '[순] label  X.XXX m' 形式のアイテムがある場合に
-        _sync_combos_to_selection が _find_by_nick_label でフォールバック選択する（L1300-1307）。"""
+        _sync_combos_to_selection が _find_by_nick_label で
+        フォールバック選択する（L1300-1307）。"""
         sc = Scene()
         ln1 = Line(Vec2(0, 0), Vec2(100, 0))
         seg1 = Segment(ln1, 0.0, 1.0)
@@ -3957,7 +4090,6 @@ class TestSyncCombosToSelectionPrefix:
         sc.add_line(ln)
         p = RightPanel(sc)
 
-        initial_count = len(p._nick_combos)
         # 2個分の選択を _sync_combos_to_selection に渡す（最初は combo が1個のはず）
         p._sync_combos_to_selection([seg1, seg2])
         # コンボが補充されているはず
@@ -3976,9 +4108,9 @@ class TestAdjacentFromPtParentFiltering:
         sc = Scene()
         # 同じ Line 上に3つの Segment: seg1は0-0.3, seg2は0.3-0.6, seg3は0.6-1.0
         ln = Line(Vec2(0, 0), Vec2(300, 0))
-        seg1 = Segment(ln, 0.0, 1/3)
-        seg2 = Segment(ln, 1/3, 2/3)
-        seg3 = Segment(ln, 2/3, 1.0)
+        seg1 = Segment(ln, 0.0, 1 / 3)
+        seg2 = Segment(ln, 1 / 3, 2 / 3)
+        seg3 = Segment(ln, 2 / 3, 1.0)
         ln.segments.extend([seg1, seg2, seg3])
         sc.add_line(ln)
 
@@ -4127,7 +4259,8 @@ class TestOnComboChangedBranches:
 
     # [C1] sender() が None（直接呼び出し）→ L349 の false 分岐 → L379 → L386
     def test_no_sender_calls_refresh(self):
-        """[C1] sender が None のとき _on_combo_changed は L349->379 を経て _refresh_nick_combos を呼ぶ。"""
+        """[C1] sender が None のとき _on_combo_changed は
+        L349->379 を経て _refresh_nick_combos を呼ぶ。"""
         sc = Scene()
         p = RightPanel(sc)
         # 直接呼び出し → sender() は None → L349 False → L379 False → L386
@@ -4156,12 +4289,14 @@ class TestOnComboChangedBranches:
         # 実ラベル "NONEXISTENT_LABEL_XYZ" がコンボにないため real_idx < 0
         cb.addItem("[道なり] NONEXISTENT_LABEL_XYZ")
         idx = cb.findText("[道なり] NONEXISTENT_LABEL_XYZ")
-        cb.setCurrentIndex(idx)  # → _on_combo_changed → L360: real_idx=-1 → False → L365
+        # → _on_combo_changed → L360: real_idx=-1 → False → L365
+        cb.setCurrentIndex(idx)
         assert True  # 例外なく実行された
 
     # [C1] [道なり] が非末尾コンボで選択 → L373 の _refresh_nick_combos
     def test_michinan_non_last_combo_refreshes(self):
-        """[C1] 非末尾コンボで [道なり] → L372 の else → L373 _refresh_nick_combos が呼ばれる。"""
+        """[C1] 非末尾コンボで [道なり] → L372 の else →
+        L373 _refresh_nick_combos が呼ばれる。"""
         sc = Scene()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
         seg = Segment(ln, 0.0, 1.0)
@@ -4204,14 +4339,16 @@ class TestOnComboChangedBranches:
 
     # [C1] 末尾コンボで "(なし)" を選択 → obj=None → L383 False → L386 (refresh)
     def test_last_combo_obj_none_refreshes(self):
-        """[C1] 末尾コンボで obj=None（なし選択）のとき L383 False → L386 _refresh_nick_combos。"""
+        """[C1] 末尾コンボで obj=None（なし選択）のとき
+        L383 False → L386 _refresh_nick_combos。"""
         sc = Scene()
         p = RightPanel(sc)
         cb = p._nick_combos[-1]  # 末尾コンボ
         # "(なし)" を選択 → _find_by_nick_label("(なし)") → None
         none_idx = cb.findText("(なし)")
         if none_idx >= 0:
-            cb.setCurrentIndex(none_idx)  # → _on_combo_changed → L382 obj=None → L383 False → L386
+            # → _on_combo_changed → L382 obj=None → L383 False → L386
+            cb.setCurrentIndex(none_idx)
         assert True
 
 
@@ -4220,7 +4357,8 @@ class TestOnComboChangedBranches:
 # ══════════════════════════════════════════════════════════════
 
 class TestParentOfUnknownType:
-    """_parent_of に Segment/Arc/Clothoid 以外の型を渡したとき L516 の return None を通るテスト。"""
+    """_parent_of に Segment/Arc/Clothoid 以外の型を渡したとき
+    L516 の return None を通るテスト。"""
 
     # [C1] 未知の型を渡すと None を返す（L516）
     def test_parent_of_unknown_type_returns_none(self):
@@ -4276,7 +4414,8 @@ class TestAdjacentElementsDedupAndEndMatch:
         # arc1: 0→pi/2 (start=(10,0), end=(0,10))
         arc1 = Arc(ci, 0.0, math.pi / 2)
         # arc_back: pi/2→0 (start=(0,10), end=(10,0)) ←
-        # arc1.start=(10,0) ≈ arc_back.end=(10,0), arc1.end=(0,10) ≈ arc_back.start=(0,10)
+        # arc1.start=(10,0) ≈ arc_back.end=(10,0),
+        # arc1.end=(0,10) ≈ arc_back.start=(0,10)
         arc_back = Arc(ci, math.pi / 2, 0.0)
         ci.arcs.extend([arc1, arc_back])
         sc.circles.append(ci)
@@ -4285,7 +4424,8 @@ class TestAdjacentElementsDedupAndEndMatch:
         adj = p._adjacent_elements(arc1)
         # arc_back が adj に含まれるが重複してはいけない
         back_matches = [cand for cand, _ in adj if cand is arc_back]
-        assert len(back_matches) == 1, f"arc_back は1回だけ含まれるはず: {len(back_matches)}"
+        assert len(
+            back_matches) == 1, f"arc_back は1回だけ含まれるはず: {len(back_matches)}"
 
     # [C1] _adjacent_elements: len(cand_pts) < 2 の候補を skip（L556）
     def test_cand_with_fewer_than_two_endpoints_skipped(self):
@@ -4314,7 +4454,8 @@ class TestAdjacentElementsDedupAndEndMatch:
 # ══════════════════════════════════════════════════════════════
 
 class TestSyncCombosNonLastRefresh:
-    """_sync_combos_to_selection で末尾でないコンボを更新するとき _refresh_nick_combos が呼ばれる（L330）。"""
+    """_sync_combos_to_selection で末尾でないコンボを更新するとき
+    _refresh_nick_combos が呼ばれる（L330）。"""
 
     # [C1] 2 個以上の selected で末尾でないコンボが更新 → L326->332 → L330
     def test_non_last_combo_calls_refresh_nick_combos(self):
@@ -4389,8 +4530,10 @@ class TestRefreshNickCombosDistanceFallback:
 
         # fallback 後、seg2 に対応するアイテムが選択されているはず
         found = p._find_by_nick_label(cb2.currentText())
-        assert found is seg2, \
-            f"_find_by_nick_label fallback で seg2 が選択されるはず（実際: {cb2.currentText()!r}）"
+        assert found is seg2, (
+            "_find_by_nick_label fallback で seg2 が選択されるはず"
+            f"（実際: {cb2.currentText()!r}）"
+        )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -4402,7 +4545,8 @@ class TestPrevIsFwdForAdjFarCand:
     """_prev_is_fwd_for_adj で cand 端点が遠く L913-921 を通過後の Clothoid/Arc
     分岐（L924-929, L932-939）に到達するケースを検証する。"""
 
-    # [C1] prev_obj=有効 Clothoid, cand が遠い → L924-928 の isinstance/loop を通過（L924-929）
+    # [C1] prev_obj=有効 Clothoid, cand が遠い
+    # → L924-928 の isinstance/loop を通過（L924-929）
     def test_clothoid_prev_cand_far_reaches_clothoid_branch(self):
         """[C1] 有効 Clothoid が prev_obj で cand 端点が遠い →
         L924-928 まで到達してデフォルト True を返す（L929 は dead-code）。"""
@@ -4430,7 +4574,8 @@ class TestPrevIsFwdForAdjFarCand:
         result = p._prev_is_fwd_for_adj(clo, seg)
         assert result is True
 
-    # [C1] prev_obj=Arc, cand=有効 Clothoid で端点が遠い → L932-938 の isinstance/check を通過（L932-939）
+    # [C1] prev_obj=Arc, cand=有効 Clothoid で端点が遠い
+    # → L932-938 の isinstance/check を通過（L932-939）
     def test_arc_prev_clothoid_cand_far_reaches_arc_clothoid_branch(self):
         """[C1] Arc が prev_obj で有効 Clothoid が cand（端点が遠い）→
         L932-938 まで到達してデフォルト True を返す（L936, L939 は dead-code）。"""
@@ -4453,7 +4598,8 @@ class TestPrevIsFwdForAdjFarCand:
         # cand_pts=[clo._line_pt, clo._circle_pt] (すべて (1000,*) 付近)
         # L913-921: no match → return せず
         # L924: isinstance(arc, Clothoid) → False → skip
-        # L932: isinstance(clo, Clothoid) and clo.is_valid and isinstance(arc, Arc) → True ★
+        # L932: isinstance(clo, Clothoid) and clo.is_valid
+        # and isinstance(arc, Arc) → True ★
         # L933: clo._circle_pt → True
         # L934-936: _circle_pt が arc.end から遠い → no return True
         # L937-939: _circle_pt が arc.start から遠い → no return False

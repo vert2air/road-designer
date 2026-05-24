@@ -66,7 +66,7 @@ class TestSpec4_2_ModeSwitch:
         """[4.2] S → L → C → S の順に切り替えられる。"""
         w = make_window_qt()
         for mode, action in [
-            ("line",   w._act_line),
+            ("line", w._act_line),
             ("circle", w._act_circle),
             ("select", w._act_select),
         ]:
@@ -96,7 +96,8 @@ class TestSpec4_3_LineMode:
         qtbot.mouseClick(c, Qt.MouseButton.LeftButton, pos=QPoint(500, 500))
         assert c._line_first_pt is not None
 
-    def test_first_click_does_not_add_line_to_scene(self, make_window_qt, qtbot):
+    def test_first_click_does_not_add_line_to_scene(
+            self, make_window_qt, qtbot):
         """[4.3] 1回目のクリックではシーンに直線が追加されない。"""
         w = make_window_qt()
         w._act_line.trigger()
@@ -129,7 +130,8 @@ class TestSpec4_3_LineMode:
         qtbot.keyClick(c, Qt.Key.Key_Escape)
         assert c._line_first_pt is None
 
-    def test_esc_does_not_delete_already_added_lines(self, make_window_qt, qtbot):
+    def test_esc_does_not_delete_already_added_lines(
+            self, make_window_qt, qtbot):
         """[4.3] Esc キーは追加済みの直線を削除しない。"""
         w = make_window_qt()
         w._act_line.trigger()
@@ -224,7 +226,8 @@ class TestSpec4_5_DeleteAndMultiSelect:
         qtbot.keyClick(c, Qt.Key.Key_Delete)
         assert len(w.scene.circles) == 0
 
-    def test_del_line_also_removes_related_clothoids(self, make_window_qt, qtbot):
+    def test_del_line_also_removes_related_clothoids(
+            self, make_window_qt, qtbot):
         """[4.5] 直線を削除すると関連するクロソイドも削除される。"""
         from models import Circle, Clothoid, Vec2
         w = make_window_qt()
@@ -241,7 +244,8 @@ class TestSpec4_5_DeleteAndMultiSelect:
         assert len(w.scene.lines) == 0
         assert len(w.scene.clothoids) == 0, "直線に関連するクロソイドも削除されるべき"
 
-    def test_del_circle_also_removes_related_clothoids(self, make_window_qt, qtbot):
+    def test_del_circle_also_removes_related_clothoids(
+            self, make_window_qt, qtbot):
         """[4.5] 円を削除すると関連するクロソイドも削除される。"""
         from models import Circle, Clothoid, Vec2
         w = make_window_qt()
@@ -258,7 +262,8 @@ class TestSpec4_5_DeleteAndMultiSelect:
         assert len(w.scene.circles) == 0
         assert len(w.scene.clothoids) == 0, "円に関連するクロソイドも削除されるべき"
 
-    def test_shift_click_adds_second_object_to_selection(self, make_window_qt, qtbot):
+    def test_shift_click_adds_second_object_to_selection(
+            self, make_window_qt, qtbot):
         """[4.5] Shift+クリックで2つ目の図形を選択に追加できる。
 
         Canvas の scale=1.0, offset=(500,500) のとき:
@@ -287,7 +292,6 @@ class TestSpec4_5_DeleteAndMultiSelect:
 
     def test_click_empty_area_clears_selection(self, make_window_qt, qtbot):
         """[4.5] 何もない場所をクリックすると選択が解除される。"""
-        from models import Line, Vec2
         w = make_window_qt()
         ln, seg = _add_line(w.scene)
         c = w._canvas
@@ -328,7 +332,8 @@ class TestSpec4_8_Undo:
         qtbot.keyClick(c, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
         assert len(w.scene.lines) == 0
 
-    def test_ctrl_z_in_line_mode_undoes_line_addition(self, make_window_qt, qtbot):
+    def test_ctrl_z_in_line_mode_undoes_line_addition(
+            self, make_window_qt, qtbot):
         """[4.8] 直線モードで2クリックして追加した直線を Ctrl+Z で元に戻せる。"""
         w = make_window_qt()
         w._act_line.trigger()

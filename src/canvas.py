@@ -11,7 +11,7 @@
 from __future__ import annotations
 import math
 from collections import deque
-from typing import Optional, Callable
+from typing import Optional
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QPointF, QRectF, Signal
 from PySide6.QtGui import (QPainter, QPen, QBrush, QColor,
@@ -21,18 +21,18 @@ from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
                     LineConnection)
 
 # ─── 色定数 ────────────────────────────────────────────────────
-C_LINE_REF   = QColor(160, 160, 160)
-C_SEGMENT    = QColor( 60, 120, 220)
-C_CIRCLE     = QColor(140,  60, 200)
+C_LINE_REF = QColor(160, 160, 160)
+C_SEGMENT = QColor(60, 120, 220)
+C_CIRCLE = QColor(140, 60, 200)
 C_CIRCLE_DIM = QColor(180, 130, 220)
-C_ARC        = QColor(120,  40, 180)
-C_CLOTHOID   = QColor( 40, 180,  80)
-C_SELECT     = QColor(240, 160,  20)
-C_HOVER      = QColor(240, 240,  20)
+C_ARC = QColor(120, 40, 180)
+C_CLOTHOID = QColor(40, 180, 80)
+C_SELECT = QColor(240, 160, 20)
+C_HOVER = QColor(240, 240, 20)
 C_HANDLE_REF = QColor(130, 130, 130)
-C_HANDLE_END = QColor(220,  50,  50)
-C_HANDLE_RAD = QColor( 40, 180,  80)
-C_HANDLE_INT = QColor(220, 140,  20)
+C_HANDLE_END = QColor(220, 50, 50)
+C_HANDLE_RAD = QColor(40, 180, 80)
+C_HANDLE_INT = QColor(220, 140, 20)
 
 HANDLE_RADIUS = 7  # px
 
@@ -70,10 +70,11 @@ class Handle:
     owner : Line or Segment or Circle or Arc or LineConnection
         このハンドルが操作する図形オブジェクト。
     """
+
     def __init__(self, pos: Vec2, color: QColor, tag: str, owner):
-        self.pos   = pos
+        self.pos = pos
         self.color = color
-        self.tag   = tag    # 役割識別文字列
+        self.tag = tag    # 役割識別文字列
         self.owner = owner  # 関連する図形オブジェクト
 
 
@@ -112,12 +113,12 @@ class Canvas(QWidget):
         円描画モード。クリック+ドラッグで中心→半径を指定する。
     """
     selection_changed = Signal(list)   # 選択図形リスト
-    scene_changed     = Signal()       # シーン変更
-    mouse_world_pos   = Signal(float, float)  # マウスのワールド座標
-    hover_changed     = Signal(object)         # ホバー中の図形（None のとき非ホバー）
+    scene_changed = Signal()       # シーン変更
+    mouse_world_pos = Signal(float, float)  # マウスのワールド座標
+    hover_changed = Signal(object)         # ホバー中の図形（None のとき非ホバー）
 
     MODE_SELECT = "select"
-    MODE_LINE   = "line"
+    MODE_LINE = "line"
     MODE_CIRCLE = "circle"
 
     def __init__(self, scene: Scene, parent=None):
@@ -132,30 +133,30 @@ class Canvas(QWidget):
         """
         super().__init__(parent)
         self.scene = scene
-        self.mode  = self.MODE_SELECT
+        self.mode = self.MODE_SELECT
 
         # ビュー変換: world → screen
         self._offset = Vec2(400, 300)   # スクリーン原点
-        self._scale  = 1.0              # pixel per meter
+        self._scale = 1.0              # pixel per meter
 
         # 選択・ホバー
         self._selected: list = []
-        self._hovered:  object = None
+        self._hovered: object = None
 
         # ドラッグ状態
-        self._drag_obj:    object = None
-        self._drag_tag:    str    = ""
+        self._drag_obj: object = None
+        self._drag_tag: str = ""
         self._drag_start_screen = None
-        self._drag_start_world  = None
-        self._pan_start_screen  = None
-        self._pan_offset_start  = None
-        self._is_panning:  bool = False
+        self._drag_start_world = None
+        self._pan_start_screen = None
+        self._pan_offset_start = None
+        self._is_panning: bool = False
         self._mouse_moved_px: float = 0
 
         # 直線モード
         self._line_first_pt: Optional[Vec2] = None
-        self._last_line:     Optional[Line] = None  # 折れ線連続用
-        self._rubber_end:    Optional[Vec2] = None  # ラバー線終点
+        self._last_line: Optional[Line] = None  # 折れ線連続用
+        self._rubber_end: Optional[Vec2] = None  # ラバー線終点
 
         # 円モード
         self._circle_center: Optional[Vec2] = None
@@ -205,7 +206,7 @@ class Canvas(QWidget):
             ワールド座標。
         """
         return Vec2((x - self._offset.x) / self._scale,
-                   -(y - self._offset.y) / self._scale)
+                    -(y - self._offset.y) / self._scale)
 
     def s2w_qp(self, p: QPointF) -> Vec2:
         """QPointF を受け取る :meth:`s2w` のラッパー。
@@ -255,8 +256,8 @@ class Canvas(QWidget):
         """
         self.mode = mode
         self._line_first_pt = None
-        self._last_line     = None
-        self._rubber_end    = None
+        self._last_line = None
+        self._rubber_end = None
         self._circle_center = None
         if mode == self.MODE_SELECT:
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -327,7 +328,7 @@ class Canvas(QWidget):
                 # snap=on: 線側接点に吸着している端点
                 t_x = clo.line.project_t(clo._line_pt)
                 for seg in clo.line.segments:
-                    if abs(seg.t_end   - t_x) < 1e-4:
+                    if abs(seg.t_end - t_x) < 1e-4:
                         snapped_seg_ends.add((seg.id, 'end'))
                     if abs(seg.t_start - t_x) < 1e-4:
                         snapped_seg_ends.add((seg.id, 'start'))
@@ -359,35 +360,48 @@ class Canvas(QWidget):
                 shared_pos = conn.shared_point if conn else None
 
                 def is_shared(pt):
-                    return shared_pos is not None and (pt - shared_pos).length() < 1e-6
+                    return (shared_pos is not None
+                            and (pt - shared_pos).length() < 1e-6)
 
                 rs, re = obj.ref_start, obj.ref_end
                 if not is_shared(rs):
-                    self._handles.append(Handle(rs, C_HANDLE_REF, "line_ref_start", obj))
+                    self._handles.append(
+                        Handle(rs, C_HANDLE_REF, "line_ref_start", obj))
                 if not is_shared(re):
-                    self._handles.append(Handle(re, C_HANDLE_REF, "line_ref_end", obj))
+                    self._handles.append(
+                        Handle(re, C_HANDLE_REF, "line_ref_end", obj))
 
                 for seg in obj.segments:
-                    if not is_shared(seg.start) and (seg.id, 'start') not in snapped_seg_ends:
-                        self._handles.append(Handle(seg.start, C_HANDLE_END, "seg_start", seg))
-                    if not is_shared(seg.end) and (seg.id, 'end') not in snapped_seg_ends:
-                        self._handles.append(Handle(seg.end, C_HANDLE_END, "seg_end", seg))
+                    if (not is_shared(seg.start)
+                            and (seg.id, 'start') not in snapped_seg_ends):
+                        self._handles.append(
+                            Handle(seg.start, C_HANDLE_END, "seg_start", seg))
+                    if (not is_shared(seg.end)
+                            and (seg.id, 'end') not in snapped_seg_ends):
+                        self._handles.append(
+                            Handle(seg.end, C_HANDLE_END, "seg_end", seg))
 
                 if conn:
                     cid = id(conn)
                     if cid not in seen_connections:
                         seen_connections.add(cid)
-                        self._handles.append(Handle(conn.shared_point, C_HANDLE_INT, "shared_pt", conn))
+                        self._handles.append(Handle(
+                            conn.shared_point, C_HANDLE_INT,
+                            "shared_pt", conn))
 
             elif isinstance(obj, Circle):
-                self._handles.append(Handle(obj.center, C_HANDLE_REF, "circle_center", obj))
+                self._handles.append(
+                    Handle(obj.center, C_HANDLE_REF, "circle_center", obj))
                 rad_pt = Vec2(obj.center.x + obj.radius, obj.center.y)
-                self._handles.append(Handle(rad_pt, C_HANDLE_RAD, "circle_radius", obj))
+                self._handles.append(
+                    Handle(rad_pt, C_HANDLE_RAD, "circle_radius", obj))
                 for arc in obj.arcs:
                     if (arc.id, 'start') not in snapped_arc_ends:
-                        self._handles.append(Handle(arc.start, C_HANDLE_END, "arc_start", arc))
+                        self._handles.append(
+                            Handle(arc.start, C_HANDLE_END, "arc_start", arc))
                     if (arc.id, 'end') not in snapped_arc_ends:
-                        self._handles.append(Handle(arc.end, C_HANDLE_END, "arc_end", arc))
+                        self._handles.append(
+                            Handle(arc.end, C_HANDLE_END, "arc_end", arc))
 
     # ─── ヒットテスト ─────────────────────────────────────────
     def _hit_handle(self, sw: Vec2) -> Optional[Handle]:
@@ -473,7 +487,7 @@ class Canvas(QWidget):
             いずれかの線分が tol 以内に入れば True。
         """
         for i in range(len(pts) - 1):
-            if self._dist_point_segment(w, pts[i], pts[i+1]) < tol:
+            if self._dist_point_segment(w, pts[i], pts[i + 1]) < tol:
                 return True
         return False
 
@@ -598,25 +612,28 @@ class Canvas(QWidget):
         for ci in self.scene.circles:
             r = ci.radius
             c = ci.center
-            pts.extend([Vec2(c.x-r,c.y-r), Vec2(c.x+r,c.y+r)])
+            pts.extend([Vec2(c.x - r, c.y - r), Vec2(c.x + r, c.y + r)])
         for clo in self.scene.clothoids:
             pts.extend(clo.points)
         if not pts:
-            self._offset = Vec2(self.width()/2, self.height()/2)
-            self._scale  = 1.0
+            self._offset = Vec2(self.width() / 2, self.height() / 2)
+            self._scale = 1.0
             self.update()
             return
-        xs = [p.x for p in pts]; ys = [p.y for p in pts]
-        xmin,xmax = min(xs),max(xs)
-        ymin,ymax = min(ys),max(ys)
-        mx = max(xmax-xmin, 1.0); my = max(ymax-ymin, 1.0)
+        xs = [p.x for p in pts]
+        ys = [p.y for p in pts]
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+        mx = max(xmax - xmin, 1.0)
+        my = max(ymax - ymin, 1.0)
         margin = 0.1
-        sx = self.width()  / (mx * (1+2*margin))
-        sy = self.height() / (my * (1+2*margin))
+        sx = self.width() / (mx * (1 + 2 * margin))
+        sy = self.height() / (my * (1 + 2 * margin))
         self._scale = min(sx, sy)
-        cx = (xmin+xmax)/2; cy = (ymin+ymax)/2
-        self._offset = Vec2(self.width()/2 - cx*self._scale,
-                            self.height()/2 + cy*self._scale)
+        cx = (xmin + xmax) / 2
+        cy = (ymin + ymax) / 2
+        self._offset = Vec2(self.width() / 2 - cx * self._scale,
+                            self.height() / 2 + cy * self._scale)
         self.update()
 
     # ─── 描画 ────────────────────────────────────────────────
@@ -682,19 +699,22 @@ class Canvas(QWidget):
         raw = self.scale_s2w(60)
         mag = 10 ** math.floor(math.log10(raw)) if raw > 0 else 1
         steps = [1, 2, 5, 10]
-        grid = mag * min((s for s in steps if s*mag >= raw*0.9), default=10)
-        w,h = self.width(), self.height()
+        grid = mag * min((s for s in steps if s *
+                         mag >= raw * 0.9), default=10)
+        w, h = self.width(), self.height()
         # 縦線
-        x0 = self.s2w(0, 0).x; x1 = self.s2w(w, 0).x
-        gx0 = math.floor(x0/grid)*grid
+        x0 = self.s2w(0, 0).x
+        x1 = self.s2w(w, 0).x
+        gx0 = math.floor(x0 / grid) * grid
         x = gx0
         while x <= x1 + grid:
             sx = self.w2s(Vec2(x, 0)).x()
             painter.drawLine(int(sx), 0, int(sx), h)
             x += grid
         # 横線
-        y0 = self.s2w(0, h).y; y1 = self.s2w(0, 0).y
-        gy0 = math.floor(y0/grid)*grid
+        y0 = self.s2w(0, h).y
+        y1 = self.s2w(0, 0).y
+        gy0 = math.floor(y0 / grid) * grid
         y = gy0
         while y <= y1 + grid:
             sy = self.w2s(Vec2(0, y)).y()
@@ -772,7 +792,7 @@ class Canvas(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         c = self.w2s(ci.center)
         r = self.scale_w2s(ci.radius)
-        painter.drawEllipse(QRectF(c.x()-r, c.y()-r, 2*r, 2*r))
+        painter.drawEllipse(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r))
 
     def _draw_arc(self, painter: QPainter, arc: Arc):
         """円弧を描画する。
@@ -799,10 +819,10 @@ class Canvas(QWidget):
         # startAngle: world の angle_start (度) * 16
         # spanAngle:  world の arc_angle  (度) * 16 (正 = 反時計 = CCW)
         start_ang_deg = math.degrees(arc.angle_start)
-        span_ang_deg  = math.degrees(arc.arc_angle())
-        painter.drawArc(QRectF(c.x()-r, c.y()-r, 2*r, 2*r),
+        span_ang_deg = math.degrees(arc.arc_angle())
+        painter.drawArc(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r),
                         int(round(start_ang_deg * 16)),
-                        int(round(span_ang_deg  * 16)))
+                        int(round(span_ang_deg * 16)))
 
     def _draw_clothoid(self, painter: QPainter, clo: Clothoid):
         """クロソイド曲線と接点マーカー（菱形）を描画する。
@@ -830,20 +850,22 @@ class Canvas(QWidget):
 
         # 接点マーカー（小さい菱形）
         # ハンドルではない（ドラッグ不可）ので選択状態に関係なく固定色で表示
-        self._draw_contact_diamond(painter, clo._line_pt,   QColor(255, 220,  60))  # 線側: 黄
-        self._draw_contact_diamond(painter, clo._circle_pt, QColor(255, 140,  40))  # 円側: 橙
+        self._draw_contact_diamond(
+            painter, clo._line_pt, QColor(255, 220, 60))  # 線側: 黄
+        self._draw_contact_diamond(
+            painter, clo._circle_pt, QColor(255, 140, 40))  # 円側: 橙
 
     def _draw_contact_diamond(self, painter: QPainter, pt,
-                               color: QColor, half: float = 6.0):
+                              color: QColor, half: float = 6.0):
         """接点を菱形マーカーで描画（ハンドルではない表示専用）"""
         if pt is None:
             return
         sp = self.w2s(pt)
         cx, cy = sp.x(), sp.y()
         diamond = QPolygonF([
-            QPointF(cx,        cy - half),  # 上
+            QPointF(cx, cy - half),  # 上
             QPointF(cx + half, cy),         # 右
-            QPointF(cx,        cy + half),  # 下
+            QPointF(cx, cy + half),  # 下
             QPointF(cx - half, cy),         # 左
         ])
         painter.setPen(QPen(QColor(0, 0, 0, 160), 1))
@@ -864,12 +886,15 @@ class Canvas(QWidget):
         """
         pen = QPen(QColor(200, 200, 200, 128), 1, Qt.PenStyle.DashLine)
         painter.setPen(pen)
-        if self.mode == self.MODE_LINE and self._line_first_pt and self._rubber_end:
-            painter.drawLine(self.w2s(self._line_first_pt), self.w2s(self._rubber_end))
-        elif self.mode == self.MODE_CIRCLE and self._circle_center and self._rubber_radius > 0:
+        if (self.mode == self.MODE_LINE
+                and self._line_first_pt and self._rubber_end):
+            painter.drawLine(self.w2s(self._line_first_pt),
+                             self.w2s(self._rubber_end))
+        elif (self.mode == self.MODE_CIRCLE
+              and self._circle_center and self._rubber_radius > 0):
             c = self.w2s(self._circle_center)
             r = self.scale_w2s(self._rubber_radius)
-            painter.drawEllipse(QRectF(c.x()-r, c.y()-r, 2*r, 2*r))
+            painter.drawEllipse(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r))
 
     def _draw_handles(self, painter: QPainter):
         """選択中の図形のハンドルを円として描画する。
@@ -881,7 +906,7 @@ class Canvas(QWidget):
         """
         for h in self._handles:
             sp = self.w2s(h.pos)
-            painter.setPen(QPen(QColor(0,0,0,180), 1))
+            painter.setPen(QPen(QColor(0, 0, 0, 180), 1))
             painter.setBrush(QBrush(h.color))
             painter.drawEllipse(sp, HANDLE_RADIUS, HANDLE_RADIUS)
 
@@ -916,19 +941,19 @@ class Canvas(QWidget):
         """
         pos = event.position()
         sw = Vec2(pos.x(), pos.y())
-        w  = self.s2w(sw.x, sw.y)
+        w = self.s2w(sw.x, sw.y)
         btn = event.button()
 
         if btn == Qt.MouseButton.MiddleButton:
-            self._pan_start_screen  = sw
-            self._pan_offset_start  = Vec2(self._offset.x, self._offset.y)
+            self._pan_start_screen = sw
+            self._pan_offset_start = Vec2(self._offset.x, self._offset.y)
             self._is_panning = True
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
 
         if btn == Qt.MouseButton.LeftButton:
             self._drag_start_screen = sw
-            self._mouse_moved_px    = 0
+            self._mouse_moved_px = 0
 
             if self.mode == self.MODE_SELECT:
                 # ハンドルヒット?
@@ -954,7 +979,8 @@ class Canvas(QWidget):
                     self.update()
                 else:
                     self._pan_start_screen = sw
-                    self._pan_offset_start = Vec2(self._offset.x, self._offset.y)
+                    self._pan_offset_start = Vec2(
+                        self._offset.x, self._offset.y)
                     self._is_panning = True
                     self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
@@ -962,8 +988,8 @@ class Canvas(QWidget):
                 self._line_click(w)
 
             elif self.mode == self.MODE_CIRCLE:
-                self._circle_center  = w
-                self._rubber_radius  = 0.0
+                self._circle_center = w
+                self._rubber_radius = 0.0
 
     def mouseMoveEvent(self, event):
         """マウス移動イベントを処理する。
@@ -978,8 +1004,8 @@ class Canvas(QWidget):
             PySide6 マウスイベント。
         """
         pos = event.position()
-        sw  = Vec2(pos.x(), pos.y())
-        w   = self.s2w(sw.x, sw.y)
+        sw = Vec2(pos.x(), pos.y())
+        w = self.s2w(sw.x, sw.y)
 
         if self._is_panning and self._pan_start_screen:
             dx = sw.x - self._pan_start_screen.x
@@ -1003,7 +1029,7 @@ class Canvas(QWidget):
             self._rubber_end = w
             self.update()
         elif self.mode == self.MODE_CIRCLE and self._circle_center and \
-             event.buttons() & Qt.MouseButton.LeftButton:
+                event.buttons() & Qt.MouseButton.LeftButton:
             self._rubber_radius = (w - self._circle_center).length()
             self.update()
 
@@ -1045,13 +1071,14 @@ class Canvas(QWidget):
         """
         btn = event.button()
         pos = event.position()
-        sw  = Vec2(pos.x(), pos.y())
-        w   = self.s2w(sw.x, sw.y)
+        sw = Vec2(pos.x(), pos.y())
+        w = self.s2w(sw.x, sw.y)
 
         if btn == Qt.MouseButton.MiddleButton:
             self._is_panning = False
-            self.setCursor(Qt.CursorShape.ArrowCursor if self.mode == self.MODE_SELECT
-                           else Qt.CursorShape.CrossCursor)
+            self.setCursor(
+                Qt.CursorShape.ArrowCursor if self.mode == self.MODE_SELECT
+                else Qt.CursorShape.CrossCursor)
             return
 
         if btn == Qt.MouseButton.LeftButton:
@@ -1071,8 +1098,8 @@ class Canvas(QWidget):
                     ci = Circle(self._circle_center, r)
                     self.scene.add_circle(ci)
                     self.scene_changed.emit()
-                self._circle_center  = None
-                self._rubber_radius  = 0.0
+                self._circle_center = None
+                self._rubber_radius = 0.0
                 self.update()
             if self._drag_obj is not None:
                 # ドラッグ完了 → 右パネルのプロパティを更新
@@ -1093,7 +1120,7 @@ class Canvas(QWidget):
             PySide6 ホイールイベント。
         """
         delta = event.angleDelta().y()
-        factor = 1.15 if delta > 0 else 1/1.15
+        factor = 1.15 if delta > 0 else 1 / 1.15
         pos = event.position()
         cx, cy = pos.x(), pos.y()
         self._offset = Vec2(cx + (self._offset.x - cx) * factor,
@@ -1117,14 +1144,17 @@ class Canvas(QWidget):
         k = event.key()
         if k == Qt.Key.Key_Escape:
             self._line_first_pt = None
-            self._last_line     = None
-            self._rubber_end    = None
+            self._last_line = None
+            self._rubber_end = None
             self.update()
         elif k == Qt.Key.Key_Delete:
             self._delete_selected()
-        elif k == Qt.Key.Key_Z and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+        elif (k == Qt.Key.Key_Z
+              and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             self.undo()
-        elif k == Qt.Key.Key_S and not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+        elif (k == Qt.Key.Key_S
+              and not event.modifiers()
+              & Qt.KeyboardModifier.ControlModifier):
             # [S] 選択モード
             pass  # メインウィンドウ側で処理
         self.update()
@@ -1157,9 +1187,9 @@ class Canvas(QWidget):
             # 折れ線連続接続
             if self._last_line is not None:
                 self._connect_polyline(self._last_line, ln)
-            self._last_line     = ln
+            self._last_line = ln
             self._line_first_pt = q
-            self._rubber_end    = q
+            self._rubber_end = q
             self.scene_changed.emit()
             self.update()
 
@@ -1383,7 +1413,7 @@ class Canvas(QWidget):
         # 両直線の「共有点と反対側の端点」
         def far_end(ln, shared):
             ds = (ln.ref_start - shared).length()
-            de = (ln.ref_end   - shared).length()
+            de = (ln.ref_end - shared).length()
             return ln.ref_start if ds >= de else ln.ref_end
 
         P = far_end(la, new_ix)
@@ -1403,13 +1433,13 @@ class Canvas(QWidget):
 
         ci.center = new_ix + bisect * old_t
         ci.bisector_origin = new_ix
-        ci.bisector_dir    = bisect
-        conn.shared_point  = new_ix
-        conn.bisector_dir  = bisect
+        ci.bisector_dir = bisect
+        conn.shared_point = new_ix
+        conn.bisector_dir = bisect
 
         for line in (la, lb):
             ds = (line.ref_start - new_ix).length()
-            de = (line.ref_end   - new_ix).length()
+            de = (line.ref_end - new_ix).length()
             if ds <= de:
                 line.ref_start = new_ix
             else:
@@ -1484,7 +1514,8 @@ class Canvas(QWidget):
         # 折れ線接続後の各直線で、X と異なる側の端点 P, Q を求める
         def far_end(ln, shared):
             """X と遠い側の参照点を返す"""
-            if (ln.ref_start - shared).length() >= (ln.ref_end - shared).length():
+            if ((ln.ref_start - shared).length()
+                    >= (ln.ref_end - shared).length()):
                 return ln.ref_start
             return ln.ref_end
 
@@ -1532,7 +1563,7 @@ class Canvas(QWidget):
         center = X + bisect * d_default
         ci = Circle(center, R_default)
         ci.bisector_origin = X
-        ci.bisector_dir    = bisect
+        ci.bisector_dir = bisect
         self.scene.add_circle(ci)
 
         # 手順-5: クロソイド E (J + ci) — 左カーブになる
@@ -1548,8 +1579,8 @@ class Canvas(QWidget):
         # 接続情報を smooth に昇格
         conn = line_a.connection
         if conn:
-            conn.kind         = "smooth"
-            conn.circle       = ci
+            conn.kind = "smooth"
+            conn.circle = ci
             conn.bisector_dir = bisect
 
         self.scene_changed.emit()

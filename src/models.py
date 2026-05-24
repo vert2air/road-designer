@@ -40,6 +40,7 @@ from typing import Optional
 # ─── ユニーク ID ─────────────────────────────────────────────
 _id_counter = itertools.count(1)
 
+
 def new_id() -> int:
     """全図形種別を通じてユニークな整数 ID を発行する。
 
@@ -53,6 +54,7 @@ def new_id() -> int:
         1 以上の整数。同一セッション内で重複しない。
     """
     return next(_id_counter)
+
 
 def _reset_id_counter_after(max_id: int):
     """ファイル読み込み後に ID カウンタを既存 ID の次の値から再開する。
@@ -70,6 +72,8 @@ def _reset_id_counter_after(max_id: int):
     _id_counter = itertools.count(max_id + 1)
 
 # ─── 基本型 ──────────────────────────────────────────────────
+
+
 @dataclass
 class Vec2:
     """アプリ全体で使用する 2 次元ベクトル型。
@@ -91,11 +95,12 @@ class Vec2:
     x: float
     y: float
 
-    def __add__(self, o):  return Vec2(self.x + o.x, self.y + o.y)
-    def __sub__(self, o):  return Vec2(self.x - o.x, self.y - o.y)
-    def __mul__(self, s):  return Vec2(self.x * s, self.y * s)
+    def __add__(self, o): return Vec2(self.x + o.x, self.y + o.y)
+    def __sub__(self, o): return Vec2(self.x - o.x, self.y - o.y)
+    def __mul__(self, s): return Vec2(self.x * s, self.y * s)
     def __rmul__(self, s): return self.__mul__(s)
-    def __neg__(self):     return Vec2(-self.x, -self.y)
+    def __neg__(self): return Vec2(-self.x, -self.y)
+
     def dot(self, o: 'Vec2') -> float:
         """内積 self·o を返す。
 
@@ -152,6 +157,7 @@ class Vec2:
             math.hypot(self.x, self.y)。零ベクトルのとき 0.0。
         """
         return math.hypot(self.x, self.y)
+
     def normalized(self) -> 'Vec2':
         """単位ベクトルを返す。
 
@@ -163,8 +169,9 @@ class Vec2:
         Vec2
             大きさ 1 の同方向ベクトル。零ベクトルの場合は Vec2(1, 0)。
         """
-        l = self.length()
-        return Vec2(self.x / l, self.y / l) if l > 1e-12 else Vec2(1, 0)
+        ln = self.length()
+        return Vec2(self.x / ln, self.y / ln) if ln > 1e-12 else Vec2(1, 0)
+
     def perp(self) -> 'Vec2':
         """CCW に 90° 回転したベクトルを返す（左法線）。
 
@@ -182,6 +189,7 @@ class Vec2:
         Vec2(x=0.0, y=1.0)
         """
         return Vec2(-self.y, self.x)
+
     def tuple(self) -> tuple:
         """(x, y) タプルを返す。QPainter へ座標を渡す際に使う。"""
         return (self.x, self.y)
@@ -237,7 +245,7 @@ class Line:
         """
         self.id = line_id if line_id is not None else new_id()
         self.ref_start = ref_start
-        self.ref_end   = ref_end
+        self.ref_end = ref_end
         self.segments: list[Segment] = []
         self.connection: Optional[LineConnection] = None
 
@@ -410,14 +418,15 @@ class Line:
         return {
             "id": self.id,
             "ref_start": self.ref_start.to_dict(),
-            "ref_end":   self.ref_end.to_dict(),
-            "segments":  [s.to_dict() for s in self.segments],
+            "ref_end": self.ref_end.to_dict(),
+            "segments": [s.to_dict() for s in self.segments],
         }
 
     @staticmethod
     def from_dict(d: dict) -> 'Line':
         """辞書から Line を復元する。segments も再構築する。"""
-        ln = Line(Vec2.from_dict(d["ref_start"]), Vec2.from_dict(d["ref_end"]), d["id"])
+        ln = Line(Vec2.from_dict(d["ref_start"]),
+                  Vec2.from_dict(d["ref_end"]), d["id"])
         ln.segments = [Segment.from_dict(s, ln) for s in d.get("segments", [])]
         return ln
 
@@ -443,7 +452,11 @@ class Segment:
         終点の位置パラメータ。通常 t_start < t_end。
     """
 
-    def __init__(self, line: Line, t_start: float = 0.0, t_end: float = 1.0, seg_id: int = None):
+    def __init__(
+        self, line: Line,
+        t_start: float = 0.0, t_end: float = 1.0,
+        seg_id: int = None
+    ):
         """
         Parameters
         ----------
@@ -457,10 +470,10 @@ class Segment:
         seg_id : int, optional
             指定しない場合は `new_id()` で採番する。
         """
-        self.id     = seg_id if seg_id is not None else new_id()
-        self.line   = line
+        self.id = seg_id if seg_id is not None else new_id()
+        self.line = line
         self.t_start = t_start
-        self.t_end   = t_end
+        self.t_end = t_end
         self.snap_prev: Optional[Segment] = None
         self.snap_next: Optional[Segment] = None
 
@@ -575,12 +588,12 @@ class Circle:
         circle_id : int, optional
             指定しない場合は `new_id()` で採番する。
         """
-        self.id     = circle_id if circle_id is not None else new_id()
+        self.id = circle_id if circle_id is not None else new_id()
         self.center = center
         self.radius = radius
-        self.arcs:  list[Arc] = []
+        self.arcs: list[Arc] = []
         self.bisector_origin: Optional[Vec2] = None
-        self.bisector_dir:    Optional[Vec2] = None
+        self.bisector_dir: Optional[Vec2] = None
 
     def to_dict(self) -> dict:
         """{"id", "center", "radius", "arcs"} 形式の辞書に変換する。"""
@@ -619,7 +632,11 @@ class Arc:
         弧の終了角度（ラジアン）。
     """
 
-    def __init__(self, circle: Circle, angle_start: float, angle_end: float, arc_id: int = None):
+    def __init__(
+        self, circle: Circle,
+        angle_start: float, angle_end: float,
+        arc_id: int = None
+    ):
         """
         Parameters
         ----------
@@ -637,10 +654,10 @@ class Arc:
         コンストラクタは `circle.arcs.append(self)` を行わない。
         追加は呼び出し元の責任とする。
         """
-        self.id          = arc_id if arc_id is not None else new_id()
-        self.circle      = circle
+        self.id = arc_id if arc_id is not None else new_id()
+        self.circle = circle
         self.angle_start = angle_start
-        self.angle_end   = angle_end
+        self.angle_end = angle_end
 
     @property
     def start(self) -> Vec2:
@@ -672,7 +689,10 @@ class Arc:
 
     def to_dict(self) -> dict:
         """{"id", "angle_start", "angle_end"} 形式の辞書に変換する。"""
-        return {"id": self.id, "angle_start": self.angle_start, "angle_end": self.angle_end}
+        return {
+            "id": self.id,
+            "angle_start": self.angle_start,
+            "angle_end": self.angle_end}
 
     @staticmethod
     def from_dict(d: dict, circle: Circle) -> 'Arc':
@@ -838,17 +858,17 @@ class Clothoid:
         線分・円弧の ID ペアを追跡するためのリスト。接点が移動しても再分割せず
         端点の追従更新だけで済むようにするための仕組み。
         """
-        self.id            = clothoid_id if clothoid_id is not None else new_id()
-        self.line          = line
-        self.circle        = circle
+        self.id = clothoid_id if clothoid_id is not None else new_id()
+        self.line = line
+        self.circle = circle
         self.reversed_flag = reversed_flag
-        self.snap_segment  = snap_segment
-        self.snap_arc      = snap_arc
-        self._valid:      bool           = False
-        self._tau:        float          = 0.0
-        self._line_pt:    Optional[Vec2] = None
-        self._circle_pt:  Optional[Vec2] = None
-        self._points:     list[Vec2]     = []
+        self.snap_segment = snap_segment
+        self.snap_arc = snap_arc
+        self._valid: bool = False
+        self._tau: float = 0.0
+        self._line_pt: Optional[Vec2] = None
+        self._circle_pt: Optional[Vec2] = None
+        self._points: list[Vec2] = []
         self._split_seg_ids: list[int] = []
         self._split_arc_ids: list[int] = []
         self.compute()
@@ -870,10 +890,10 @@ class Clothoid:
         if not self.reversed_flag:
             return ln
         rev = Line.__new__(Line)
-        rev.id         = ln.id
-        rev.ref_start  = ln.ref_end
-        rev.ref_end    = ln.ref_start
-        rev.segments   = ln.segments
+        rev.id = ln.id
+        rev.ref_start = ln.ref_end
+        rev.ref_end = ln.ref_start
+        rev.segments = ln.segments
         rev.connection = ln.connection
         return rev
 
@@ -908,8 +928,8 @@ class Clothoid:
         snap 先（angle_start か angle_end か）の決定に使う。
         """
         eln = self._effective_line()
-        d   = (eln.ref_end - eln.ref_start).normalized()
-        pm  = self.circle.center - eln.ref_start
+        d = (eln.ref_end - eln.ref_start).normalized()
+        pm = self.circle.center - eln.ref_start
         return d.cross(pm) > 0
 
     # ── 計算本体 ──────────────────────────────────────────────
@@ -933,35 +953,35 @@ class Clothoid:
         失敗条件: circle.radius < 1e-9、または d_abs <= R（直線が円の内部）、
         または `_find_tau` が None を返した（解なし）。
         """
-        self._valid     = False
-        self._points    = []
-        self._line_pt   = None
+        self._valid = False
+        self._points = []
+        self._line_pt = None
         self._circle_pt = None
 
-        eln    = self._effective_line()
+        eln = self._effective_line()
         circle = self.circle
-        R      = circle.radius
+        R = circle.radius
         if R < 1e-9:
             return
 
         # signed_dist: eln の左側が正
         d_signed = eln.signed_dist(circle.center)
-        d_abs    = abs(d_signed)
+        d_abs = abs(d_signed)
 
         tau = _find_tau(R, d_abs)
         if tau is None:
             return
 
-        self._tau   = tau
+        self._tau = tau
         self._valid = True
 
         # --- clothoid_data 相当: 接点を計算 ---
         xe, _ye = _fresnel_xy_tau(tau, R)
 
         proj_center = eln.project_point(circle.center)   # Vec2
-        direction   = eln.direction                        # Vec2
-        left        = Vec2(-direction.y, direction.x)     # 左法線
-        sign        = 1.0 if d_signed > 0 else -1.0
+        direction = eln.direction                        # Vec2
+        left = Vec2(-direction.y, direction.x)     # 左法線
+        sign = 1.0 if d_signed > 0 else -1.0
 
         # 円側接点 (clothoid_data の cc に相当)
         cc = Vec2(
@@ -976,17 +996,17 @@ class Clothoid:
             proj_center.y + direction.y * (R * math.sin(tau) - xe),
         )
 
-        self._line_pt   = lc
+        self._line_pt = lc
         self._circle_pt = cc
 
         # --- clothoid_points 相当: 点列を生成 ---
-        L   = 2.0 * R * tau
-        A2  = R * L
+        L = 2.0 * R * tau
+        A2 = R * L
         left_n = left  # Vec2
 
         n_steps = max(80, int(tau / (2.0 * math.pi) * 512) + 40)
-        n_int   = max(n_steps * 8, 800)
-        ds_int  = L / n_int
+        n_int = max(n_steps * 8, 800)
+        ds_int = L / n_int
 
         # 出力する弧長位置（等接線角度変化）
         output_s = []
@@ -1006,7 +1026,8 @@ class Clothoid:
             y_acc += math.sin(theta) * ds_int
             s_cur = (i + 1) * ds_int
 
-            while out_idx < len(output_s) and s_cur >= output_s[out_idx] - 1e-9:
+            while (out_idx < len(output_s)
+                   and s_cur >= output_s[out_idx] - 1e-9):
                 wx = lc.x + direction.x * x_acc + left_n.x * sign * y_acc
                 wy = lc.y + direction.y * x_acc + left_n.y * sign * y_acc
                 pts.append(Vec2(wx, wy))
@@ -1089,10 +1110,10 @@ class Clothoid:
                     if seg_ax in self.line.segments:
                         self.line.segments.remove(seg_ax)
 
-        contact  = self._line_pt
+        contact = self._line_pt
         best_seg = min(self.line.segments,
                        key=lambda s: min((s.start - contact).length(),
-                                         (s.end   - contact).length()))
+                                         (s.end - contact).length()))
         t = self.line.project_t(contact)
         if not self.reversed_flag:
             best_seg.t_end = t
@@ -1125,16 +1146,18 @@ class Clothoid:
         if self._split_seg_ids:
             segs_by_id = {s.id: s for s in self.line.segments}
             seg_ax = segs_by_id.get(self._split_seg_ids[0])
-            seg_xb = segs_by_id.get(self._split_seg_ids[1]) if len(self._split_seg_ids) > 1 else None
+            seg_xb = segs_by_id.get(self._split_seg_ids[1]) if len(
+                self._split_seg_ids) > 1 else None
             if seg_ax and seg_xb:
-                seg_ax.t_end   = t_x
+                seg_ax.t_end = t_x
                 seg_xb.t_start = t_x
                 return
             # 分割線分が消えていたらリセット
             self._split_seg_ids = []
 
         # 分割元となる線分を選ぶ（自分が作った分割線分は除外）
-        candidates = [s for s in self.line.segments if s.id not in self._split_seg_ids]
+        candidates = [
+            s for s in self.line.segments if s.id not in self._split_seg_ids]
         if not candidates:
             return
         best_seg = min(candidates, key=lambda s: self._dist_to_seg(contact, s))
@@ -1144,7 +1167,7 @@ class Clothoid:
             return
 
         # 元の線分を AX に縮め、XB を新規追加
-        t_orig_end    = best_seg.t_end
+        t_orig_end = best_seg.t_end
         best_seg.t_end = t_x                               # AX (元の線分を縮める)
         seg_xb = Segment(self.line, t_x, t_orig_end)       # XB (新規)
         self.line.segments.append(seg_xb)
@@ -1163,7 +1186,8 @@ class Clothoid:
             return
         segs_by_id = {s.id: s for s in self.line.segments}
         seg_ax = segs_by_id.get(self._split_seg_ids[0])
-        seg_xb = segs_by_id.get(self._split_seg_ids[1]) if len(self._split_seg_ids) > 1 else None
+        seg_xb = segs_by_id.get(self._split_seg_ids[1]) if len(
+            self._split_seg_ids) > 1 else None
         if seg_ax and seg_xb and seg_xb in self.line.segments:
             seg_ax.t_end = seg_xb.t_end   # AX の終端を XB の終端に戻す
             self.line.segments.remove(seg_xb)
@@ -1215,7 +1239,7 @@ class Clothoid:
         if not self._split_arc_ids and self._circle_pt is not None:
             contact = self._circle_pt
             angle_x = math.atan2(contact.y - self.circle.center.y,
-                                  contact.x - self.circle.center.x)
+                                 contact.x - self.circle.center.x)
             TOL = 1e-4  # rad
             arc_ax = next((a for a in self.circle.arcs
                            if abs(a.angle_end - angle_x) < TOL), None)
@@ -1227,14 +1251,16 @@ class Clothoid:
                 if arc_xb in self.circle.arcs:
                     self.circle.arcs.remove(arc_xb)
 
-        circle        = self.circle
-        contact       = self._circle_pt
+        circle = self.circle
+        contact = self._circle_pt
         angle_contact = math.atan2(contact.y - circle.center.y,
-                                    contact.x - circle.center.x)
+                                   contact.x - circle.center.x)
         if circle.arcs:
             def arc_dist(arc):
                 a = arc.angle_start if self.is_left_curve else arc.angle_end
-                return abs((a - angle_contact + math.pi) % (2 * math.pi) - math.pi)
+                return abs(
+                    (a - angle_contact + math.pi)
+                    % (2 * math.pi) - math.pi)
             arc = min(circle.arcs, key=arc_dist)
         else:
             if self.is_left_curve:
@@ -1262,16 +1288,17 @@ class Clothoid:
             return
         contact = self._circle_pt
         angle_x = math.atan2(contact.y - self.circle.center.y,
-                              contact.x - self.circle.center.x)
+                             contact.x - self.circle.center.x)
 
         # 既存の分割円弧があれば追従更新
         if self._split_arc_ids:
             arcs_by_id = {a.id: a for a in self.circle.arcs}
             arc_ax = arcs_by_id.get(self._split_arc_ids[0])
-            arc_xb = arcs_by_id.get(self._split_arc_ids[1]) if len(self._split_arc_ids) > 1 else None
+            arc_xb = arcs_by_id.get(self._split_arc_ids[1]) if len(
+                self._split_arc_ids) > 1 else None
             if arc_ax and arc_xb:
                 # arc_ax: start→X, arc_xb: X→end
-                arc_ax.angle_end   = angle_x
+                arc_ax.angle_end = angle_x
                 arc_xb.angle_start = angle_x
                 return
             self._split_arc_ids = []
@@ -1282,7 +1309,7 @@ class Clothoid:
             if a.id in self._split_arc_ids:
                 continue
             span = a.arc_angle()
-            rel  = (angle_x - a.angle_start) % (2 * math.pi)
+            rel = (angle_x - a.angle_start) % (2 * math.pi)
             if 1e-4 < rel < span - 1e-4:   # 端点でなく内部に接点がある
                 best_arc = a
                 break
@@ -1290,7 +1317,7 @@ class Clothoid:
             return
 
         # 元の円弧を (start→X) に縮め、(X→end) を新規追加
-        orig_end          = best_arc.angle_end
+        orig_end = best_arc.angle_end
         best_arc.angle_end = angle_x                          # start→X
         arc_xb = Arc(self.circle, angle_x, orig_end)          # X→end
         self.circle.arcs.append(arc_xb)
@@ -1309,7 +1336,8 @@ class Clothoid:
             return
         arcs_by_id = {a.id: a for a in self.circle.arcs}
         arc_ax = arcs_by_id.get(self._split_arc_ids[0])
-        arc_xb = arcs_by_id.get(self._split_arc_ids[1]) if len(self._split_arc_ids) > 1 else None
+        arc_xb = arcs_by_id.get(self._split_arc_ids[1]) if len(
+            self._split_arc_ids) > 1 else None
         if arc_ax and arc_xb and arc_xb in self.circle.arcs:
             arc_ax.angle_end = arc_xb.angle_end
             self.circle.arcs.remove(arc_xb)
@@ -1357,12 +1385,12 @@ class Clothoid:
         保存・復元することで、ロード後の `compute()` 再実行時に重複分割を防ぐ。
         """
         return {
-            "id":            self.id,
-            "line_id":       self.line.id,
-            "circle_id":     self.circle.id,
+            "id": self.id,
+            "line_id": self.line.id,
+            "circle_id": self.circle.id,
             "reversed_flag": self.reversed_flag,
-            "snap_segment":  self.snap_segment,
-            "snap_arc":      self.snap_arc,
+            "snap_segment": self.snap_segment,
+            "snap_arc": self.snap_arc,
             "split_seg_ids": list(self._split_seg_ids),
             "split_arc_ids": list(self._split_arc_ids),
         }
@@ -1408,13 +1436,13 @@ class OffsetConstraint:
     :meth:`solve` を通じて常に維持される。0 は未設定を表し、後方互換
     モード（全組み合わせを探索）で動作する。
     """
-    id:       int    = field(default_factory=new_id)
-    line:     object = None   # Line（循環参照回避のため object 型）
+    id: int = field(default_factory=new_id)
+    line: object = None   # Line（循環参照回避のため object 型）
     circle_a: object = None   # Circle
     circle_b: object = None   # Circle
-    off_a:    float  = 0.0
-    off_b:    float  = 0.0
-    feasible: bool   = True   # 最後の solve() が成功した場合 True
+    off_a: float = 0.0
+    off_b: float = 0.0
+    feasible: bool = True   # 最後の solve() が成功した場合 True
 
     def solve(self) -> bool:
         """off_a・off_b・_eps_a・_eps_b から直線 S の参照点を再計算する。
@@ -1459,7 +1487,7 @@ class OffsetConstraint:
         rb = self.circle_b.radius + self.off_b
 
         ab = cb_center - ca_center
-        L  = ab.length()
+        L = ab.length()
         if L < 1e-9:
             self.feasible = False
             return False  # 2 円の中心が一致
@@ -1513,14 +1541,13 @@ class OffsetConstraint:
         rs = self.line.ref_start
         if (foot_a - rs).length() <= (foot_b - rs).length():
             self.line.ref_start = foot_a
-            self.line.ref_end   = foot_b
+            self.line.ref_end = foot_b
         else:
             self.line.ref_start = foot_b
-            self.line.ref_end   = foot_a
+            self.line.ref_end = foot_a
 
         self.feasible = True
         return True
-
 
     def __post_init__(self):
         """内部フィールド ``_eps_a``・``_eps_b`` を初期化する。
@@ -1569,12 +1596,12 @@ class OffsetConstraint:
     def to_dict(self) -> dict:
         """{"id","line_id","ca_id","cb_id","off_a","off_b"} 形式の辞書に変換する。"""
         return {
-            'id':      self.id,
-            'line_id': self.line.id     if self.line     else None,
-            'ca_id':   self.circle_a.id if self.circle_a else None,
-            'cb_id':   self.circle_b.id if self.circle_b else None,
-            'off_a':   self.off_a,
-            'off_b':   self.off_b,
+            'id': self.id,
+            'line_id': self.line.id if self.line else None,
+            'ca_id': self.circle_a.id if self.circle_a else None,
+            'cb_id': self.circle_b.id if self.circle_b else None,
+            'off_a': self.off_a,
+            'off_b': self.off_b,
         }
 
     @staticmethod
@@ -1593,14 +1620,13 @@ class OffsetConstraint:
             id をキーとする Circle の辞書。
         """
         oc = OffsetConstraint()
-        oc.id       = d['id']
-        oc.line     = lines_by_id.get(d.get('line_id'))
+        oc.id = d['id']
+        oc.line = lines_by_id.get(d.get('line_id'))
         oc.circle_a = circles_by_id.get(d.get('ca_id'))
         oc.circle_b = circles_by_id.get(d.get('cb_id'))
-        oc.off_a    = d.get('off_a', 0.0)
-        oc.off_b    = d.get('off_b', 0.0)
+        oc.off_a = d.get('off_a', 0.0)
+        oc.off_b = d.get('off_b', 0.0)
         return oc
-
 
 
 # ─── 縦断線形モデル（backward-compat 再エクスポート） ─────────────────
@@ -1643,11 +1669,12 @@ class Scene:
     nicknames : dict[int, str]
         ID → ニックネームの辞書。
     """
+
     def __init__(self):
         """Scene を初期化する。全フィールドを空リストまたは空辞書で初期化する。"""
-        self.lines:     list[Line]          = []
-        self.circles:   list[Circle]        = []
-        self.clothoids: list[Clothoid]      = []
+        self.lines: list[Line] = []
+        self.circles: list[Circle] = []
+        self.clothoids: list[Clothoid] = []
         self.vertical_alignments: list[VerticalAlignment] = []  # 旧フォーマット互換
         self.element_profiles: list[ElementProfile] = []         # 要素単位の縦断データ
         self.offset_constraints: list['OffsetConstraint'] = []
@@ -1767,7 +1794,9 @@ class Scene:
         list[Clothoid]
             該当する Clothoid のリスト。0〜2 要素。
         """
-        return [c for c in self.clothoids if c.line is line and c.circle is circle]
+        return [
+            c for c in self.clothoids
+            if c.line is line and c.circle is circle]
 
     def connected_objects(self, obj) -> list:
         """obj に接続している図形の一覧を返す。
@@ -1847,6 +1876,7 @@ class Scene:
             ``element_profiles``, ``nicknames``。
         """
         self._fix_duplicate_ids()  # 保存前に id 重複を修正
+
         def _with_nick(d: dict) -> dict:
             """'id' の次に 'nickname' を挿入した辞書を返す（内部ヘルパー）。"""
             fid = d.get("id")
@@ -1871,12 +1901,15 @@ class Scene:
             return d
 
         return {
-            "lines":                [line_dict(l) for l in self.lines],
-            "circles":              [circle_dict(c) for c in self.circles],
-            "clothoids":            [_with_nick(c.to_dict()) for c in self.clothoids],
-            "offset_constraints":   [oc.to_dict() for oc in self.offset_constraints],
-            "element_profiles":     [ep.to_dict() for ep in self.element_profiles],
-            "vertical_alignments":  [va.to_dict() for va in self.vertical_alignments],
+            "lines": [line_dict(ln) for ln in self.lines],
+            "circles": [circle_dict(c) for c in self.circles],
+            "clothoids": [_with_nick(c.to_dict()) for c in self.clothoids],
+            "offset_constraints": [
+                oc.to_dict() for oc in self.offset_constraints],
+            "element_profiles": [
+                ep.to_dict() for ep in self.element_profiles],
+            "vertical_alignments": [
+                va.to_dict() for va in self.vertical_alignments],
         }
 
     @staticmethod
@@ -1914,12 +1947,12 @@ class Scene:
             復元された Scene オブジェクト。
         """
         sc = Scene()
-        lines_by_id   = {}
+        lines_by_id = {}
         circles_by_id = {}
 
         def _extract_nick(raw: dict, sc: 'Scene'):
             nick = raw.get("nickname")
-            fid  = raw.get("id")
+            fid = raw.get("id")
             if nick and fid is not None:
                 sc.nicknames[fid] = nick
 
@@ -1995,8 +2028,8 @@ class Scene:
                     clo.compute()   # 追従更新モードで再実行（再分割しない）
                 sc.clothoids.append(clo)
 
-        sc.element_profiles    = [ElementProfile.from_dict(ep)
-                                   for ep in d.get("element_profiles", [])]
+        sc.element_profiles = [ElementProfile.from_dict(ep)
+                               for ep in d.get("element_profiles", [])]
         sc.vertical_alignments = [
             VerticalAlignment.from_dict(va)
             for va in d.get("vertical_alignments", [])
@@ -2005,8 +2038,8 @@ class Scene:
         old_vcs = d.get("vertical_curves", [])
         if old_gls or old_vcs:
             va = VerticalAlignment()
-            va.nickname        = "default"
-            va.grade_lines     = [GradeLine.from_dict(g) for g in old_gls]
+            va.nickname = "default"
+            va.grade_lines = [GradeLine.from_dict(g) for g in old_gls]
             va.vertical_curves = [VerticalCurve.from_dict(v) for v in old_vcs]
             sc.vertical_alignments.append(va)
 
@@ -2103,7 +2136,7 @@ def tangent_at(obj, at_end: bool) -> tuple:
         dx = obj.end.x - obj.start.x
         dy = obj.end.y - obj.start.y
         ln = math.hypot(dx, dy) or 1
-        return (dx/ln, dy/ln)
+        return (dx / ln, dy / ln)
     elif isinstance(obj, Arc):
         ang = obj.angle_end if at_end else obj.angle_start
         return (-math.sin(ang), math.cos(ang))
@@ -2117,7 +2150,7 @@ def tangent_at(obj, at_end: bool) -> tuple:
                 dx = raw[1].x - raw[0].x
                 dy = raw[1].y - raw[0].y
             ln = math.hypot(dx, dy) or 1
-            return (dx/ln, dy/ln)
+            return (dx / ln, dy / ln)
     return (1, 0)
 
 
@@ -2154,7 +2187,7 @@ def entry_tangent(obj, connect_at_start: bool):
             dx = obj.start.x - obj.end.x
             dy = obj.start.y - obj.end.y
         ln = math.hypot(dx, dy) or 1
-        return (dx/ln, dy/ln)
+        return (dx / ln, dy / ln)
     elif isinstance(obj, Arc):
         DELTA = math.radians(0.1)
         if connect_at_start:
@@ -2163,14 +2196,17 @@ def entry_tangent(obj, connect_at_start: bool):
         else:
             ang0 = obj.angle_end
             ang1 = obj.angle_end - DELTA
-        R  = obj.circle.radius
+        R = obj.circle.radius
         cx = obj.circle.center.x
         cy = obj.circle.center.y
-        x0 = cx + R * math.cos(ang0); y0 = cy + R * math.sin(ang0)
-        x1 = cx + R * math.cos(ang1); y1 = cy + R * math.sin(ang1)
-        dx = x1 - x0; dy = y1 - y0
+        x0 = cx + R * math.cos(ang0)
+        y0 = cy + R * math.sin(ang0)
+        x1 = cx + R * math.cos(ang1)
+        y1 = cy + R * math.sin(ang1)
+        dx = x1 - x0
+        dy = y1 - y0
         ln = math.hypot(dx, dy) or 1
-        return (dx/ln, dy/ln)
+        return (dx / ln, dy / ln)
     elif isinstance(obj, Clothoid):
         raw = obj.points
         if not raw or len(raw) < 2:
@@ -2182,7 +2218,7 @@ def entry_tangent(obj, connect_at_start: bool):
             dx = raw[-2].x - raw[-1].x
             dy = raw[-2].y - raw[-1].y
         ln = math.hypot(dx, dy) or 1
-        return (dx/ln, dy/ln)
+        return (dx / ln, dy / ln)
     return None
 
 
@@ -2242,28 +2278,35 @@ def resolve_chain(elems, element_profiles=None):
 
     # 貪欲にチェーンを構築
     remaining = list(elems)
-    chain     = [first]
+    chain = [first]
     rev_flags = [first_rev]
     remaining.remove(first)
 
     while remaining:
         last_elem = chain[-1]
-        last_rev  = rev_flags[-1]
-        ls, le    = pts[id(last_elem)]
-        cur_end   = le if not last_rev else ls
+        last_rev = rev_flags[-1]
+        ls, le = pts[id(last_elem)]
+        cur_end = le if not last_rev else ls
 
-        best = None; best_rev = False; best_d = float('inf')
+        best = None
+        best_rev = False
+        best_d = float('inf')
         for cand in remaining:
             cs, ce = pts[id(cand)]
             d_fwd = _pt_dist(cur_end, cs)
             d_rev = _pt_dist(cur_end, ce)
             if d_fwd < best_d:
-                best_d = d_fwd; best = cand; best_rev = False
+                best_d = d_fwd
+                best = cand
+                best_rev = False
             if d_rev < best_d:
-                best_d = d_rev; best = cand; best_rev = True
+                best_d = d_rev
+                best = cand
+                best_rev = True
 
         if best is None or best_d > SNAP_TOL * 10:
-            best = remaining[0]; best_rev = False
+            best = remaining[0]
+            best_rev = False
 
         chain.append(best)
         rev_flags.append(best_rev)

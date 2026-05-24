@@ -13,6 +13,13 @@ PySide6 を使用するため QApplication が必要。
   [C1]   C1 カバレッジを高めるための追加試験
 """
 from __future__ import annotations
+from canvas import Canvas, qp, Handle, HIT_DIST, HANDLE_RADIUS
+from models import (
+    Vec2, Line, Segment, Circle, Arc, Clothoid, Scene, LineConnection,
+)
+from PySide6.QtGui import QColor
+from PySide6.QtCore import QPointF
+from PySide6.QtWidgets import QApplication
 import math
 import sys
 import os
@@ -20,24 +27,17 @@ import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-import pytest
-from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QPointF
-from PySide6.QtGui import QColor
 
 _app = QApplication.instance() or QApplication(sys.argv)
-
-from models import (
-    Vec2, Line, Segment, Circle, Arc, Clothoid, Scene, LineConnection,
-)
-from canvas import Canvas, qp, Handle, HIT_DIST, HANDLE_RADIUS
 
 
 def approx(a, b, tol=1e-6):
     return abs(a - b) < tol
 
+
 def vec_approx(v1: Vec2, v2: Vec2, tol=1e-6):
     return approx(v1.x, v2.x, tol) and approx(v1.y, v2.y, tol)
+
 
 def make_canvas():
     sc = Scene()
@@ -45,6 +45,7 @@ def make_canvas():
     c._scale = 1.0
     c._offset = Vec2(500.0, 500.0)  # y反転後も正のスクリーン座標になるよう中心を設定
     return c, sc
+
 
 def sw(c, wx, wy):
     """ワールド座標 (wx,wy) に対応するスクリーン座標 Vec2 を返す。"""
@@ -85,7 +86,7 @@ class TestConstants:
     # [仕様] モード定数の値
     def test_mode_constants(self):
         assert Canvas.MODE_SELECT == "select"
-        assert Canvas.MODE_LINE   == "line"
+        assert Canvas.MODE_LINE == "line"
         assert Canvas.MODE_CIRCLE == "circle"
 
 
@@ -176,14 +177,17 @@ class TestDistPointSegment:
 
     # [境界] 始点・終点と一致
     def test_at_start(self):
-        assert approx(Canvas._dist_point_segment(Vec2(0, 0), Vec2(0, 0), Vec2(10, 0)), 0.0)
+        assert approx(Canvas._dist_point_segment(
+            Vec2(0, 0), Vec2(0, 0), Vec2(10, 0)), 0.0)
 
     def test_at_end(self):
-        assert approx(Canvas._dist_point_segment(Vec2(10, 0), Vec2(0, 0), Vec2(10, 0)), 0.0)
+        assert approx(Canvas._dist_point_segment(
+            Vec2(10, 0), Vec2(0, 0), Vec2(10, 0)), 0.0)
 
     # [境界] 線分上の点（距離 0）
     def test_on_segment(self):
-        assert approx(Canvas._dist_point_segment(Vec2(5, 0), Vec2(0, 0), Vec2(10, 0)), 0.0)
+        assert approx(Canvas._dist_point_segment(
+            Vec2(5, 0), Vec2(0, 0), Vec2(10, 0)), 0.0)
 
     # [エッジ] 縮退した線分（a == b）→ 点 a からの距離
     def test_degenerate(self):
@@ -349,16 +353,19 @@ class TestHitPolyline:
 class TestHitSegmentLine:
     def test_hit(self):
         c, _ = make_canvas()
-        assert c._hit_segment_line(Vec2(0, 0), Vec2(10, 0), Vec2(5, 2), 3.0) is True
+        assert c._hit_segment_line(
+            Vec2(0, 0), Vec2(10, 0), Vec2(5, 2), 3.0) is True
 
     def test_miss(self):
         c, _ = make_canvas()
-        assert c._hit_segment_line(Vec2(0, 0), Vec2(10, 0), Vec2(5, 10), 3.0) is False
+        assert c._hit_segment_line(Vec2(0, 0), Vec2(
+            10, 0), Vec2(5, 10), 3.0) is False
 
     # [境界] ちょうど端点でヒット
     def test_at_endpoint(self):
         c, _ = make_canvas()
-        assert c._hit_segment_line(Vec2(0, 0), Vec2(10, 0), Vec2(0, 0), 0.1) is True
+        assert c._hit_segment_line(
+            Vec2(0, 0), Vec2(10, 0), Vec2(0, 0), 0.1) is True
 
 
 # ══════════════════════════════════════════════════════════════
@@ -721,7 +728,7 @@ class TestColorFor:
         ln = Line(Vec2(0, 0), Vec2(10, 0))
         sc.add_line(ln)
         c._selected = [ln]
-        c._hovered  = ln
+        c._hovered = ln
         col_sel = c._color_for(ln, QColor('blue'))
         c._selected = []
         col_hov = c._color_for(ln, QColor('blue'))
@@ -738,7 +745,8 @@ class TestConnectPolyline:
         c, sc = make_canvas()
         a = Line(Vec2(0, 0), Vec2(10, 0))
         b = Line(Vec2(10, -5), Vec2(10, 5))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         c._connect_polyline(a, b)
         assert a.connection is not None
         assert a.connection is b.connection
@@ -749,7 +757,8 @@ class TestConnectPolyline:
         c, sc = make_canvas()
         a = Line(Vec2(0, 0), Vec2(10, 0))
         b = Line(Vec2(0, 1), Vec2(10, 1))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         c._connect_polyline(a, b)
         assert a.connection is None
         assert b.connection is None
@@ -759,7 +768,8 @@ class TestConnectPolyline:
         c, sc = make_canvas()
         a = Line(Vec2(0, 0), Vec2(20, 0))
         b = Line(Vec2(10, -10), Vec2(10, 10))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         c._connect_polyline(a, b)
         assert a.connection is not None
         sp = a.connection.shared_point
@@ -772,7 +782,8 @@ class TestDisconnectLines:
         c, sc = make_canvas()
         a = Line(Vec2(0, 0), Vec2(10, 0))
         b = Line(Vec2(10, -5), Vec2(10, 5))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         c._connect_polyline(a, b)
         assert a.connection is not None
         c.disconnect_lines(a, b)
@@ -784,7 +795,8 @@ class TestDisconnectLines:
         c, sc = make_canvas()
         a = Line(Vec2(0, 0), Vec2(10, 0))
         b = Line(Vec2(0, 1), Vec2(10, 1))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         c.disconnect_lines(a, b)  # 例外にならない
 
 
@@ -794,7 +806,8 @@ class TestSmoothConnect:
         c, sc = make_canvas()
         a = Line(Vec2(0, 0), Vec2(10, 0))
         b = Line(Vec2(10, 0), Vec2(20, 5))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         assert c.smooth_connect(a, b) is False
 
     # [仕様] 平行直線（交点なし）→ False
@@ -806,7 +819,8 @@ class TestSmoothConnect:
         b = Line(Vec2(0, 1), Vec2(10, 1))
         seg_b = Segment(b, 0.0, 1.0)
         b.segments.append(seg_b)
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         assert c.smooth_connect(a, b) is False
 
     # [仕様] 交差する 2 直線 → True（Circle と 2 本の Clothoid が生成される）
@@ -818,7 +832,8 @@ class TestSmoothConnect:
         b = Line(Vec2(0, -50), Vec2(10, 50))
         seg_b = Segment(b, 0.0, 1.0)
         b.segments.append(seg_b)
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         result = c.smooth_connect(a, b)
         if result:
             assert len(sc.circles) >= 1
@@ -879,7 +894,8 @@ class TestRebuildHandles:
         c, sc = make_canvas()
         a = Line(Vec2(0, 0), Vec2(10, 0))
         b = Line(Vec2(10, -5), Vec2(10, 5))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         c._connect_polyline(a, b)
         c.set_selection([a])
         tags = [h.tag for h in c._handles]
@@ -969,7 +985,8 @@ class TestLineClick:
         assert vec_approx(c._line_first_pt, Vec2(5, 5))
         assert len(sc.lines) == 0
 
-    # [仕様] 2回目クリック: Line+Segment がシーンに追加され _last_line と _line_first_pt=q が設定される（L1147-1163）
+    # [仕様] 2回目クリック: Line+Segment がシーンに追加され
+    # _last_line と _line_first_pt=q が設定される（L1147-1163）
     def test_second_click_creates_line_and_segment(self):
         """[仕様] 2回目クリックで Line(p,q)+Segment(0,1) がシーンに追加される
         （詳細設計書 §3 直線モード：2クリック目で確定）。"""
@@ -1008,7 +1025,8 @@ class TestLineClick:
         c._line_click(Vec2(5, 5))  # same point
         assert len(sc.lines) == 1  # 縮退でも追加される
 
-    # [C1] MODE_LINE で Escape → _line_first_pt がリセットされる（keyPressEvent → L1118-1122）
+    # [C1] MODE_LINE で Escape → _line_first_pt がリセットされる
+    # （keyPressEvent → L1118-1122）
     def test_escape_resets_state(self):
         """[C1] Escape キーで直線モードの描画中状態がリセットされる（L1118-1122）。"""
         from PySide6.QtGui import QKeyEvent
@@ -1108,7 +1126,8 @@ class TestDeleteSelected:
 
     # [C1] 複数種を同時削除: Segment と Arc を同時に選択して削除（L1435-1445 の loop）
     def test_delete_mixed_types(self):
-        """[C1] Segment と Arc を同時選択して _delete_selected すると両方除去される（L1435-1445 のループ）。"""
+        """[C1] Segment と Arc を同時選択して _delete_selected すると
+        両方除去される（L1435-1445 のループ）。"""
         c, sc = make_canvas()
         ln = Line(Vec2(0, 0), Vec2(10, 0))
         seg = Segment(ln, 0.0, 1.0)
@@ -1200,7 +1219,7 @@ class TestDoDrag:
         c, sc = make_canvas()
         ci = Circle(Vec2(0, 0), 10.0)
         ci.bisector_origin = Vec2(0, 0)
-        ci.bisector_dir    = Vec2(0, 1)   # y 軸方向
+        ci.bisector_dir = Vec2(0, 1)   # y 軸方向
         sc.add_circle(ci)
         c._drag_obj = ci
         c._drag_tag = "circle_center"
@@ -1272,7 +1291,8 @@ class TestDoDrag:
         b = Line(Vec2(5, -5), Vec2(5, 5))
         seg_b = Segment(b, 0.0, 1.0)
         b.segments.append(seg_b)
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         c._connect_polyline(a, b)
         conn = a.connection
         assert conn is not None
@@ -1304,7 +1324,8 @@ class TestDoDrag:
         # intersection at (0,0)
         a = Line(Vec2(0, 0), Vec2(10, 0))
         b = Line(Vec2(0, -5), Vec2(0, 5))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         # 直接 LineConnection を生成して a_end_is_shared=False を設定
         conn = LineConnection("polyline", a, b, Vec2(0, 0),
                               a_end_is_shared=False, b_start_is_shared=True)
@@ -1329,7 +1350,8 @@ class TestDoDrag:
         # intersection at (0,0)
         a = Line(Vec2(-5, 0), Vec2(5, 0))
         b = Line(Vec2(0, 0), Vec2(0, 10))
-        sc.add_line(a); sc.add_line(b)
+        sc.add_line(a)
+        sc.add_line(b)
         # b_start_is_shared=False: lb.ref_end が共有点
         conn = LineConnection("polyline", a, b, Vec2(0, 0),
                               a_end_is_shared=True, b_start_is_shared=False)

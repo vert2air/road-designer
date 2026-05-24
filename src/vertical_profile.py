@@ -16,6 +16,7 @@ from typing import Optional
 
 from models import new_id, Segment, Arc, Clothoid
 
+
 def plan_length_of(obj) -> float:
     """平面線形要素の平面長（道路上の長さ）を型に依らず返す。
 
@@ -80,14 +81,14 @@ class ElementProfile:
     vertical_curves : list[VerticalCurve]
         縦断曲線のリスト。
     """
-    id:           int   = field(default_factory=new_id)
-    element_id:   int   = -1    # 対応する Segment/Arc/Clothoid の id
-    element_type: str   = ""    # 'segment' | 'arc' | 'clothoid'
-    plan_length:  float = 0.0   # この要素の平面長 [m]
+    id: int = field(default_factory=new_id)
+    element_id: int = -1    # 対応する Segment/Arc/Clothoid の id
+    element_type: str = ""    # 'segment' | 'arc' | 'clothoid'
+    plan_length: float = 0.0   # この要素の平面長 [m]
     reversed_flag: bool = False  # True なら終点→始点の向きで使われている
-    elev_start:   float = 0.0   # 始端標高 [m]（正順の始点側）
-    elev_end:     float = 0.0   # 終端標高 [m]（隣接要素と共有）
-    grade_lines:     list['GradeLine']     = field(default_factory=list)
+    elev_start: float = 0.0   # 始端標高 [m]（正順の始点側）
+    elev_end: float = 0.0   # 終端標高 [m]（隣接要素と共有）
+    grade_lines: list['GradeLine'] = field(default_factory=list)
     vertical_curves: list['VerticalCurve'] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -101,14 +102,14 @@ class ElementProfile:
             grade_lines / vertical_curves は各要素の to_dict() リスト。
         """
         return {
-            "id":              self.id,
-            "element_id":      self.element_id,
-            "element_type":    self.element_type,
-            "plan_length":     self.plan_length,
-            "reversed_flag":   self.reversed_flag,
-            "elev_start":      self.elev_start,
-            "elev_end":        self.elev_end,
-            "grade_lines":     [g.to_dict() for g in self.grade_lines],
+            "id": self.id,
+            "element_id": self.element_id,
+            "element_type": self.element_type,
+            "plan_length": self.plan_length,
+            "reversed_flag": self.reversed_flag,
+            "elev_start": self.elev_start,
+            "elev_end": self.elev_end,
+            "grade_lines": [g.to_dict() for g in self.grade_lines],
             "vertical_curves": [v.to_dict() for v in self.vertical_curves],
         }
 
@@ -129,15 +130,15 @@ class ElementProfile:
             GradeLine.from_dict / VerticalCurve.from_dict で復元される。
         """
         ep = ElementProfile()
-        ep.id            = d.get("id", new_id())
-        ep.element_id    = d.get("element_id", -1)
-        ep.element_type  = d.get("element_type", "")
-        ep.plan_length   = d.get("plan_length", 0.0)
+        ep.id = d.get("id", new_id())
+        ep.element_id = d.get("element_id", -1)
+        ep.element_type = d.get("element_type", "")
+        ep.plan_length = d.get("plan_length", 0.0)
         ep.reversed_flag = d.get("reversed_flag", False)
-        ep.elev_start    = d.get("elev_start", 0.0)
-        ep.elev_end      = d.get("elev_end", 0.0)
-        ep.grade_lines   = [GradeLine.from_dict(g)
-                            for g in d.get("grade_lines", [])]
+        ep.elev_start = d.get("elev_start", 0.0)
+        ep.elev_end = d.get("elev_end", 0.0)
+        ep.grade_lines = [GradeLine.from_dict(g)
+                          for g in d.get("grade_lines", [])]
         ep.vertical_curves = [VerticalCurve.from_dict(v)
                               for v in d.get("vertical_curves", [])]
         return ep
@@ -199,7 +200,7 @@ class VerticalAlignment:
     """
     id: int = field(default_factory=new_id)
     nickname: str = ""
-    grade_lines:     list['GradeLine']     = field(default_factory=list)
+    grade_lines: list['GradeLine'] = field(default_factory=list)
     vertical_curves: list['VerticalCurve'] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -212,9 +213,9 @@ class VerticalAlignment:
             grade_lines / vertical_curves は各要素の to_dict() リスト。
         """
         return {
-            "id":              self.id,
-            "nickname":        self.nickname,
-            "grade_lines":     [g.to_dict() for g in self.grade_lines],
+            "id": self.id,
+            "nickname": self.nickname,
+            "grade_lines": [g.to_dict() for g in self.grade_lines],
             "vertical_curves": [v.to_dict() for v in self.vertical_curves],
         }
 
@@ -234,13 +235,15 @@ class VerticalAlignment:
             復元されたインスタンス。
         """
         va = VerticalAlignment()
-        va.id             = d.get("id", new_id())
-        va.nickname       = d.get("nickname", "")
-        va.grade_lines    = [GradeLine.from_dict(g)
-                             for g in d.get("grade_lines", [])]
+        va.id = d.get("id", new_id())
+        va.nickname = d.get("nickname", "")
+        va.grade_lines = [GradeLine.from_dict(g)
+                          for g in d.get("grade_lines", [])]
         va.vertical_curves = [VerticalCurve.from_dict(v)
                               for v in d.get("vertical_curves", [])]
         return va
+
+
 @dataclass
 class GradeLine:
     """一定勾配の直線区間（縦断線形の基本要素）。
@@ -263,8 +266,8 @@ class GradeLine:
     id: int = field(default_factory=new_id)
     dist_start: float = 0.0
     elev_start: float = 0.0
-    dist_end:   float = 100.0
-    elev_end:   float = 0.0
+    dist_end: float = 100.0
+    elev_end: float = 0.0
     next_curve: Optional['VerticalCurve'] = None
     prev_curve: Optional['VerticalCurve'] = None
 
@@ -314,8 +317,10 @@ class GradeLine:
         """
         g = GradeLine()
         g.id = d["id"]
-        g.dist_start = d["dist_start"]; g.elev_start = d["elev_start"]
-        g.dist_end   = d["dist_end"];   g.elev_end   = d["elev_end"]
+        g.dist_start = d["dist_start"]
+        g.elev_start = d["elev_start"]
+        g.dist_end = d["dist_end"]
+        g.elev_end = d["elev_end"]
         return g
 
 
@@ -407,7 +412,8 @@ class VerticalCurve:
         x = dist - self.vpc_dist
         if x < 0 or x > self.length:
             return float('nan')
-        return self.vpc_elev + self.g1 / 100 * x + (self.g2 - self.g1) / (2 * self.length) / 100 * x ** 2
+        return (self.vpc_elev + self.g1 / 100 * x
+                + (self.g2 - self.g1) / (2 * self.length) / 100 * x ** 2)
 
     def to_dict(self) -> dict:
         """すべてのフィールドを含む辞書に変換する（JSON シリアライズ用）。
@@ -418,9 +424,12 @@ class VerticalCurve:
             id・pvi_dist・pvi_elev・g1・g2・length・prev_line_id・
             next_line_id をキーとする辞書。
         """
-        return {"id": self.id, "pvi_dist": self.pvi_dist, "pvi_elev": self.pvi_elev,
-                "g1": self.g1, "g2": self.g2, "length": self.length,
-                "prev_line_id": self.prev_line_id, "next_line_id": self.next_line_id}
+        return {
+            "id": self.id, "pvi_dist": self.pvi_dist,
+            "pvi_elev": self.pvi_elev,
+            "g1": self.g1, "g2": self.g2, "length": self.length,
+            "prev_line_id": self.prev_line_id,
+            "next_line_id": self.next_line_id}
 
     @staticmethod
     def from_dict(d: dict) -> 'VerticalCurve':
@@ -456,5 +465,3 @@ def make_empty_profile() -> 'ElementProfile':
         新規インスタンス。
     """
     return ElementProfile()
-
-

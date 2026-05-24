@@ -162,7 +162,8 @@ class TestSpec6_7_UndoRedo:
         vw, canvas = _make_vw(qtbot)
         assert canvas._undo_stack.maxlen == 50
 
-    def test_undo_stack_is_independent_of_main_canvas(self, make_window_qt, qtbot):
+    def test_undo_stack_is_independent_of_main_canvas(
+            self, make_window_qt, qtbot):
         """[6.7] 縦断線形の Undo スタックはメイン画面のスタックとは独立している。"""
         vw, canvas = _make_vw(qtbot)
         w = make_window_qt()

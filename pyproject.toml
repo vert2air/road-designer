@@ -11,7 +11,9 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "autopep8>=2.3.2",
     "coverage>=7.13.5",
+    "flake8>=7.3.0",
     "pytest>=9.0.3",
     "pytest-cov>=4.0",
     "pytest-qt>=4.4",
@@ -41,3 +43,4 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "raise NotImplementedError",
 ]
+

@@ -11,15 +11,15 @@ import math
 from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QDoubleSpinBox, QGroupBox, QScrollArea, QFrame, QLineEdit,
-    QCheckBox, QComboBox, QSizePolicy, QMenu, QApplication,
+    QGroupBox, QScrollArea, QFrame,
+    QComboBox,
 )
 from PySide6.QtCore import Qt, Signal
-from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
+from models import (Line, Segment, Circle, Arc, Clothoid, Scene,
                     tangent_at, entry_tangent, SNAP_TOL)
-from _prop_builder import (
-    PropBuilderMixin,
-    # backward-compat re-export（テストが right_panel から直接 import するため）
+from _prop_builder import PropBuilderMixin
+# backward-compat re-export（テストが right_panel から直接 import するため）
+from _prop_builder import (  # noqa: F401
     _encode_point_pair, _decode_point_pair,
     _clipboard_has_point_pair, _copy_point_pair, _paste_point_pair,
     _transform_pair,
@@ -64,20 +64,20 @@ class RightPanel(QWidget, PropBuilderMixin):
     scene_changed : Signal()
         シーン変更を通知する。
     """
-    request_smooth_connect   = Signal(object, object)   # line_a, line_b
+    request_smooth_connect = Signal(object, object)   # line_a, line_b
     request_polyline_connect = Signal(object, object)
-    request_disconnect       = Signal(object, object)
-    request_add_clothoid     = Signal(object, object)   # line, circle
-    request_delete_clothoid  = Signal(object)
-    request_flip_clothoid    = Signal(object)
-    request_select           = Signal(list)
-    request_delete           = Signal(list)   # 削除要求
-    request_set_offset       = Signal(object, object, object)  # line, ci_a, ci_b
-    request_clear_offset     = Signal(object)                  # line
-    request_add_arcs         = Signal(object, list)            # circle, [Arc]
-    request_undo             = Signal()                        # Undo 要求
-    request_push_undo        = Signal()                        # プロパティ変更前の状態保存
-    scene_changed            = Signal()
+    request_disconnect = Signal(object, object)
+    request_add_clothoid = Signal(object, object)   # line, circle
+    request_delete_clothoid = Signal(object)
+    request_flip_clothoid = Signal(object)
+    request_select = Signal(list)
+    request_delete = Signal(list)   # 削除要求
+    request_set_offset = Signal(object, object, object)  # line, ci_a, ci_b
+    request_clear_offset = Signal(object)                  # line
+    request_add_arcs = Signal(object, list)            # circle, [Arc]
+    request_undo = Signal()                        # Undo 要求
+    request_push_undo = Signal()                        # プロパティ変更前の状態保存
+    scene_changed = Signal()
 
     def __init__(self, scene: Scene, parent=None):
         """RightPanel を初期化する。
@@ -252,7 +252,8 @@ class RightPanel(QWidget, PropBuilderMixin):
         から呼ばれる。
         """
         cb = QComboBox()
-        cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        cb.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         cb.setMaximumWidth(240)
         self._nick_combos.append(cb)
         self._nick_combo_area.addWidget(cb)
@@ -418,7 +419,6 @@ class RightPanel(QWidget, PropBuilderMixin):
         list[Vec2]
             [始点, 終点]。Clothoid が無効または非対応型のとき空リスト。
         """
-        from models import Vec2
         if isinstance(obj, Segment):
             return [obj.start, obj.end]
         if isinstance(obj, Arc):
@@ -427,7 +427,6 @@ class RightPanel(QWidget, PropBuilderMixin):
             if obj.is_valid and obj._line_pt and obj._circle_pt:
                 return [obj._line_pt, obj._circle_pt]
         return []
-
 
     # ── 高優先候補の厳密な隣接判定 ─────────────────────────────────────
 
@@ -491,15 +490,19 @@ class RightPanel(QWidget, PropBuilderMixin):
             if abs(oc.off_a) < 1e-9 and ca is not None and a_line is not None:
                 segs_a = a_line.segments if a_line else []
                 arcs_a = ca.arcs if ca else []
-                pair_obj_a = any(obj_a is s for s in segs_a) or any(obj_a is r for r in arcs_a)
-                pair_obj_b = any(obj_b is s for s in segs_a) or any(obj_b is r for r in arcs_a)
+                pair_obj_a = any(obj_a is s for s in segs_a) or any(
+                    obj_a is r for r in arcs_a)
+                pair_obj_b = any(obj_b is s for s in segs_a) or any(
+                    obj_b is r for r in arcs_a)
                 if pair_obj_a and pair_obj_b:
                     return True
             if abs(oc.off_b) < 1e-9 and cb is not None and a_line is not None:
                 segs_b = a_line.segments if a_line else []
                 arcs_b = cb.arcs if cb else []
-                pair_obj_a = any(obj_a is s for s in segs_b) or any(obj_a is r for r in arcs_b)
-                pair_obj_b = any(obj_b is s for s in segs_b) or any(obj_b is r for r in arcs_b)
+                pair_obj_a = any(obj_a is s for s in segs_b) or any(
+                    obj_a is r for r in arcs_b)
+                pair_obj_b = any(obj_b is s for s in segs_b) or any(
+                    obj_b is r for r in arcs_b)
                 if pair_obj_a and pair_obj_b:
                     return True
 
@@ -534,8 +537,11 @@ class RightPanel(QWidget, PropBuilderMixin):
         """
         my_pts = self._endpoints_of(obj)
         if exclude_pt is not None:
-            my_pts = [p for p in my_pts
-                      if math.hypot(p.x - exclude_pt.x, p.y - exclude_pt.y) > self.SNAP_TOL]
+            my_pts = [
+                p for p in my_pts
+                if math.hypot(
+                    p.x - exclude_pt.x, p.y - exclude_pt.y
+                ) > self.SNAP_TOL]
         if not my_pts:
             return []
 
@@ -555,15 +561,19 @@ class RightPanel(QWidget, PropBuilderMixin):
             if len(cand_pts) < 2:
                 continue
             cand_start = cand_pts[0]
-            cand_end   = cand_pts[-1]
+            cand_end = cand_pts[-1]
             for mp in my_pts:
                 matched = False
-                if math.hypot(mp.x - cand_start.x, mp.y - cand_start.y) < self.ADJ_TOL:
+                if (math.hypot(
+                        mp.x - cand_start.x, mp.y - cand_start.y)
+                        < self.ADJ_TOL):
                     if id(cand) not in seen:
                         result.append((cand, True))   # 始点で接続 → 順方向
                         seen.add(id(cand))
                     matched = True
-                elif math.hypot(mp.x - cand_end.x, mp.y - cand_end.y) < self.ADJ_TOL:
+                elif (math.hypot(
+                        mp.x - cand_end.x, mp.y - cand_end.y)
+                        < self.ADJ_TOL):
                     if id(cand) not in seen:
                         result.append((cand, False))  # 終点で接続 → 逆方向
                         seen.add(id(cand))
@@ -590,7 +600,8 @@ class RightPanel(QWidget, PropBuilderMixin):
             X と SNAP_TOL を超えて離れた端点。両端点が共有点の場合は None。
         """
         for p in self._endpoints_of(obj):
-            if math.hypot(p.x - shared_pt.x, p.y - shared_pt.y) > self.SNAP_TOL:
+            if (math.hypot(p.x - shared_pt.x, p.y - shared_pt.y)
+                    > self.SNAP_TOL):
                 return p
         return None
 
@@ -626,17 +637,28 @@ class RightPanel(QWidget, PropBuilderMixin):
         list[str]
             順序: 直線 → 線分 → 円 → 円弧 → クロソイド。
         """
-        lines_items    = sorted([f"{self.scene.get_nickname(ln.id,'line')} [直線#{ln.id}]"
-                                  for ln in self.scene.lines])
-        seg_items      = sorted([f"線分#{seg.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分#{seg.id}]"
-                                  for ln in self.scene.lines for seg in ln.segments])
-        circle_items   = sorted([f"{self.scene.get_nickname(ci.id,'circle')} [円#{ci.id}]"
-                                  for ci in self.scene.circles])
-        arc_items      = sorted([f"円弧#{arc.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧#{arc.id}]"
-                                  for ci in self.scene.circles for arc in ci.arcs])
-        clothoid_items = sorted([f"{self.scene.get_nickname(clo.id,'clothoid')} [クロソイド#{clo.id}]"
-                                  for clo in self.scene.clothoids])
-        return ["(なし)"] + lines_items + seg_items + circle_items + arc_items + clothoid_items
+        lines_items = sorted([
+            f"{self.scene.get_nickname(ln.id,'line')} [直線#{ln.id}]"
+            for ln in self.scene.lines])
+        seg_items = sorted([
+            f"線分#{seg.id}"
+            f" (直線:{self.scene.get_nickname(ln.id,'line')})"
+            f" [線分#{seg.id}]"
+            for ln in self.scene.lines for seg in ln.segments])
+        circle_items = sorted([
+            f"{self.scene.get_nickname(ci.id,'circle')} [円#{ci.id}]"
+            for ci in self.scene.circles])
+        arc_items = sorted([
+            f"円弧#{arc.id}"
+            f" (円:{self.scene.get_nickname(ci.id,'circle')})"
+            f" [円弧#{arc.id}]"
+            for ci in self.scene.circles for arc in ci.arcs])
+        clothoid_items = sorted([
+            f"{self.scene.get_nickname(clo.id,'clothoid')}"
+            f" [クロソイド#{clo.id}]"
+            for clo in self.scene.clothoids])
+        return (["(なし)"] + lines_items + seg_items
+                + circle_items + arc_items + clothoid_items)
 
     def _compute_next_forward(self, prev_obj, prev_is_fwd, next_obj) -> bool:
         """前の図形の出口接線と次の図形の入口方向から [順]/[逆] ラベルを判定する。
@@ -670,14 +692,16 @@ class RightPanel(QWidget, PropBuilderMixin):
             return True
 
         # 前の図形の出口接線
-        exit_pt  = prev_pts[-1] if prev_is_fwd else prev_pts[0]
+        exit_pt = prev_pts[-1] if prev_is_fwd else prev_pts[0]
         exit_tan = self._tangent_at(prev_obj, at_end=prev_is_fwd)
         if not prev_is_fwd:
             exit_tan = (-exit_tan[0], -exit_tan[1])
 
         # 共有点 = 次の図形の始点側か終点側か
-        d_start = math.hypot(exit_pt.x-next_pts[0].x,  exit_pt.y-next_pts[0].y)
-        d_end   = math.hypot(exit_pt.x-next_pts[-1].x, exit_pt.y-next_pts[-1].y)
+        d_start = math.hypot(
+            exit_pt.x - next_pts[0].x, exit_pt.y - next_pts[0].y)
+        d_end = math.hypot(
+            exit_pt.x - next_pts[-1].x, exit_pt.y - next_pts[-1].y)
         connect_at_start = d_start < d_end
 
         # 次の図形の「共有点→近傍点」ベクトル
@@ -685,7 +709,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         if entry_tan is None:
             return True
 
-        dot = exit_tan[0]*entry_tan[0] + exit_tan[1]*entry_tan[1]
+        dot = exit_tan[0] * entry_tan[0] + exit_tan[1] * entry_tan[1]
         # exit_tan: 前の図形の進行方向（出口での接線）
         # entry_tan: 次の図形の「共有点→近傍点」方向
         # dot > 0 → 同方向（前の図形の向きと次の図形の向きが一致）= [順]
@@ -751,8 +775,10 @@ class RightPanel(QWidget, PropBuilderMixin):
         if not prev_pts or not next_pts:
             return True
         exit_pt = prev_pts[-1] if prev_is_fwd else prev_pts[0]
-        d_start = math.hypot(exit_pt.x-next_pts[0].x,  exit_pt.y-next_pts[0].y)
-        d_end   = math.hypot(exit_pt.x-next_pts[-1].x, exit_pt.y-next_pts[-1].y)
+        d_start = math.hypot(
+            exit_pt.x - next_pts[0].x, exit_pt.y - next_pts[0].y)
+        d_end = math.hypot(
+            exit_pt.x - next_pts[-1].x, exit_pt.y - next_pts[-1].y)
         return d_start < d_end   # 始点で接続 → 正順(True)
 
     def _refresh_nick_combos(self):
@@ -769,10 +795,10 @@ class RightPanel(QWidget, PropBuilderMixin):
         # is_forward を追跡（チェーン方向の管理）
         is_forward = [True] * len(self._nick_combos)
         for i in range(1, len(selected_objs)):
-            prev, cur = selected_objs[i-1], selected_objs[i]
+            prev, cur = selected_objs[i - 1], selected_objs[i]
             if prev is None or cur is None:
                 break
-            is_forward[i] = self._next_is_forward(prev, is_forward[i-1], cur)
+            is_forward[i] = self._next_is_forward(prev, is_forward[i - 1], cur)
 
         for i, cb in enumerate(self._nick_combos):
             cur_text = cb.currentText()
@@ -787,14 +813,19 @@ class RightPanel(QWidget, PropBuilderMixin):
                     cb.addItems(all_items)
                 else:
                     if i == 1:
-                        adj = self._adjacent_from_obj(prev_obj, excludes=selected_objs)
+                        adj = self._adjacent_from_obj(
+                            prev_obj, excludes=selected_objs)
                     else:
                         prev_pts = self._endpoints_of(prev_obj)
-                        exit_pt  = prev_pts[-1] if is_forward[i-1] else prev_pts[0]
-                        adj = self._adjacent_from_pt(exit_pt, excludes=selected_objs,
-                                                      prev_obj=prev_obj)
+                        exit_pt = (
+                            prev_pts[-1] if is_forward[i - 1]
+                            else prev_pts[0])
+                        adj = self._adjacent_from_pt(
+                            exit_pt, excludes=selected_objs,
+                            prev_obj=prev_obj)
                     cb.addItem("(なし)")
-                    self._fill_adjacent_items(cb, adj, prev_obj, is_forward[i-1], is_2nd=(i==1))
+                    self._fill_adjacent_items(
+                        cb, adj, prev_obj, is_forward[i - 1], is_2nd=(i == 1))
                     if adj:
                         cb.insertSeparator(cb.count())
                     for item in all_items:
@@ -826,7 +857,8 @@ class RightPanel(QWidget, PropBuilderMixin):
             cb.setCurrentIndex(found if found >= 0 else 0)
             cb.blockSignals(False)
 
-    def _fill_adjacent_items(self, cb, adj, prev_obj, prev_is_fwd, is_2nd: bool):
+    def _fill_adjacent_items(
+            self, cb, adj, prev_obj, prev_is_fwd, is_2nd: bool):
         """隣接候補リストをコンボボックスに追加する。
 
         高優先候補を追加した後、道なり条件を満たす場合は
@@ -883,7 +915,7 @@ class RightPanel(QWidget, PropBuilderMixin):
             road_follow_label = "[道なり] " + labels[0][0]
         elif len(labels) > 1:
             # 複数候補で [順] が1件のみ
-            fwd_labels = [(l, f) for l, f in labels if f]
+            fwd_labels = [(ln, f) for ln, f in labels if f]
             if len(fwd_labels) == 1:
                 road_follow_label = "[道なり] " + fwd_labels[0][0]
 
@@ -907,7 +939,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         if not prev_pts or not cand_pts:
             return True
 
-        end_pt   = prev_pts[-1]   # prev_obj の終点
+        end_pt = prev_pts[-1]   # prev_obj の終点
         start_pt = prev_pts[0]    # prev_obj の始点
 
         # cand の端点が prev_obj の終点に近い → 正順
@@ -917,25 +949,29 @@ class RightPanel(QWidget, PropBuilderMixin):
 
         # cand の端点が prev_obj の始点に近い → 逆順
         for cp in cand_pts:
-            if math.hypot(cp.x - start_pt.x, cp.y - start_pt.y) < self.SNAP_TOL:
+            if (math.hypot(cp.x - start_pt.x, cp.y - start_pt.y)
+                    < self.SNAP_TOL):
                 return False
 
         # Clothoid の line_pt/circle_pt が prev_obj に接続している場合も考慮
         if isinstance(prev_obj, Clothoid) and prev_obj.is_valid:
             if prev_obj._circle_pt:
                 for cp in cand_pts:
-                    if math.hypot(cp.x - prev_obj._circle_pt.x,
-                                 cp.y - prev_obj._circle_pt.y) < self.SNAP_TOL:
+                    if (math.hypot(
+                            cp.x - prev_obj._circle_pt.x,
+                            cp.y - prev_obj._circle_pt.y)
+                            < self.SNAP_TOL):
                         return True   # circle_pt 側 = 終点 = 正順で通過
 
         # prev_obj が Arc で cand が Clothoid の場合
-        if isinstance(cand, Clothoid) and cand.is_valid and isinstance(prev_obj, Arc):
+        if (isinstance(cand, Clothoid) and cand.is_valid
+                and isinstance(prev_obj, Arc)):
             if cand._circle_pt:
                 if math.hypot(cand._circle_pt.x - end_pt.x,
-                             cand._circle_pt.y - end_pt.y) < self.SNAP_TOL:
+                              cand._circle_pt.y - end_pt.y) < self.SNAP_TOL:
                     return True
                 if math.hypot(cand._circle_pt.x - start_pt.x,
-                             cand._circle_pt.y - start_pt.y) < self.SNAP_TOL:
+                              cand._circle_pt.y - start_pt.y) < self.SNAP_TOL:
                     return False
 
         return True  # デフォルト
@@ -969,7 +1005,9 @@ class RightPanel(QWidget, PropBuilderMixin):
         * Arc の端点に _circle_pt で接続するクロソイド
         * Segment の _line_pt に接するクロソイド（直線内部接点を含む）
         """
-        exclude_set = set(id(e) for e in excludes if e is not None) if excludes else set()
+        exclude_set = (
+            set(id(e) for e in excludes if e is not None)
+            if excludes else set())
         result = []
         seen = set()
 
@@ -989,11 +1027,13 @@ class RightPanel(QWidget, PropBuilderMixin):
         # obj が Clothoid の場合、接点に接する線分・円弧を追加で探す
         if isinstance(obj, Clothoid) and obj.is_valid:
             if obj._line_pt:
-                adj2 = self._adjacent_from_pt(obj._line_pt, excludes=excludes, prev_obj=obj)
+                adj2 = self._adjacent_from_pt(
+                    obj._line_pt, excludes=excludes, prev_obj=obj)
                 for cand, fwd, *_ in adj2:
                     add(cand, fwd)
             if obj._circle_pt:
-                adj3 = self._adjacent_from_pt(obj._circle_pt, excludes=excludes, prev_obj=obj)
+                adj3 = self._adjacent_from_pt(
+                    obj._circle_pt, excludes=excludes, prev_obj=obj)
                 for cand, fwd, *_ in adj3:
                     add(cand, fwd)
 
@@ -1007,8 +1047,10 @@ class RightPanel(QWidget, PropBuilderMixin):
                 clo_pts = self._endpoints_of(clo)
                 for pt in pts:
                     for cp in clo_pts:
-                        if math.hypot(pt.x - cp.x, pt.y - cp.y) < self.SNAP_TOL:
-                            fwd = (cp is clo_pts[0])  # line_pt側=True, circle_pt側=False
+                        if (math.hypot(pt.x - cp.x, pt.y - cp.y)
+                                < self.SNAP_TOL):
+                            # line_pt側=True, circle_pt側=False
+                            fwd = (cp is clo_pts[0])
                             add(clo, fwd)
 
         # obj が Segment の場合、同じ直線の線分 + クロソイドの接点も探す
@@ -1056,9 +1098,10 @@ class RightPanel(QWidget, PropBuilderMixin):
             ``is_forward=True``: cand の始点で接続（正順）。
             ``distance``: pt と接続端点の距離 [m]。
         """
-        exclude_set = set(id(e) for e in excludes if e is not None) if excludes else set()
+        exclude_set = (
+            set(id(e) for e in excludes if e is not None)
+            if excludes else set())
         result = []
-        seen = set()
 
         all_elems = []
         for ln in self.scene.lines:
@@ -1076,9 +1119,9 @@ class RightPanel(QWidget, PropBuilderMixin):
             if len(cand_pts) < 2:
                 continue
             d_start = math.hypot(pt.x - cand_pts[0].x, pt.y - cand_pts[0].y)
-            d_end   = math.hypot(pt.x - cand_pts[-1].x, pt.y - cand_pts[-1].y)
+            d_end = math.hypot(pt.x - cand_pts[-1].x, pt.y - cand_pts[-1].y)
             if d_start < self.ADJ_TOL:
-                raw_candidates.append((cand, True,  d_start))
+                raw_candidates.append((cand, True, d_start))
             elif d_end < self.ADJ_TOL:
                 raw_candidates.append((cand, False, d_end))
 
@@ -1096,15 +1139,16 @@ class RightPanel(QWidget, PropBuilderMixin):
                     d = math.hypot(pt.x - prev_obj._line_pt.x,
                                    pt.y - prev_obj._line_pt.y)
                     if abs(t - seg.t_start) < 1e-4:
-                        raw_candidates.append((seg, True,  d))
+                        raw_candidates.append((seg, True, d))
                     elif abs(t - seg.t_end) < 1e-4:
                         raw_candidates.append((seg, False, d))
                     else:
-                        raw_candidates.append((seg, True,  d))
+                        raw_candidates.append((seg, True, d))
                         raw_candidates.append((seg, False, d))
 
         # ── 親図形が異なる場合の絞り込み ─────────────────────────────
-        prev_parent = self._parent_of(prev_obj) if prev_obj is not None else None
+        prev_parent = self._parent_of(
+            prev_obj) if prev_obj is not None else None
 
         filtered = []
         for cand, fwd, dist in raw_candidates:
@@ -1132,7 +1176,8 @@ class RightPanel(QWidget, PropBuilderMixin):
             if is_same:
                 cp = self._parent_of(cand)
                 key = (id(cp), fwd)
-                if key not in same_parent_best or dist < same_parent_best[key][1]:
+                if (key not in same_parent_best
+                        or dist < same_parent_best[key][1]):
                     same_parent_best[key] = (cand, dist, fwd)
             else:
                 others.append((cand, fwd, dist))
@@ -1225,19 +1270,34 @@ class RightPanel(QWidget, PropBuilderMixin):
         import re as _re
         label = _re.sub(r'\s+[\d.]+\s*m$', '', label)
         for ln in self.scene.lines:
-            if f"{self.scene.get_nickname(ln.id, 'line')} [直線#{ln.id}]" == label:
+            ln_label = (
+                f"{self.scene.get_nickname(ln.id, 'line')} [直線#{ln.id}]")
+            if ln_label == label:
                 return ln
             for seg in ln.segments:
-                if f"線分#{seg.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分#{seg.id}]" == label:
+                seg_label = (
+                    f"線分#{seg.id}"
+                    f" (直線:{self.scene.get_nickname(ln.id,'line')})"
+                    f" [線分#{seg.id}]")
+                if seg_label == label:
                     return seg
         for ci in self.scene.circles:
-            if f"{self.scene.get_nickname(ci.id, 'circle')} [円#{ci.id}]" == label:
+            ci_label = (
+                f"{self.scene.get_nickname(ci.id, 'circle')} [円#{ci.id}]")
+            if ci_label == label:
                 return ci
             for arc in ci.arcs:
-                if f"円弧#{arc.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧#{arc.id}]" == label:
+                arc_label = (
+                    f"円弧#{arc.id}"
+                    f" (円:{self.scene.get_nickname(ci.id,'circle')})"
+                    f" [円弧#{arc.id}]")
+                if arc_label == label:
                     return arc
         for clo in self.scene.clothoids:
-            if f"{self.scene.get_nickname(clo.id, 'clothoid')} [クロソイド#{clo.id}]" == label:
+            clo_label = (
+                f"{self.scene.get_nickname(clo.id, 'clothoid')}"
+                f" [クロソイド#{clo.id}]")
+            if clo_label == label:
                 return clo
         return None
 
@@ -1258,7 +1318,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         scene : Scene
             現在の Scene オブジェクト。
         """
-        self.scene    = scene
+        self.scene = scene
         self._selected = selected
         self._sync_combos_to_selection(selected)  # まず選択図形をコンボに設定
         self._refresh_nick_combos()               # 設定後に次コンボの選択肢を更新
@@ -1331,14 +1391,24 @@ class RightPanel(QWidget, PropBuilderMixin):
             return f"{self.scene.get_nickname(obj.id, 'line')} [直線#{obj.id}]"
         if isinstance(obj, Segment):
             ln = obj.line
-            return f"線分#{obj.id} (直線:{self.scene.get_nickname(ln.id,'line')}) [線分#{obj.id}]"
+            return (
+                f"線分#{obj.id}"
+                f" (直線:{self.scene.get_nickname(ln.id,'line')})"
+                f" [線分#{obj.id}]")
         if isinstance(obj, Circle):
-            return f"{self.scene.get_nickname(obj.id, 'circle')} [円#{obj.id}]"
+            return (
+                f"{self.scene.get_nickname(obj.id, 'circle')}"
+                f" [円#{obj.id}]")
         if isinstance(obj, Arc):
             ci = obj.circle
-            return f"円弧#{obj.id} (円:{self.scene.get_nickname(ci.id,'circle')}) [円弧#{obj.id}]"
+            return (
+                f"円弧#{obj.id}"
+                f" (円:{self.scene.get_nickname(ci.id,'circle')})"
+                f" [円弧#{obj.id}]")
         if isinstance(obj, Clothoid):
-            return f"{self.scene.get_nickname(obj.id, 'clothoid')} [クロソイド#{obj.id}]"
+            return (
+                f"{self.scene.get_nickname(obj.id, 'clothoid')}"
+                f" [クロソイド#{obj.id}]")
         return ""
 
     def _clear_props(self):
@@ -1376,7 +1446,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         """
         self._clear_props()
         sel = self._selected
-        n   = len(sel)
+        n = len(sel)
 
         if n == 0:
             self._prop_layout.addWidget(QLabel("図形を選択してください"))
@@ -1392,7 +1462,8 @@ class RightPanel(QWidget, PropBuilderMixin):
             # Segment は親 Line として扱う (接続操作のため)
             la = a.line if isinstance(a, Segment) else a
             # 線分 + 線分
-            if isinstance(a, Segment) and isinstance(b, Segment) and a is not b:
+            if (isinstance(a, Segment) and isinstance(b, Segment)
+                    and a is not b):
                 self._build_two_segments(a, b)
                 return
 
@@ -1430,7 +1501,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         # ── 3図形以上 ─────────────────────────────────────────
         # 2円 + 1直線 → オフセット拘束
         circles = [o for o in sel if isinstance(o, Circle)]
-        lines   = [o for o in sel if isinstance(o, Line)]
+        lines = [o for o in sel if isinstance(o, Line)]
         if len(circles) == 2 and len(lines) == 1 and n == 3:
             self._build_offset_constraint(lines[0], circles[0], circles[1])
             return
@@ -1445,4 +1516,3 @@ class RightPanel(QWidget, PropBuilderMixin):
                           "clothoid" if isinstance(obj, Clothoid) else "seg")
                 name = self.scene.get_nickname(oid, prefix)
                 self._prop_layout.addWidget(QLabel(f"  • {name}"))
-

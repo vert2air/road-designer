@@ -18,23 +18,21 @@ test_canvas_qtest.py が PySide6 内蔵の QTest を直接使っているのに�
   [統合] 複数コンポーネントをまたぐワークフロー検証
 """
 from __future__ import annotations
+from canvas import Canvas
+from models import (
+    Vec2, Line, Segment, Circle, Arc, Clothoid,
+)
+from PySide6.QtWidgets import (
+    QDoubleSpinBox, QPushButton, QCheckBox, QMessageBox,
+)
+from PySide6.QtCore import Qt, QPoint
+import pytest
 import math
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-import pytest
-from PySide6.QtCore import Qt, QPoint
-from PySide6.QtWidgets import (
-    QApplication, QDoubleSpinBox, QPushButton, QCheckBox, QMessageBox,
-)
-
-from models import (
-    Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
-)
-from canvas import Canvas
-from right_panel import RightPanel
 
 # pytest-qt が QApplication を管理するため、モジュールレベルで生成しない
 
@@ -68,8 +66,9 @@ class TestRightPanelSignals:
         with qtbot.waitSignal(p.scene_changed, timeout=1000):
             p._redraw()
 
-    def test_line_spinbox_change_emits_scene_changed(self, qtbot, make_panel_qt):
-        """[仕様] 直線プロパティのスピンボックス変更 → scene_changed が emit される。"""
+    def test_line_spinbox_change_emits_scene_changed(
+            self, qtbot, make_panel_qt):
+        """[仕様] 直線プロパティのスピンボックス変更 → scene_changed が emit。"""
         p, sc = make_panel_qt()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
         sc.add_line(ln)
@@ -80,8 +79,9 @@ class TestRightPanelSignals:
         with qtbot.waitSignal(p.scene_changed, timeout=1000):
             sbs[0].setValue(sbs[0].value() + 1.0)
 
-    def test_circle_spinbox_change_emits_scene_changed(self, qtbot, make_panel_qt):
-        """[仕様] 円プロパティのスピンボックス変更 → scene_changed が emit される。"""
+    def test_circle_spinbox_change_emits_scene_changed(
+            self, qtbot, make_panel_qt):
+        """[仕様] 円プロパティのスピンボックス変更 → scene_changed が emit。"""
         p, sc = make_panel_qt()
         ci = Circle(Vec2(0, 0), 20.0)
         sc.add_circle(ci)
@@ -110,8 +110,9 @@ class TestRightPanelSignals:
             with qtbot.waitSignal(p.request_delete, timeout=1000):
                 p._delete_selected_objs()
 
-    def test_delete_no_does_not_emit_request_delete(self, qtbot, make_panel_qt):
-        """[仕様] 削除ダイアログで No → 1秒待っても request_delete は emit されない。"""
+    def test_delete_no_does_not_emit_request_delete(
+            self, qtbot, make_panel_qt):
+        """[仕様] 削除ダイアログで No → request_delete は emit されない。"""
         from unittest.mock import patch
         p, sc = make_panel_qt()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
@@ -125,12 +126,15 @@ class TestRightPanelSignals:
             p._nick_combos[0].setCurrentIndex(idx)
         with patch.object(QMessageBox, 'question',
                           return_value=QMessageBox.StandardButton.No):
-            with qtbot.waitSignal(p.request_delete, timeout=300, raising=False) as blocker:
+            with qtbot.waitSignal(
+                p.request_delete, timeout=300, raising=False
+            ) as blocker:
                 p._delete_selected_objs()
         assert not blocker.signal_triggered
 
-    def test_add_clothoid_button_emits_request_add_clothoid(self, qtbot, make_panel_qt):
-        """[仕様] 「クロソイドを追加」ボタンクリック → request_add_clothoid が emit される。"""
+    def test_add_clothoid_button_emits_request_add_clothoid(
+            self, qtbot, make_panel_qt):
+        """[仕様] 「クロソイドを追加」ボタンクリック → request_add_clothoid が emit。"""
         p, sc = make_panel_qt()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
@@ -144,8 +148,9 @@ class TestRightPanelSignals:
         with qtbot.waitSignal(p.request_add_clothoid, timeout=1000):
             qtbot.mouseClick(btns[0], Qt.MouseButton.LeftButton)
 
-    def test_clothoid_snap_checkbox_emits_scene_changed(self, qtbot, make_panel_qt):
-        """[仕様] クロソイド snap チェックボックス変更 → scene_changed が emit される。"""
+    def test_clothoid_snap_checkbox_emits_scene_changed(
+            self, qtbot, make_panel_qt):
+        """[仕様] クロソイド snap チェックボックス変更 → scene_changed が emit。"""
         p, sc = make_panel_qt()
         ln = Line(Vec2(-100, 0), Vec2(100, 0))
         ci = Circle(Vec2(50, 60), 30.0)
@@ -160,8 +165,9 @@ class TestRightPanelSignals:
         with qtbot.waitSignal(p.scene_changed, timeout=1000):
             chks[0].setChecked(not chks[0].isChecked())
 
-    def test_arc_spinbox_change_emits_scene_changed(self, qtbot, make_panel_qt):
-        """[仕様] 円弧角度スピンボックス変更 → scene_changed が emit される。"""
+    def test_arc_spinbox_change_emits_scene_changed(
+            self, qtbot, make_panel_qt):
+        """[仕様] 円弧角度スピンボックス変更 → scene_changed が emit。"""
         p, sc = make_panel_qt()
         ci = Circle(Vec2(0, 0), 20.0)
         arc = Arc(ci, 0.0, math.pi / 2)
@@ -213,11 +219,13 @@ class TestCanvasInteractions:
         sc.add_line(Line(Vec2(10, 0), Vec2(20, 0)))
         assert len(sc.lines) == 2
         with qtbot.waitSignal(c.scene_changed, timeout=1000):
-            qtbot.keyClick(c, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+            qtbot.keyClick(c, Qt.Key.Key_Z,
+                           Qt.KeyboardModifier.ControlModifier)
         assert len(c.scene.lines) <= 2
 
-    def test_line_mode_two_clicks_emits_scene_changed(self, qtbot, make_canvas_qt):
-        """[仕様] 直線モードで2クリック → 直線追加 + scene_changed が emit される。"""
+    def test_line_mode_two_clicks_emits_scene_changed(
+            self, qtbot, make_canvas_qt):
+        """[仕様] 直線モードで2クリック → 直線追加 + scene_changed が emit。"""
         c, sc = make_canvas_qt()
         c.set_mode(Canvas.MODE_LINE)
         before = len(sc.lines)
@@ -228,8 +236,9 @@ class TestCanvasInteractions:
                              pos=_to_qpoint(c, 50, 0))
         assert len(sc.lines) > before
 
-    def test_circle_mode_press_release_emits_scene_changed(self, qtbot, make_canvas_qt):
-        """[仕様] 円モードでドラッグ → 円追加 + scene_changed が emit される。"""
+    def test_circle_mode_press_release_emits_scene_changed(
+            self, qtbot, make_canvas_qt):
+        """[仕様] 円モードでドラッグ → 円追加 + scene_changed が emit。"""
         c, sc = make_canvas_qt()
         c.set_mode(Canvas.MODE_CIRCLE)
         before = len(sc.circles)
@@ -240,8 +249,9 @@ class TestCanvasInteractions:
                                pos=_to_qpoint(c, 50, 0))
         assert len(sc.circles) > before
 
-    def test_click_selects_line_and_emits_selection_changed(self, qtbot, make_canvas_qt):
-        """[仕様] 選択モードでクリック → selection_changed が emit されて図形が選択される。"""
+    def test_click_selects_line_and_emits_selection_changed(
+            self, qtbot, make_canvas_qt):
+        """[仕様] 選択モードでクリック → selection_changed が emit。"""
         c, sc = make_canvas_qt()
         c.set_mode(Canvas.MODE_SELECT)
         ln = Line(Vec2(-200, 0), Vec2(200, 0))
@@ -251,8 +261,9 @@ class TestCanvasInteractions:
                              pos=_to_qpoint(c, 0, 0))
         assert ln in c._selected
 
-    def test_escape_cancels_line_input_no_signal_needed(self, qtbot, make_canvas_qt):
-        """[仕様] 直線モードで1点入力後 Escape → _line_first_pt がリセットされる。"""
+    def test_escape_cancels_line_input_no_signal_needed(
+            self, qtbot, make_canvas_qt):
+        """[仕様] 直線モードで1点入力後 Escape → _line_first_pt がリセット。"""
         c, sc = make_canvas_qt()
         c.set_mode(Canvas.MODE_LINE)
         qtbot.mouseClick(c, Qt.MouseButton.LeftButton,
@@ -294,7 +305,8 @@ class TestMainWindowWorkflow:
                              pos=_to_qpoint(c, 0, 0))
         assert ln in c._selected
 
-    def test_canvas_line_add_then_undo_via_keyboard(self, qtbot, make_window_qt):
+    def test_canvas_line_add_then_undo_via_keyboard(
+            self, qtbot, make_window_qt):
         """[統合] 直線モードで追加 → Ctrl+Z でアンドゥ → 直線が消える。"""
         w = make_window_qt()
         c = w._canvas
@@ -309,10 +321,12 @@ class TestMainWindowWorkflow:
         assert n_after_add >= 1
         # Ctrl+Z でアンドゥ
         with qtbot.waitSignal(c.scene_changed, timeout=1000):
-            qtbot.keyClick(c, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+            qtbot.keyClick(c, Qt.Key.Key_Z,
+                           Qt.KeyboardModifier.ControlModifier)
         assert len(w.scene.lines) < n_after_add
 
-    def test_delete_key_removes_selected_via_window(self, qtbot, make_window_qt):
+    def test_delete_key_removes_selected_via_window(
+            self, qtbot, make_window_qt):
         """[統合] 図形を選択後 Delete → MainWindow 経由で削除される。"""
         w = make_window_qt()
         c = w._canvas
@@ -323,8 +337,9 @@ class TestMainWindowWorkflow:
             qtbot.keyClick(c, Qt.Key.Key_Delete)
         assert ln not in w.scene.lines
 
-    def test_right_panel_spinbox_propagates_to_scene(self, qtbot, make_window_qt):
-        """[統合] RightPanel のスピンボックス変更 → scene の座標が更新される。"""
+    def test_right_panel_spinbox_propagates_to_scene(
+            self, qtbot, make_window_qt):
+        """[統合] RightPanel のスピンボックス変更 → scene の座標が更新。"""
         w = make_window_qt()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
         w.scene.add_line(ln)
