@@ -21,7 +21,7 @@ from direct.showbase.ShowBase import ShowBase
 from panda3d.core import (
     LPoint3, LColor,
     AmbientLight, DirectionalLight,
-    TextNode,
+    TextNode, LineSegs,
 )
 from direct.task import Task
 from direct.gui.OnscreenText import OnscreenText
@@ -281,6 +281,11 @@ class RoadViewer(ShowBase):
     #: ワープ境界 [m]。|x| または |y| がこの値を超えたら符号を反転してワープ
     WARP_BOUNDARY = 500.0
 
+    #: ホイールベース [m]。タイヤ切れ角 = WHEELBASE × 曲率
+    WHEELBASE = 2.7
+    #: ステアリングギア比。表示上の回転角 = タイヤ切れ角 × この値
+    STEER_DISPLAY_RATIO = 14.0
+
     def __init__(self, centerline: list[tuple],
                  display_segs: list[list[tuple]] = None,
                  elem_graph: list[dict] = None,
@@ -342,6 +347,8 @@ class RoadViewer(ShowBase):
         # HUD 用の現在位置・方向（最初のフレームまでは (0,0,0), (1,0,0)）
         self._cur_pos = (0.0, 0.0, 0.0)
         self._cur_fwd = (1.0, 0.0, 0.0)
+        # 現在位置の符号付き曲率 [1/m]（左曲がり正）
+        self._cur_kappa = 0.0
 
         # 走行履歴スタック（← で最大 _AD_HISTORY_MAX 要素分戻れる）
         # 各エントリ: {"cl": [...], "total": float, "dist": float,
@@ -795,11 +802,111 @@ class RoadViewer(ShowBase):
         """速度・距離・方位などを表示する HUD テキストを初期化する。
 
         ``OnscreenText`` を左上に配置し、``_update_hud`` でフレームごとに更新する。
+        ステアリングホイールグラフィックは :meth:`_setup_steering_wheel` で別途作成。
         """
         self.hud = OnscreenText(
             text="", pos=(-1.3, 0.9), scale=0.05,
             fg=(1, 1, 1, 1), shadow=(0, 0, 0, 1),
             align=TextNode.ALeft, mayChange=True)
+        self._setup_steering_wheel()
+
+    def _setup_steering_wheel(self):
+        """ステアリングホイールグラフィックを右下 HUD に作成する。
+
+        ``LineSegs`` で描いたリム・スポーク・ハブを ``aspect2d`` に配置し、
+        ``_steer_np`` ノードパスを毎フレーム ``set_r()`` で回転させることで
+        ハンドルの切れ角を視覚的に表示する。
+
+        * リム : 白い円（32 分割）
+        * スポーク : 上（黄）・左下（白）・右下（白）の 3 本
+        * ハブ : 小円
+        * 固定マーカー : 12 時位置を示す黄色三角（回転しない）
+        * ラベル : ホイール下に回転角・タイヤ切れ角テキスト
+        """
+        RADIUS = 0.10   # リム半径 [aspect2d 座標]
+        HUB_R = 0.018   # ハブ半径
+        # ホイール中心の aspect2d 座標（右下）
+        WX, WZ = 1.1, -0.78
+
+        ls = LineSegs()
+        ls.set_thickness(2.0)
+
+        # ── リム（白） ──
+        ls.set_color(0.9, 0.9, 0.9, 1.0)
+        N = 32
+        for i in range(N + 1):
+            a = 2 * math.pi * i / N
+            x = RADIUS * math.cos(a)
+            z = RADIUS * math.sin(a)
+            if i == 0:
+                ls.move_to(x, 0, z)
+            else:
+                ls.draw_to(x, 0, z)
+
+        # ── 左下・右下スポーク（白・細） ──
+        for deg in (210, 330):
+            a = math.radians(deg)
+            ls.set_color(0.9, 0.9, 0.9, 1.0)
+            ls.move_to(
+                HUB_R * math.cos(a), 0,
+                HUB_R * math.sin(a))
+            ls.draw_to(
+                RADIUS * math.cos(a), 0,
+                RADIUS * math.sin(a))
+
+        # ── ハブ（白） ──
+        ls.set_color(0.9, 0.9, 0.9, 1.0)
+        for i in range(13):
+            a = 2 * math.pi * i / 12
+            x = HUB_R * math.cos(a)
+            z = HUB_R * math.sin(a)
+            if i == 0:
+                ls.move_to(x, 0, z)
+            else:
+                ls.draw_to(x, 0, z)
+
+        node = ls.create()
+        self._steer_np = self.aspect2d.attach_new_node(node)
+        self._steer_np.set_pos(WX, 0, WZ)
+
+        # ── 12 時スポーク（黒・太）別 LineSegs で太さを独立設定 ──
+        ls12 = LineSegs()
+        ls12.set_thickness(15.0)
+        ls12.set_color(0.0, 0.0, 0.0, 1.0)
+        a12 = math.radians(90)
+        ls12.move_to(
+            HUB_R * math.cos(a12), 0,
+            HUB_R * math.sin(a12))
+        ls12.draw_to(
+            RADIUS * math.cos(a12), 0,
+            RADIUS * math.sin(a12))
+        # _steer_np の子にすることでホイールと一緒に回転する
+        self._steer_np.attach_new_node(ls12.create())
+
+        # ── 固定マーカー（12 時を示す下向き三角、回転しない） ──
+        # リム外側 + 少し余白の位置に先端、上方向に底辺
+        MR = RADIUS + 0.014   # 先端のリムからの距離
+        HW = 0.011            # 三角の半幅
+        MH = 0.020            # 三角の高さ
+        lm = LineSegs()
+        lm.set_thickness(2.5)
+        lm.set_color(1.0, 1.0, 0.0, 1.0)   # 黄
+        lm.move_to(0, 0, MR + MH)           # 左上頂点
+        lm.draw_to(HW, 0, MR + MH)         # 右上頂点
+        lm.draw_to(0, 0, MR)               # 下向き先端
+        lm.draw_to(-HW, 0, MR + MH)        # 左上頂点に戻る
+        lm.draw_to(HW, 0, MR + MH)         # 閉じる
+        marker_node = lm.create()
+        self._steer_marker_np = self.aspect2d.attach_new_node(
+            marker_node)
+        self._steer_marker_np.set_pos(WX, 0, WZ)
+
+        # ラベル（ホイール下）
+        self._steer_label = OnscreenText(
+            text="0 deg  (tire 0.0)",
+            pos=(WX, WZ - 0.14), scale=0.045,
+            fg=(1, 1, 0.4, 1), shadow=(0, 0, 0, 1),
+            align=TextNode.ACenter, mayChange=True)
 
     def _setup_keys(self):
         """キーバインドを登録する。
@@ -870,6 +977,7 @@ class RoadViewer(ShowBase):
         pos, fwd, _ = self._interp_cl(cur_cl, cur_dist)
         self._cur_pos = pos
         self._cur_fwd = fwd
+        self._cur_kappa = self._curvature_at(cur_cl, cur_dist)
 
         # 周囲車両を更新
         if not self.paused:
@@ -1266,19 +1374,85 @@ class RoadViewer(ShowBase):
             cur_total = self._total
             auto_str = ""
 
+        # 舵角: δ = WHEELBASE × κ（ラジアン）→ 度数
+        steer_deg = math.degrees(self.WHEELBASE * self._cur_kappa)
+        wheel_rot = steer_deg * self.STEER_DISPLAY_RATIO
+        # Panda3D の set_r は正=時計回り（右）なので符号を反転して
+        # 左曲がり（κ正）→ 反時計回り（ハンドル左切り）に対応させる
+        self._steer_np.set_r(-wheel_rot)
+        self._steer_label.setText(
+            f"{wheel_rot:+.0f} deg"
+            f"  (tire {steer_deg:+.1f})")
+
         self.hud.setText(
             f"{pause_str}"
             f"{auto_str}"
             f"Pos: ({px:.1f}, {py:.1f})  Alt: {pz:.1f} m\n"
             f"Dir: {bearing}  ({fwd_x:+.2f}, {fwd_y:+.2f})\n"
             f"Dist: {cur_dist:.0f} / {cur_total:.0f} m\n"
-            f"Speed: {self.speed:.0f} m/s ({self.speed*3.6:.0f} km/h)\n"
-            f"View: {mode_str} [V/O]  Surface: {surface_str} [R]  Auto [A]\n"
-            f"Up/Down:Speed  Left/Right:Jump  Space:Pause  Esc:Quit\n"
-            f"Traffic: {len(self._traffic)} cars  P:Add  Shift-P:Remove"
+            f"Speed: {self.speed:.0f} m/s"
+            f" ({self.speed*3.6:.0f} km/h)\n"
+            f"View: {mode_str} [V/O]"
+            f"  Surface: {surface_str} [R]  Auto [A]\n"
+            f"Up/Down:Speed  Left/Right:Jump"
+            f"  Space:Pause  Esc:Quit\n"
+            f"Traffic: {len(self._traffic)} cars"
+            f"  P:Add  Shift-P:Remove"
         )
 
     # ─── 補間 ────────────────────────────────────────────────
+
+    @staticmethod
+    def _curvature_at(cl: list, dist: float) -> float:
+        """中心線上の dist における符号付き曲率 [1/m] を返す。
+
+        隣接する接線ベクトルの変化量 Δθ / Δs で近似する。
+        左曲がりを正、右曲がりを負とする（平面視点で y 軸が北）。
+
+        Parameters
+        ----------
+        cl : list[tuple]
+            3D 中心線点列 [(x, y, z, dist), ...]。
+        dist : float
+            現在の累積距離 [m]。
+
+        Returns
+        -------
+        float
+            符号付き曲率 [1/m]。直線では 0、点数不足では 0。
+        """
+        import math as _math
+        if len(cl) < 3:
+            return 0.0
+
+        # dist に最も近いインデックスを二分探索
+        lo, hi = 0, len(cl) - 1
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if cl[mid][3] < dist:
+                lo = mid + 1
+            else:
+                hi = mid
+        idx = max(1, min(lo, len(cl) - 2))
+
+        x0, y0 = cl[idx - 1][0], cl[idx - 1][1]
+        x1, y1 = cl[idx][0], cl[idx][1]
+        x2, y2 = cl[idx + 1][0], cl[idx + 1][1]
+
+        dx1, dy1 = x1 - x0, y1 - y0
+        dx2, dy2 = x2 - x1, y2 - y1
+        len1 = _math.hypot(dx1, dy1)
+        len2 = _math.hypot(dx2, dy2)
+        if len1 < 1e-9 or len2 < 1e-9:
+            return 0.0
+
+        # 単位接線ベクトル t1, t2 のクロス積 → 符号付き Δθ
+        t1x, t1y = dx1 / len1, dy1 / len1
+        t2x, t2y = dx2 / len2, dy2 / len2
+        cross = t1x * t2y - t1y * t2x  # sin(Δθ) ≈ Δθ（微小角）
+        ds = (len1 + len2) * 0.5
+        return cross / ds if ds > 1e-9 else 0.0
+
     def _interp(self, dist: float):
         """固定チェーン ``self.cl`` 上の dist に対する位置・方向を返す（後方互換）。
 

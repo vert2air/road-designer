@@ -53,7 +53,8 @@ def _make_viewer(
         cl = _cl()
 
     with patch.object(ShowBase, '__init__', return_value=None), \
-            patch('road_viewer.OnscreenText'):
+            patch('road_viewer.OnscreenText'), \
+            patch('road_viewer.LineSegs'):
         v = RoadViewer.__new__(RoadViewer)
         v.render = MagicMock()
         v.camera = MagicMock()
@@ -61,6 +62,7 @@ def _make_viewer(
         v.accept = MagicMock()
         v.disableMouse = MagicMock()
         v.mouseWatcherNode = MagicMock()
+        v.aspect2d = MagicMock()
         kw = {}
         if elem_graph is not None:
             kw['elem_graph'] = elem_graph
