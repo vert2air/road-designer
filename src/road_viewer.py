@@ -1416,9 +1416,13 @@ class RoadViewer(ShowBase):
                 hi = mid
         idx = max(1, min(lo, len(cl) - 2))
 
-        x0, y0 = cl[idx - 1][0], cl[idx - 1][1]
+        # 隣接点ではなく2点先を使うことで、孤立した重複点があっても
+        # 曲率がゼロにならないようにする
+        i0 = max(0, idx - 2)
+        i2 = min(len(cl) - 1, idx + 2)
+        x0, y0 = cl[i0][0], cl[i0][1]
         x1, y1 = cl[idx][0], cl[idx][1]
-        x2, y2 = cl[idx + 1][0], cl[idx + 1][1]
+        x2, y2 = cl[i2][0], cl[i2][1]
 
         dx1, dy1 = x1 - x0, y1 - y0
         dx2, dy2 = x2 - x1, y2 - y1
@@ -1670,7 +1674,8 @@ def _build_elem_graph(
                     cum.append(cum[-1] + math.hypot(dx, dy))
                 total = cum[-1]
                 for i in range(n_pts + 1):
-                    target = total * i / n_pts
+                    # min() で FP 誤差による total 超過を防ぐ
+                    target = min(total, total * i / n_pts)
                     for k in range(len(cum) - 1):
                         if cum[k] <= target <= cum[k + 1]:
                             r = ((target - cum[k])
