@@ -899,7 +899,7 @@ class RoadViewer(ShowBase):
         * ``R``: 路面メッシュ表示切替
         * ``Space``: 一時停止/再開
         * ``A``: オートドライブモード切替
-        * ``↑``/``↓``: 速度 ±10 m/s
+        * ``↑``/``↓``: 速度 ±3 m/s、``Shift+↑``/``Shift+↓``: ±10 m/s
         * ``←``/``→``: 100m 後退/前進
         * ``P``/``Shift+P``: 周囲車両 1 台追加/削除
         * ``I``/``K``: 俯瞰カメラ近づく/遠ざかる
@@ -910,8 +910,10 @@ class RoadViewer(ShowBase):
         self.accept("r", self._toggle_surface)
         self.accept("space", self._toggle_pause)
         self.accept("a", self._toggle_auto_drive)
-        self.accept("arrow_up", lambda: self._change_speed(+10))
-        self.accept("arrow_down", lambda: self._change_speed(-10))
+        self.accept("arrow_up", lambda: self._change_speed(+3))
+        self.accept("arrow_down", lambda: self._change_speed(-3))
+        self.accept("shift-arrow_up", lambda: self._change_speed(+10))
+        self.accept("shift-arrow_down", lambda: self._change_speed(-10))
         self.accept("arrow_left", self._rewind)
         self.accept("arrow_right", self._forward)
         # 台数増減: p = plus（増やす）、m = minus（減らす）
@@ -1376,7 +1378,7 @@ class RoadViewer(ShowBase):
             f" ({self.speed*3.6:.0f} km/h)\n"
             f"View: {mode_str} [V/O]"
             f"  Surface: {surface_str} [R]  Auto [A]\n"
-            f"Up/Down:Speed  Left/Right:Jump"
+            f"Up/Down:\xb13m/s  Shift+Up/Down:\xb110m/s  Left/Right:Jump"
             f"  Space:Pause  Esc:Quit\n"
             f"Traffic: {len(self._traffic)} cars"
             f"  P:Add  Shift-P:Remove"
