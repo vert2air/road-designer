@@ -2104,7 +2104,6 @@ def _pt_dist(a, b) -> float:
     """
     if a is None or b is None:
         return float('inf')
-    import math
     return math.hypot(a.x - b.x, a.y - b.y)
 
 
@@ -2131,7 +2130,6 @@ def tangent_at(obj, at_end: bool) -> tuple:
     - Arc: angle_start/end での (-sin, cos)
     - Clothoid: points の先頭/末尾 2 点の差分
     """
-    import math
     if isinstance(obj, Segment):
         dx = obj.end.x - obj.start.x
         dy = obj.end.y - obj.start.y
@@ -2178,7 +2176,6 @@ def entry_tangent(obj, connect_at_start: bool):
     - Arc: 共有端点から ±0.1° の近傍点への方向
     - Clothoid: points の共有端点の隣の点への方向
     """
-    import math
     if isinstance(obj, Segment):
         if connect_at_start:
             dx = obj.end.x - obj.start.x

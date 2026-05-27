@@ -463,7 +463,6 @@ class RoadViewer(ShowBase):
         offset : float
             自車からの初期距離オフセット [m]。
         """
-        import math
         import random
 
         # NodePath 生成
@@ -482,53 +481,10 @@ class RoadViewer(ShowBase):
         # オフセットが正のとき: チェーンを進む
         while init_dist > cur_total and cur_total > 0:
             overflow = init_dist - cur_total
-            # 同じ _ad_advance ロジックで次の要素を探す
-            end_pt = cur_cl[-1]
-            ex, ey = end_pt[0], end_pt[1]
-            if len(cur_cl) >= 2:
-                dx = cur_cl[-1][0] - cur_cl[-2][0]
-                dy = cur_cl[-1][1] - cur_cl[-2][1]
-                ln = math.hypot(dx, dy) or 1.0
-                fwd_x, fwd_y = dx / ln, dy / ln
-            else:
-                fwd_x, fwd_y = 1.0, 0.0
-
-            cur_elem = next(
-                (e for e in self._elem_graph if e["id"] == cur_id), None)
-            exit_clo_ref = None
-            if cur_elem:
-                exit_clo_ref = cur_elem.get(
-                    "end_clo_ref" if cur_fwd else "start_clo_ref")
-
-            cands = self._find_next_candidates(cur_id, ex, ey, exit_clo_ref)
-            cands = [(e, f) for e, f in cands
-                     if fwd_x * _elem_fwd_vec(e, f)[0]
-                     + fwd_y * _elem_fwd_vec(e, f)[1] >= 0]
-            if not cands:
-                # ワープ
-                B = self._warp_boundary
-                new_x = -ex if abs(ex) > B else ex
-                new_y = -ey if abs(ey) > B else ey
-                pl = 100.0
-                n = 50
-                z_end = cur_cl[-1][2]
-                cur_cl = [
-                    (new_x + fwd_x * pl * t / n,
-                     new_y + fwd_y * pl * t / n,
-                     z_end, pl * t / n)
-                    for t in range(n + 1)]
-                cur_total = pl
-                cur_id = None
-                init_dist = overflow
+            cur_cl, cur_total, cur_id, cur_fwd, init_dist = \
+                self._chain_advance_fwd(cur_cl, cur_id, cur_fwd, overflow)
+            if cur_id is None:   # ワープ済み
                 break
-
-            chosen_elem, chosen_fwd = random.choice(cands)
-            cl2, total2 = self._make_elem_cl(chosen_elem, chosen_fwd)
-            cur_cl = cl2
-            cur_total = total2
-            cur_id = chosen_elem["id"]
-            cur_fwd = chosen_fwd
-            init_dist = overflow
 
         # オフセットが負のとき: チェーンを逆に辿る
         while init_dist < 0 and cur_total > 0:
@@ -586,6 +542,75 @@ class RoadViewer(ShowBase):
         return find_next_candidates(
             self._elem_graph, cur_id, ex, ey, exit_clo_ref, self.AD_TOL)
 
+    def _chain_advance_fwd(
+            self, cur_cl: list, cur_id, cur_fwd: bool,
+            overflow: float) -> tuple:
+        """チェーン末端から次の要素に前進遷移する共通ロジック。
+
+        ``_step_traffic_car`` と ``_add_traffic_car`` の前進ループで使う。
+        候補が見つかればランダムに選択して遷移し、なければワープする。
+
+        Parameters
+        ----------
+        cur_cl : list
+            現在の中心線点列 [(x, y, z, dist), ...]。
+        cur_id : int or None
+            現在要素の ID。
+        cur_fwd : bool
+            現在の走行方向（True=正順）。
+        overflow : float
+            チェーン末端を超えた余剰距離 [m]。
+
+        Returns
+        -------
+        tuple
+            ``(new_cl, new_total, new_cur_id, new_fwd, new_dist)``。
+            ワープ時は ``new_cur_id=None``。
+        """
+        import random
+
+        end_pt = cur_cl[-1]
+        ex, ey = end_pt[0], end_pt[1]
+        if len(cur_cl) >= 2:
+            dx = cur_cl[-1][0] - cur_cl[-2][0]
+            dy = cur_cl[-1][1] - cur_cl[-2][1]
+            ln = math.hypot(dx, dy) or 1.0
+            fwd_x, fwd_y = dx / ln, dy / ln
+        else:
+            fwd_x, fwd_y = 1.0, 0.0
+
+        cur_elem = next(
+            (e for e in self._elem_graph if e["id"] == cur_id), None)
+        exit_clo_ref = None
+        if cur_elem:
+            key = "end_clo_ref" if cur_fwd else "start_clo_ref"
+            exit_clo_ref = cur_elem.get(key)
+
+        cands = self._find_next_candidates(cur_id, ex, ey, exit_clo_ref)
+        cands = [(e, f) for e, f in cands
+                 if fwd_x * _elem_fwd_vec(e, f)[0]
+                 + fwd_y * _elem_fwd_vec(e, f)[1] >= 0]
+
+        if cands:
+            chosen_elem, chosen_fwd = random.choice(cands)
+            cl2, total2 = self._make_elem_cl(chosen_elem, chosen_fwd)
+            return (cl2, total2, chosen_elem["id"],
+                    chosen_fwd, min(overflow, total2))
+
+        # 候補なし → ワープ
+        B = self._warp_boundary
+        new_x = -ex if abs(ex) > B else ex
+        new_y = -ey if abs(ey) > B else ey
+        z_end = cur_cl[-1][2]
+        pl = 100.0
+        n = 50
+        warp_cl = [
+            (new_x + fwd_x * pl * t / n,
+             new_y + fwd_y * pl * t / n,
+             z_end, pl * t / n)
+            for t in range(n + 1)]
+        return warp_cl, pl, None, cur_fwd, min(overflow, pl)
+
     def _make_elem_cl(self, elem, forward):
         """モジュールレベルの :func:`make_elem_cl` に委譲する。"""
         return make_elem_cl(elem, forward)
@@ -601,7 +626,6 @@ class RoadViewer(ShowBase):
         car : dict
             ``_traffic`` リストの要素。"np"・"cl"・"dist" キーを使う。
         """
-        import math
         pos, fwd, _ = self._interp_cl(car["cl"], car["dist"])
         np_root = car["np"]
         np_root.setPos(pos[0], pos[1], pos[2])
@@ -623,60 +647,18 @@ class RoadViewer(ShowBase):
         dt : float
             フレーム経過時間 [s]。
         """
-        import math
-        import random
-
         car["dist"] += self.speed * car.get("speed_mul", 1.0) * dt
         if car["dist"] < car["total"]:
             return
 
         overflow = car["dist"] - car["total"]
-        end_pt = car["cl"][-1]
-        ex, ey = end_pt[0], end_pt[1]
-        if len(car["cl"]) >= 2:
-            dx = car["cl"][-1][0] - car["cl"][-2][0]
-            dy = car["cl"][-1][1] - car["cl"][-2][1]
-            ln = math.hypot(dx, dy) or 1.0
-            fwd_x, fwd_y = dx / ln, dy / ln
-        else:
-            fwd_x, fwd_y = 1.0, 0.0
-
-        cur_elem = next(
-            (e for e in self._elem_graph if e["id"] == car["cur_id"]), None)
-        exit_clo_ref = None
-        if cur_elem:
-            exit_clo_ref = cur_elem.get(
-                "end_clo_ref" if car["forward"] else "start_clo_ref")
-
-        cands = self._find_next_candidates(car["cur_id"], ex, ey, exit_clo_ref)
-        cands = [(e, f) for e, f in cands
-                 if fwd_x * _elem_fwd_vec(e, f)[0]
-                 + fwd_y * _elem_fwd_vec(e, f)[1] >= 0]
-
-        if cands:
-            chosen_elem, chosen_fwd = random.choice(cands)
-            cl2, total2 = self._make_elem_cl(chosen_elem, chosen_fwd)
-            car["cl"] = cl2
-            car["total"] = total2
-            car["dist"] = min(overflow, total2)
-            car["cur_id"] = chosen_elem["id"]
-            car["forward"] = chosen_fwd
-        else:
-            # ワープ
-            B = self._warp_boundary
-            new_x = -ex if abs(ex) > B else ex
-            new_y = -ey if abs(ey) > B else ey
-            z_end = car["cl"][-1][2]
-            pl = 100.0
-            n = 50
-            car["cl"] = [
-                (new_x + fwd_x * pl * t / n,
-                 new_y + fwd_y * pl * t / n,
-                 z_end, pl * t / n)
-                for t in range(n + 1)]
-            car["total"] = pl
-            car["dist"] = min(overflow, pl)
-            car["cur_id"] = None
+        cl, total, cid, fwd, dist = self._chain_advance_fwd(
+            car["cl"], car["cur_id"], car["forward"], overflow)
+        car["cl"] = cl
+        car["total"] = total
+        car["cur_id"] = cid
+        car["forward"] = fwd
+        car["dist"] = dist
 
     def _overview_pan(self):
         """固定俯瞰モードでのマウスパン・ホイールズーム処理。
@@ -1421,7 +1403,6 @@ class RoadViewer(ShowBase):
         float
             符号付き曲率 [1/m]。直線では 0、点数不足では 0。
         """
-        import math as _math
         if len(cl) < 3:
             return 0.0
 
@@ -1441,8 +1422,8 @@ class RoadViewer(ShowBase):
 
         dx1, dy1 = x1 - x0, y1 - y0
         dx2, dy2 = x2 - x1, y2 - y1
-        len1 = _math.hypot(dx1, dy1)
-        len2 = _math.hypot(dx2, dy2)
+        len1 = math.hypot(dx1, dy1)
+        len2 = math.hypot(dx2, dy2)
         if len1 < 1e-9 or len2 < 1e-9:
             return 0.0
 
@@ -1606,6 +1587,143 @@ class RoadViewer(ShowBase):
 #   エントリーポイント：設計アプリから呼ばれる
 # ══════════════════════════════════════════════════════════════
 
+def _build_display_segs(scene: Scene, all_display: list) -> list:
+    """背景表示用の中心線セグメント群を生成して返す。
+
+    ``all_display`` が None または空のとき空リストを返す。
+    """
+    segs = []
+    if not all_display:
+        return segs
+    for obj in all_display:
+        ep = next((e for e in scene.element_profiles
+                   if e.element_id == obj.id), None)
+        if ep is None:
+            ep = ElementProfile()
+        ep.plan_length = plan_length_of(obj)
+        if ep.plan_length < 0.001:
+            continue
+        cl = build_centerline([obj], [ep], [False], n_per_m=0.5)
+        if cl:
+            segs.append(cl)
+    return segs
+
+
+def _build_clo_ref_map(clothoids: list) -> dict:
+    """Clothoid 接点の座標→参照辞書を構築して返す。
+
+    key: ``(round(x, 3), round(y, 3))``
+    value: ``{"clothoid_id": int, "side": "line"|"circle"}``
+    """
+    clo_ref_map: dict = {}
+    for clo in clothoids:
+        if not clo.is_valid:
+            continue
+        for side, pt in [("line", clo._line_pt),
+                         ("circle", clo._circle_pt)]:
+            if pt is None:
+                continue
+            key = (round(pt.x, 3), round(pt.y, 3))
+            clo_ref_map.setdefault(key, []).append(
+                {"clothoid_id": clo.id, "side": side})
+    return clo_ref_map
+
+
+def _build_elem_graph(
+        scene: Scene, all_elems: list, clo_ref_map: dict) -> list:
+    """全要素からオートドライブ用の elem_graph を構築して返す。
+
+    各エントリは ``{id, type, nickname, start, end, plan_length,
+    heights, points_xy, start_clo_ref, end_clo_ref}`` の辞書。
+    """
+    def _lookup(x, y):
+        refs = clo_ref_map.get((round(x, 3), round(y, 3)))
+        return refs[0] if refs else None
+
+    def _sample_points_xy(obj, n_pts):
+        """要素の平面形状点列を n_pts 分割でサンプリングする。"""
+        pts = []
+        if isinstance(obj, Segment):
+            for i in range(n_pts + 1):
+                t = i / n_pts
+                pts.append([
+                    obj.start.x + (obj.end.x - obj.start.x) * t,
+                    obj.start.y + (obj.end.y - obj.start.y) * t,
+                ])
+        elif isinstance(obj, Arc):
+            ci = obj.circle
+            a0 = obj.angle_start
+            span = obj.arc_angle()
+            for i in range(n_pts + 1):
+                ang = a0 + span * i / n_pts
+                pts.append([
+                    ci.center.x + ci.radius * math.cos(ang),
+                    ci.center.y + ci.radius * math.sin(ang),
+                ])
+        elif isinstance(obj, Clothoid):
+            raw = obj.points
+            if raw:
+                cum = [0.0]
+                for k in range(1, len(raw)):
+                    dx = raw[k].x - raw[k - 1].x
+                    dy = raw[k].y - raw[k - 1].y
+                    cum.append(cum[-1] + math.hypot(dx, dy))
+                total = cum[-1]
+                for i in range(n_pts + 1):
+                    target = total * i / n_pts
+                    for k in range(len(cum) - 1):
+                        if cum[k] <= target <= cum[k + 1]:
+                            r = ((target - cum[k])
+                                 / (cum[k + 1] - cum[k])
+                                 if cum[k + 1] > cum[k] else 0)
+                            pts.append([
+                                raw[k].x + (raw[k+1].x - raw[k].x) * r,
+                                raw[k].y + (raw[k+1].y - raw[k].y) * r,
+                            ])
+                            break
+                    else:
+                        pts.append([raw[-1].x, raw[-1].y])
+        return pts
+
+    elem_graph = []
+    for obj in all_elems:
+        ep = next((e for e in scene.element_profiles
+                   if e.element_id == obj.id), None)
+        pl = ep.plan_length if ep else plan_length_of(obj)
+        pts = _elem_endpoints_xy(obj)
+        if pts is None:
+            continue
+        s, e = pts
+
+        # 縦断高さをサンプリング
+        n_h = max(2, int(pl * 0.2))
+        if ep:
+            heights = [[pl * i / n_h, ep.elev_at(pl * i / n_h)]
+                       for i in range(n_h + 1)]
+        else:
+            heights = [[0.0, 0.0], [pl, 0.0]]
+
+        # 平面形状点列
+        points_xy = _sample_points_xy(obj, max(4, int(pl * 0.5)))
+        if not points_xy:
+            points_xy = [[s.x, s.y], [e.x, e.y]]
+
+        elem_graph.append({
+            "id": obj.id,
+            "type": type(obj).__name__,
+            "nickname": scene.get_nickname(obj.id),
+            "start": [s.x, s.y],
+            "end": [e.x, e.y],
+            "plan_length": pl,
+            "heights": heights,
+            "points_xy": points_xy,
+            # None: 接点なし / dict: Clothoid 接点参照
+            "start_clo_ref": _lookup(s.x, s.y),
+            "end_clo_ref": _lookup(e.x, e.y),
+        })
+    return elem_graph
+
+
 def prepare_viewer_data(scene: Scene,
                         elements: list,
                         profiles: list,
@@ -1631,24 +1749,11 @@ def prepare_viewer_data(scene: Scene,
     Returns
     -------
     dict
-        {"centerline_3d": [...], "display_segments": [[...], ...]} 形式の辞書。
-        JSON シリアライズ可能。
+        ``{"centerline_3d", "display_segments", "elem_graph",
+        "start_info"}`` の辞書。JSON シリアライズ可能。
     """
-    display_segs = []
-    if all_display:
-        for obj in all_display:
-            ep = next((e for e in scene.element_profiles
-                       if e.element_id == obj.id), None)
-            if ep is None:
-                ep = ElementProfile()
-            ep.plan_length = plan_length_of(obj)
-            if ep.plan_length < 0.001:
-                continue
-            cl = build_centerline([obj], [ep], [False], n_per_m=0.5)
-            if cl:
-                display_segs.append(cl)
+    display_segs = _build_display_segs(scene, all_display)
 
-    # オートドライブ用: 全要素の端点グラフを構築
     all_elems = []
     for ln in scene.lines:
         all_elems.extend(ln.segments)
@@ -1656,128 +1761,15 @@ def prepare_viewer_data(scene: Scene,
         all_elems.extend(ci.arcs)
     all_elems.extend(scene.clothoids)
 
-    # ── Clothoid の接点情報を収集（端点とClothoidの対応マップ）──────────────
-    # (x, y) → [(clothoid_id, "line"|"circle"), ...] のマップ
-    # 各端点がどのClothoidのどちら側の接点かを記録する
-    # key: (round(x,4), round(y,4)) → list of (clo_id, side)
-    clo_ref_map = {}
+    clo_ref_map = _build_clo_ref_map(scene.clothoids)
+    elem_graph = _build_elem_graph(scene, all_elems, clo_ref_map)
 
-    for clo in scene.clothoids:
-        if not clo.is_valid:
-            continue
-        for side, pt in [("line", clo._line_pt), ("circle", clo._circle_pt)]:
-            if pt is None:
-                continue
-            key = (round(pt.x, 3), round(pt.y, 3))
-            if key not in clo_ref_map:
-                clo_ref_map[key] = []
-            clo_ref_map[key].append({"clothoid_id": clo.id, "side": side})
-
-    def _lookup_clo_ref(x, y):
-        """座標 (x, y) に対応する Clothoid 接点参照を返す。なければ None。"""
-        key = (round(x, 3), round(y, 3))
-        refs = clo_ref_map.get(key)
-        return refs[0] if refs else None
-
-    # [{id, type, start, end, plan_length, heights, points_xy,
-    elem_graph = []
-    #   start_clo_ref, end_clo_ref}, ...]
-    for obj in all_elems:
-        ep = next((e for e in scene.element_profiles
-                   if e.element_id == obj.id), None)
-        pl = ep.plan_length if ep else plan_length_of(obj)
-        pts = _elem_endpoints_xy(obj)
-        if pts is None:
-            continue
-        s, e = pts
-
-        # 縦断高さをサンプリング
-        n_h = max(2, int(pl * 0.2))
-        heights = []
-        if ep:
-            for i in range(n_h + 1):
-                d = pl * i / n_h
-                elv = ep.elev_at(d)
-                heights.append([d, elv])
-        else:
-            heights = [[0.0, 0.0], [pl, 0.0]]
-
-        # 平面形状点列をサンプリング（要素の種類に応じて正確な曲線形状を生成）
-        n_pts = max(4, int(pl * 0.5))
-        points_xy = []   # [[x, y], ...] 正順（start→end）
-        if isinstance(obj, Segment):
-            for i in range(n_pts + 1):
-                t = i / n_pts
-                x = obj.start.x + (obj.end.x - obj.start.x) * t
-                y = obj.start.y + (obj.end.y - obj.start.y) * t
-                points_xy.append([x, y])
-        elif isinstance(obj, Arc):
-            ci = obj.circle
-            a0 = obj.angle_start
-            span = obj.arc_angle()   # 常に正（CCW）
-            for i in range(n_pts + 1):
-                ang = a0 + span * i / n_pts
-                x = ci.center.x + ci.radius * math.cos(ang)
-                y = ci.center.y + ci.radius * math.sin(ang)
-                points_xy.append([x, y])
-        elif isinstance(obj, Clothoid):
-            raw = obj.points   # Vec2 リスト
-            if raw:
-                cum = [0.0]
-                for k in range(1, len(raw)):
-                    dx = raw[k].x - raw[k - 1].x
-                    dy = raw[k].y - raw[k - 1].y
-                    cum.append(cum[-1] + math.hypot(dx, dy))
-                total = cum[-1]
-                for i in range(n_pts + 1):
-                    target = total * i / n_pts
-                    for k in range(len(cum) - 1):
-                        if cum[k] <= target <= cum[k + 1]:
-                            t = ((target - cum[k]) / (cum[k + 1] - cum[k])
-                                 if cum[k + 1] > cum[k] else 0)
-                            x = raw[k].x + (raw[k + 1].x - raw[k].x) * t
-                            y = raw[k].y + (raw[k + 1].y - raw[k].y) * t
-                            points_xy.append([x, y])
-                            break
-                    else:
-                        points_xy.append([raw[-1].x, raw[-1].y])
-
-        if not points_xy:
-            points_xy = [[s.x, s.y], [e.x, e.y]]
-
-        # 端点に対応するClothoid接点参照を取得
-        start_clo_ref = _lookup_clo_ref(s.x, s.y)
-        end_clo_ref = _lookup_clo_ref(e.x, e.y)
-
-        elem_graph.append({
-            "id": obj.id,
-            "type": type(obj).__name__,
-            "nickname": scene.get_nickname(
-                obj.id,
-                "seg" if isinstance(obj, Segment) else
-                "arc" if isinstance(obj, Arc) else "clothoid"),
-            "start": [s.x, s.y],
-            "end": [e.x, e.y],
-            "plan_length": pl,
-            "heights": heights,
-            "points_xy": points_xy,
-            # どのClothoidのどちら側の接点が端点になっているか
-            # None: Clothoid接点ではない端点
-            # {"clothoid_id": int, "side": "line"|"circle"}: Clothoid接点
-            "start_clo_ref": start_clo_ref,
-            "end_clo_ref": end_clo_ref,
-        })
-
-    # 走行チェーン先頭要素と方向を記録（オートドライブの起点）
     start_info = None
     if elements:
         first = elements[0]
         pts = _elem_endpoints_xy(first)
         if pts:
-            if rev_flags[0]:
-                start_info = {"id": first.id, "forward": False}
-            else:
-                start_info = {"id": first.id, "forward": True}
+            start_info = {"id": first.id, "forward": not rev_flags[0]}
 
     return {
         "centerline_3d": build_centerline(elements, profiles, rev_flags),
