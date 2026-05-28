@@ -123,7 +123,14 @@ class RightPanel(QWidget, PropBuilderMixin):
 
         # ── ニックネームで選択エリア ─────────────────────────
         nick_group = QGroupBox("ニックネームで選択")
-        nick_layout = QVBoxLayout(nick_group)
+        # チェックボックス付きタイトルで折りたたみ可能にする
+        nick_group.setCheckable(True)
+        nick_group.setChecked(True)  # デフォルトは展開
+
+        # 折りたたみ用コンテナ
+        nick_content = QWidget()
+        nick_layout = QVBoxLayout(nick_content)
+        nick_layout.setContentsMargins(0, 0, 0, 0)
 
         self._nick_combos: list[QComboBox] = []
         self._nick_combo_area = QVBoxLayout()
@@ -153,6 +160,13 @@ class RightPanel(QWidget, PropBuilderMixin):
         btn_redraw.clicked.connect(self._redraw)
         btn_row2.addWidget(btn_redraw)
         nick_layout.addLayout(btn_row2)
+
+        # コンテナを nick_group の外側レイアウトに追加して折りたたみを接続
+        nick_outer = QVBoxLayout(nick_group)
+        nick_outer.setContentsMargins(4, 2, 4, 4)
+        nick_outer.addWidget(nick_content)
+        nick_group.toggled.connect(nick_content.setVisible)
+
         root_layout.addWidget(nick_group)
 
         # 初期コンボ x2
