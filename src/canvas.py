@@ -162,6 +162,10 @@ class Canvas(QWidget):
         self._circle_center: Optional[Vec2] = None
         self._rubber_radius: float = 0.0
 
+        # ラバーバンド選択（Shift+ドラッグ）
+        self._rubber_select_start: Optional[Vec2] = None  # スクリーン座標
+        self._rubber_select_end: Optional[Vec2] = None    # スクリーン座標
+
         # ハンドルキャッシュ
         self._handles: list[Handle] = []
 
@@ -597,6 +601,131 @@ class Canvas(QWidget):
         proj = a + ab * t
         return (p - proj).length()
 
+    # ─── ラバーバンド選択 ────────────────────────────────────
+    def _arc_in_rect(self, ci: Circle, arc: Arc,
+                     wx0: float, wy0: float,
+                     wx1: float, wy1: float) -> bool:
+        """Arc が矩形 [wx0,wx1]×[wy0,wy1] に完全に含まれるか判定する。
+
+        始点・終点と弧上のサンプル点（約 10° 刻み）が全て矩形内に
+        収まるかどうかで判定する。
+
+        Parameters
+        ----------
+        ci : Circle
+            arc が属する円。
+        arc : Arc
+            判定する円弧。
+        wx0, wy0, wx1, wy1 : float
+            ワールド座標の矩形（wx0 < wx1、wy0 < wy1）。
+
+        Returns
+        -------
+        bool
+        """
+        def in_r(x, y):
+            return wx0 <= x <= wx1 and wy0 <= y <= wy1
+
+        if not in_r(arc.start.x, arc.start.y):
+            return False
+        if not in_r(arc.end.x, arc.end.y):
+            return False
+        cx, cy, r = ci.center.x, ci.center.y, ci.radius
+        span = arc.arc_angle()
+        n = max(8, int(abs(span) / math.radians(10)))
+        for i in range(1, n):
+            ang = arc.angle_start + span * i / n
+            if not in_r(cx + r * math.cos(ang), cy + r * math.sin(ang)):
+                return False
+        return True
+
+    def _objects_in_world_rect(self, wx0: float, wy0: float,
+                               wx1: float, wy1: float) -> list:
+        """ワールド矩形 [wx0,wx1]×[wy0,wy1] に含まれる図形リストを返す。
+
+        選択ルール:
+        - Clothoid: 全点が矩形内 → Clothoid を追加
+        - Arc: 全サンプル点が矩形内 → Arc と親 Circle を追加
+        - Circle（弧なし）: バウンディングボックスが矩形内 → Circle を追加
+        - Segment: 両端点が矩形内 → Segment と親 Line を追加
+
+        重複は id() で排除し、追加順を保持して返す。
+
+        Parameters
+        ----------
+        wx0, wy0, wx1, wy1 : float
+            ワールド座標の矩形（wx0 < wx1、wy0 < wy1）。
+
+        Returns
+        -------
+        list
+            含まれる図形オブジェクトのリスト（重複なし）。
+        """
+        def in_r(x, y):
+            return wx0 <= x <= wx1 and wy0 <= y <= wy1
+
+        seen: set[int] = set()
+        result: list = []
+
+        def add(obj):
+            oid = id(obj)
+            if oid not in seen:
+                seen.add(oid)
+                result.append(obj)
+
+        # Clothoid: 全点が矩形内
+        for clo in self.scene.clothoids:
+            if clo.points and all(in_r(p.x, p.y) for p in clo.points):
+                add(clo)
+
+        # 円弧あり → 含まれる Arc と親 Circle を追加
+        # 円弧なし → バウンディングボックスで判定
+        for ci in self.scene.circles:
+            if ci.arcs:
+                for arc in ci.arcs:
+                    if self._arc_in_rect(ci, arc, wx0, wy0, wx1, wy1):
+                        add(arc)
+                        add(ci)
+            else:
+                cx, cy, rad = ci.center.x, ci.center.y, ci.radius
+                if (in_r(cx - rad, cy) and in_r(cx + rad, cy)
+                        and in_r(cx, cy - rad) and in_r(cx, cy + rad)):
+                    add(ci)
+
+        # Segment: 両端点が矩形内 → Segment と親 Line を追加
+        for ln in self.scene.lines:
+            for seg in ln.segments:
+                if in_r(seg.start.x, seg.start.y) and in_r(seg.end.x, seg.end.y):
+                    add(seg)
+                    add(ln)
+
+        return result
+
+    def _complete_rubber_select(self) -> list:
+        """ラバーバンド矩形に含まれる図形リストを返す。
+
+        スクリーン座標の矩形をワールド座標に変換し、
+        :meth:`_objects_in_world_rect` を呼び出す。
+        矩形サイズが 4px 未満のときは空リストを返す（クリック扱い）。
+
+        Returns
+        -------
+        list
+            選択された図形オブジェクトのリスト。
+        """
+        s, e = self._rubber_select_start, self._rubber_select_end
+        if s is None or e is None:
+            return []
+        if abs(e.x - s.x) < 4 and abs(e.y - s.y) < 4:
+            return []
+        sx0, sy0 = min(s.x, e.x), min(s.y, e.y)
+        sx1, sy1 = max(s.x, e.x), max(s.y, e.y)
+        # スクリーン y 下向き → ワールド y 上向き
+        # 画面上端(sy0) → ワールド y 最大、画面下端(sy1) → ワールド y 最小
+        w_tl = self.s2w(sx0, sy0)
+        w_br = self.s2w(sx1, sy1)
+        return self._objects_in_world_rect(w_tl.x, w_br.y, w_br.x, w_tl.y)
+
     # ─── 全体表示 ────────────────────────────────────────────
     def fit_all(self):
         """全図形の AABB を計算し、10% マージンで画面全体に収まるよう表示を調整する。
@@ -661,8 +790,10 @@ class Canvas(QWidget):
         # クロソイド
         for clo in self.scene.clothoids:
             self._draw_clothoid(painter, clo)
-        # ラバー線
+        # ラバー線（描画モード）
         self._draw_rubber(painter)
+        # ラバーバンド選択矩形（Shift+ドラッグ）
+        self._draw_rubber_select(painter)
         # ハンドル
         self._draw_handles(painter)
 
@@ -896,6 +1027,27 @@ class Canvas(QWidget):
             r = self.scale_w2s(self._rubber_radius)
             painter.drawEllipse(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r))
 
+    def _draw_rubber_select(self, painter: QPainter):
+        """ラバーバンド選択矩形を半透明で描画する。
+
+        Shift+ドラッグ中のみ描画する。青系の破線枠と半透明塗りで表示する。
+
+        Parameters
+        ----------
+        painter : QPainter
+            描画先のペインター。
+        """
+        if self._rubber_select_start is None or self._rubber_select_end is None:
+            return
+        s, e = self._rubber_select_start, self._rubber_select_end
+        x0, y0 = min(s.x, e.x), min(s.y, e.y)
+        x1, y1 = max(s.x, e.x), max(s.y, e.y)
+        rect = QRectF(x0, y0, x1 - x0, y1 - y0)
+        painter.setPen(QPen(QColor(80, 200, 255), 1, Qt.PenStyle.DashLine))
+        painter.setBrush(QBrush(QColor(80, 200, 255, 30)))
+        painter.drawRect(rect)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
     def _draw_handles(self, painter: QPainter):
         """選択中の図形のハンドルを円として描画する。
 
@@ -978,11 +1130,17 @@ class Canvas(QWidget):
                     self.selection_changed.emit(self._selected)
                     self.update()
                 else:
-                    self._pan_start_screen = sw
-                    self._pan_offset_start = Vec2(
-                        self._offset.x, self._offset.y)
-                    self._is_panning = True
-                    self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    mods = event.modifiers()
+                    if mods & Qt.KeyboardModifier.ShiftModifier:
+                        # Shift+空白ドラッグ → ラバーバンド選択開始
+                        self._rubber_select_start = sw
+                        self._rubber_select_end = sw
+                    else:
+                        self._pan_start_screen = sw
+                        self._pan_offset_start = Vec2(
+                            self._offset.x, self._offset.y)
+                        self._is_panning = True
+                        self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
             elif self.mode == self.MODE_LINE:
                 self._line_click(w)
@@ -1013,6 +1171,13 @@ class Canvas(QWidget):
             self._mouse_moved_px = math.hypot(dx, dy)  # パン中も移動量を記録
             self._offset = Vec2(self._pan_offset_start.x + dx,
                                 self._pan_offset_start.y + dy)
+            self.update()
+            return
+
+        # ラバーバンド選択中: 終点を更新して再描画
+        if self._rubber_select_start is not None:
+            self._rubber_select_end = sw
+            self.mouse_world_pos.emit(w.x, w.y)
             self.update()
             return
 
@@ -1082,6 +1247,17 @@ class Canvas(QWidget):
             return
 
         if btn == Qt.MouseButton.LeftButton:
+            # ラバーバンド選択完了
+            if self._rubber_select_start is not None:
+                sel = self._complete_rubber_select()
+                self._selected = sel
+                self._rebuild_handles()
+                self.selection_changed.emit(self._selected)
+                self._rubber_select_start = None
+                self._rubber_select_end = None
+                self.update()
+                return
+
             if self._is_panning:
                 self._is_panning = False
                 self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -1146,6 +1322,8 @@ class Canvas(QWidget):
             self._line_first_pt = None
             self._last_line = None
             self._rubber_end = None
+            self._rubber_select_start = None
+            self._rubber_select_end = None
             self.update()
         elif k == Qt.Key.Key_Delete:
             self._delete_selected()

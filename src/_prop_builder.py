@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
     QDoubleSpinBox, QGroupBox, QFrame, QLineEdit,
     QCheckBox, QComboBox, QSizePolicy, QMenu, QApplication,
+    QRadioButton, QButtonGroup,
 )
 
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid)
@@ -1972,3 +1973,122 @@ class PropBuilderMixin:
         self._build_line_props(ln)
         self._add_nickname_editor(ci)
         self._build_circle_props(ci)
+
+    # ─── 複数選択操作パネル ──────────────────────────────────
+    def _build_multi_select(self, sel: list):
+        """複数選択時の操作パネルを構築して ``_prop_layout`` に追加する。
+
+        選択図形の概要を表示したあと、コピー・平行移動・回転・
+        拡大縮小の各グループを追加する。各操作は ``RightPanel``
+        の ``_do_*`` メソッドに委譲する。
+
+        Parameters
+        ----------
+        sel : list
+            現在の選択図形リスト（Segment/Arc と親 Line/Circle が混在可）。
+        """
+        from models import Line, Circle, Arc, Segment, Clothoid
+
+        # ── サマリ ──────────────────────────────────────────
+        effective = self._effective_set(sel)
+        n_lines = sum(1 for o in effective if isinstance(o, Line))
+        n_circles = sum(1 for o in effective if isinstance(o, Circle))
+        n_clothoids = sum(1 for o in effective if isinstance(o, Clothoid))
+
+        grp_sum = QGroupBox("選択中")
+        lay_sum = QVBoxLayout(grp_sum)
+        parts = []
+        if n_lines:
+            parts.append(f"直線 {n_lines} 本")
+        if n_circles:
+            parts.append(f"円 {n_circles} 個")
+        if n_clothoids:
+            parts.append(f"クロソイド {n_clothoids} 本")
+        lay_sum.addWidget(QLabel("、".join(parts) if parts else "（なし）"))
+        self._prop_layout.addWidget(grp_sum)
+
+        # ── コピー ──────────────────────────────────────────
+        grp_copy = QGroupBox("コピー")
+        lay_copy = QVBoxLayout(grp_copy)
+        lay_copy.addWidget(QLabel(
+            "選択図形を複製し、元の選択を外して\n複製した図形だけを選択状態にする。"))
+        btn_copy = QPushButton("コピー")
+        btn_copy.clicked.connect(lambda: self._do_copy())
+        lay_copy.addWidget(btn_copy)
+        self._prop_layout.addWidget(grp_copy)
+
+        # ── 平行移動 ─────────────────────────────────────────
+        grp_tr = QGroupBox("平行移動")
+        lay_tr = QVBoxLayout(grp_tr)
+        row_dx = QHBoxLayout()
+        row_dx.addWidget(QLabel("ΔX:"))
+        sb_dx = _make_spinbox(0.0, lo=-1e6, hi=1e6, step=1.0, decimals=3)
+        row_dx.addWidget(sb_dx)
+        lay_tr.addLayout(row_dx)
+        row_dy = QHBoxLayout()
+        row_dy.addWidget(QLabel("ΔY:"))
+        sb_dy = _make_spinbox(0.0, lo=-1e6, hi=1e6, step=1.0, decimals=3)
+        row_dy.addWidget(sb_dy)
+        lay_tr.addLayout(row_dy)
+        btn_tr = QPushButton("適用")
+        btn_tr.clicked.connect(
+            lambda: self._do_translate(sb_dx.value(), sb_dy.value()))
+        lay_tr.addWidget(btn_tr)
+        self._prop_layout.addWidget(grp_tr)
+
+        # ── 回転 ────────────────────────────────────────────
+        grp_rot = QGroupBox("回転")
+        lay_rot = QVBoxLayout(grp_rot)
+        row_ang = QHBoxLayout()
+        row_ang.addWidget(QLabel("角度(°):"))
+        sb_ang = _make_spinbox(0.0, lo=-360.0, hi=360.0,
+                               step=1.0, decimals=3)
+        row_ang.addWidget(sb_ang)
+        lay_rot.addLayout(row_ang)
+
+        rb_bbox_rot = QRadioButton("AABB中心")
+        rb_orig_rot = QRadioButton("原点")
+        rb_bbox_rot.setChecked(True)
+        bg_rot = QButtonGroup(grp_rot)
+        bg_rot.addButton(rb_bbox_rot)
+        bg_rot.addButton(rb_orig_rot)
+        row_rb_rot = QHBoxLayout()
+        row_rb_rot.addWidget(rb_bbox_rot)
+        row_rb_rot.addWidget(rb_orig_rot)
+        lay_rot.addLayout(row_rb_rot)
+
+        btn_rot = QPushButton("適用")
+        btn_rot.clicked.connect(
+            lambda: self._do_rotate(sb_ang.value(),
+                                    rb_bbox_rot.isChecked()))
+        lay_rot.addWidget(btn_rot)
+        self._prop_layout.addWidget(grp_rot)
+
+        # ── 拡大縮小 ─────────────────────────────────────────
+        grp_sc = QGroupBox("拡大縮小（XY同率）")
+        lay_sc = QVBoxLayout(grp_sc)
+        lay_sc.addWidget(QLabel("Clothoid保持のためXY同率のみ対応"))
+        row_fac = QHBoxLayout()
+        row_fac.addWidget(QLabel("倍率:"))
+        sb_fac = _make_spinbox(1.0, lo=0.001, hi=1000.0,
+                               step=0.1, decimals=4)
+        row_fac.addWidget(sb_fac)
+        lay_sc.addLayout(row_fac)
+
+        rb_bbox_sc = QRadioButton("AABB中心")
+        rb_orig_sc = QRadioButton("原点")
+        rb_bbox_sc.setChecked(True)
+        bg_sc = QButtonGroup(grp_sc)
+        bg_sc.addButton(rb_bbox_sc)
+        bg_sc.addButton(rb_orig_sc)
+        row_rb_sc = QHBoxLayout()
+        row_rb_sc.addWidget(rb_bbox_sc)
+        row_rb_sc.addWidget(rb_orig_sc)
+        lay_sc.addLayout(row_rb_sc)
+
+        btn_sc = QPushButton("適用")
+        btn_sc.clicked.connect(
+            lambda: self._do_scale(sb_fac.value(),
+                                   rb_bbox_sc.isChecked()))
+        lay_sc.addWidget(btn_sc)
+        self._prop_layout.addWidget(grp_sc)

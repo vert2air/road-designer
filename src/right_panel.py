@@ -15,8 +15,8 @@ from PySide6.QtWidgets import (
     QComboBox,
 )
 from PySide6.QtCore import Qt, Signal
-from models import (Line, Segment, Circle, Arc, Clothoid, Scene,
-                    tangent_at, entry_tangent, SNAP_TOL)
+from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
+                    tangent_at, entry_tangent, SNAP_TOL, new_id)
 from _prop_builder import PropBuilderMixin
 # backward-compat re-export（テストが right_panel から直接 import するため）
 from _prop_builder import (  # noqa: F401
@@ -1425,6 +1425,248 @@ class RightPanel(QWidget, PropBuilderMixin):
                 f" [クロソイド#{obj.id}]")
         return ""
 
+    # ─── ラバーバンド複数選択操作 ─────────────────────────────
+    def _is_rubber_select(self, sel) -> bool:
+        """選択リストに Segment/Arc とその親 Line/Circle が共存するか判定する。
+
+        ラバーバンド選択では線分→親直線も一緒に選択される仕様のため、
+        この状態を検出して複数選択操作パネルを表示するかの判断に使う。
+        """
+        selected_line_ids = {id(o) for o in sel if isinstance(o, Line)}
+        selected_circle_ids = {id(o) for o in sel if isinstance(o, Circle)}
+        for o in sel:
+            if isinstance(o, Segment) and o.line is not None:
+                if id(o.line) in selected_line_ids:
+                    return True
+            if isinstance(o, Arc) and o.circle is not None:
+                if id(o.circle) in selected_circle_ids:
+                    return True
+        return False
+
+    def _effective_set(self, selected) -> list:
+        """Segment→親Line、Arc→親Circle に昇格した重複なしリストを返す。
+
+        操作（移動・回転・複製等）の実行対象として使う。
+        Clothoid はそのまま残す（Line/Circle への依存で自動追従するため）。
+        """
+        seen: set = set()
+        result: list = []
+        for obj in selected:
+            target = obj
+            if isinstance(obj, Segment) and obj.line is not None:
+                target = obj.line
+            elif isinstance(obj, Arc) and obj.circle is not None:
+                target = obj.circle
+            if id(target) not in seen:
+                seen.add(id(target))
+                result.append(target)
+        return result
+
+    def _selection_bbox_center(self, effective) -> Vec2:
+        """有効図形セットの AABB 中心座標を返す。
+
+        回転・拡大縮小の基準点として使う。
+
+        Parameters
+        ----------
+        effective : list
+            :meth:`_effective_set` で得た図形リスト。
+
+        Returns
+        -------
+        Vec2
+            AABB の中心。有効点がなければ原点 (0, 0)。
+        """
+        pts = []
+        for obj in effective:
+            if isinstance(obj, Line):
+                for seg in obj.segments:
+                    s, e = seg.start, seg.end
+                    pts += [(s.x, s.y), (e.x, e.y)]
+                if not obj.segments:
+                    pts += [(obj.ref_start.x, obj.ref_start.y),
+                            (obj.ref_end.x, obj.ref_end.y)]
+            elif isinstance(obj, Circle):
+                r = obj.radius
+                cx, cy = obj.center.x, obj.center.y
+                pts += [(cx - r, cy), (cx + r, cy),
+                        (cx, cy - r), (cx, cy + r)]
+            elif isinstance(obj, Clothoid) and obj.points:
+                pts += [(p.x, p.y) for p in obj.points]
+        if not pts:
+            return Vec2(0, 0)
+        xs, ys = zip(*pts)
+        return Vec2((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+
+    def _recompute_clothoids(self, moved_ids: set):
+        """移動した Line/Circle に関連するクロソイドを再計算する。
+
+        Parameters
+        ----------
+        moved_ids : set[int]
+            ``id(obj)`` の集合（移動・変形した Line または Circle）。
+        """
+        for clo in self.scene.clothoids:
+            if id(clo.line) in moved_ids or id(clo.circle) in moved_ids:
+                clo.compute()
+
+    def _do_translate(self, dx: float, dy: float):
+        """選択図形を (dx, dy) 平行移動する。
+
+        操作後は Undo スタックを push し ``scene_changed`` を emit する。
+
+        Parameters
+        ----------
+        dx, dy : float
+            移動量 [m]。
+        """
+        effective = self._effective_set(self._selected)
+        self.request_push_undo.emit()
+        moved_ids: set = set()
+        for obj in effective:
+            if isinstance(obj, Line):
+                obj.ref_start = Vec2(obj.ref_start.x + dx,
+                                     obj.ref_start.y + dy)
+                obj.ref_end = Vec2(obj.ref_end.x + dx,
+                                   obj.ref_end.y + dy)
+                moved_ids.add(id(obj))
+            elif isinstance(obj, Circle):
+                obj.center = Vec2(obj.center.x + dx, obj.center.y + dy)
+                moved_ids.add(id(obj))
+        self._recompute_clothoids(moved_ids)
+        self.scene_changed.emit()
+        self._rebuild_props()
+
+    def _do_rotate(self, angle_deg: float, use_bbox_center: bool):
+        """選択図形を指定角度（度数）回転する。
+
+        Parameters
+        ----------
+        angle_deg : float
+            回転角 [°]（正 = 反時計回り）。
+        use_bbox_center : bool
+            True → AABB 中心を回転基準、False → 原点 (0, 0) を基準。
+        """
+        effective = self._effective_set(self._selected)
+        center = (self._selection_bbox_center(effective)
+                  if use_bbox_center else Vec2(0, 0))
+        angle_rad = math.radians(angle_deg)
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+        cx, cy = center.x, center.y
+
+        def rot(v: Vec2) -> Vec2:
+            dx_r = v.x - cx
+            dy_r = v.y - cy
+            return Vec2(cx + dx_r * cos_a - dy_r * sin_a,
+                        cy + dx_r * sin_a + dy_r * cos_a)
+
+        self.request_push_undo.emit()
+        moved_ids: set = set()
+        for obj in effective:
+            if isinstance(obj, Line):
+                obj.ref_start = rot(obj.ref_start)
+                obj.ref_end = rot(obj.ref_end)
+                moved_ids.add(id(obj))
+            elif isinstance(obj, Circle):
+                obj.center = rot(obj.center)
+                for arc in obj.arcs:
+                    arc.angle_start += angle_rad
+                    arc.angle_end += angle_rad
+                moved_ids.add(id(obj))
+        self._recompute_clothoids(moved_ids)
+        self.scene_changed.emit()
+        self._rebuild_props()
+
+    def _do_scale(self, factor: float, use_bbox_center: bool):
+        """選択図形を均等拡大縮小する（Clothoid 保持のため XY 同率）。
+
+        Parameters
+        ----------
+        factor : float
+            倍率（0 以外の正数）。
+        use_bbox_center : bool
+            True → AABB 中心を基準、False → 原点 (0, 0) を基準。
+        """
+        if abs(factor) < 1e-9:
+            return
+        effective = self._effective_set(self._selected)
+        center = (self._selection_bbox_center(effective)
+                  if use_bbox_center else Vec2(0, 0))
+        cx, cy = center.x, center.y
+
+        def sc(v: Vec2) -> Vec2:
+            return Vec2(cx + (v.x - cx) * factor,
+                        cy + (v.y - cy) * factor)
+
+        self.request_push_undo.emit()
+        moved_ids: set = set()
+        for obj in effective:
+            if isinstance(obj, Line):
+                obj.ref_start = sc(obj.ref_start)
+                obj.ref_end = sc(obj.ref_end)
+                moved_ids.add(id(obj))
+            elif isinstance(obj, Circle):
+                obj.center = sc(obj.center)
+                obj.radius = obj.radius * factor
+                moved_ids.add(id(obj))
+        self._recompute_clothoids(moved_ids)
+        self.scene_changed.emit()
+        self._rebuild_props()
+
+    def _do_copy(self):
+        """選択図形を複製し、複製した図形だけを選択状態にする。
+
+        複製後は元の選択を解除して複製物を ``request_select`` で選択する。
+        Clothoid については、対応する Line/Circle が複製されていれば
+        その複製物を参照するクロソイドを作成し、されていなければ
+        元の Line/Circle を参照する。
+        """
+        effective = self._effective_set(self._selected)
+        self.request_push_undo.emit()
+        id_map: dict = {}
+        new_objs: list = []
+        clothoids_to_copy = [o for o in effective
+                             if isinstance(o, Clothoid)]
+        for obj in effective:
+            if isinstance(obj, Clothoid):
+                continue
+            if isinstance(obj, Line):
+                new_line = Line(
+                    Vec2(obj.ref_start.x, obj.ref_start.y),
+                    Vec2(obj.ref_end.x, obj.ref_end.y))
+                new_line.id = new_id()
+                for seg in obj.segments:
+                    new_seg = Segment(new_line, seg.t_start, seg.t_end)
+                    new_seg.id = new_id()
+                    new_line.segments.append(new_seg)
+                self.scene.add_line(new_line)
+                id_map[id(obj)] = new_line
+                new_objs.append(new_line)
+            elif isinstance(obj, Circle):
+                new_ci = Circle(
+                    Vec2(obj.center.x, obj.center.y), obj.radius)
+                new_ci.id = new_id()
+                for arc in obj.arcs:
+                    new_arc = Arc(new_ci, arc.angle_start, arc.angle_end)
+                    new_arc.id = new_id()
+                    new_ci.arcs.append(new_arc)
+                self.scene.add_circle(new_ci)
+                id_map[id(obj)] = new_ci
+                new_objs.append(new_ci)
+        for clo in clothoids_to_copy:
+            new_line = id_map.get(id(clo.line), clo.line)
+            new_ci = id_map.get(id(clo.circle), clo.circle)
+            new_clo = Clothoid(new_line, new_ci,
+                               reversed_flag=clo.reversed_flag,
+                               snap_segment=clo.snap_segment,
+                               snap_arc=clo.snap_arc)
+            new_clo.id = new_id()
+            self.scene.add_clothoid(new_clo)
+            new_objs.append(new_clo)
+        self.scene_changed.emit()
+        self.request_select.emit(new_objs)
+
     def _clear_props(self):
         """プロパティレイアウトの全ウィジェットを即時削除する。
 
@@ -1472,6 +1714,10 @@ class RightPanel(QWidget, PropBuilderMixin):
 
         # ── 2図形選択 ────────────────────────────────────────
         if n == 2:
+            # ラバーバンド選択（Seg+親Line や Arc+親Circle が混在）
+            if self._is_rubber_select(sel):
+                self._build_multi_select(sel)
+                return
             a, b = sel
             # Segment は親 Line として扱う (接続操作のため)
             la = a.line if isinstance(a, Segment) else a
@@ -1520,13 +1766,5 @@ class RightPanel(QWidget, PropBuilderMixin):
             self._build_offset_constraint(lines[0], circles[0], circles[1])
             return
 
-        self._prop_layout.addWidget(QLabel(f"{n} 個の図形が選択されています"))
-        # それでも各図形のニックネームだけ表示
-        for obj in sel:
-            oid = getattr(obj, 'id', None)
-            if oid:
-                prefix = ("line" if isinstance(obj, Line) else
-                          "circle" if isinstance(obj, Circle) else
-                          "clothoid" if isinstance(obj, Clothoid) else "seg")
-                name = self.scene.get_nickname(oid, prefix)
-                self._prop_layout.addWidget(QLabel(f"  • {name}"))
+        # ラバーバンド選択または一般的な複数選択 → 操作パネル
+        self._build_multi_select(sel)
