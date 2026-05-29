@@ -11,7 +11,7 @@ import math
 from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QGroupBox, QScrollArea, QFrame,
+    QGroupBox, QScrollArea, QFrame, QSplitter,
     QComboBox,
 )
 from PySide6.QtCore import Qt, Signal
@@ -133,8 +133,18 @@ class RightPanel(QWidget, PropBuilderMixin):
         nick_layout.setContentsMargins(0, 0, 0, 0)
 
         self._nick_combos: list[QComboBox] = []
-        self._nick_combo_area = QVBoxLayout()
-        nick_layout.addLayout(self._nick_combo_area)
+        # コンボ一覧をスクロール可能なエリアに入れる（大量選択時に画面を圧迫しない）
+        nick_combo_widget = QWidget()
+        self._nick_combo_area = QVBoxLayout(nick_combo_widget)
+        self._nick_combo_area.setContentsMargins(0, 0, 0, 0)
+        self._nick_combo_area.setAlignment(Qt.AlignmentFlag.AlignTop)
+        nick_scroll = QScrollArea()
+        nick_scroll.setWidget(nick_combo_widget)
+        nick_scroll.setWidgetResizable(True)
+        nick_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        nick_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        nick_layout.addWidget(nick_scroll)
 
         # 1行目: +, -, 選択を適用, 図形を削除
         btn_row1 = QHBoxLayout()
@@ -167,8 +177,6 @@ class RightPanel(QWidget, PropBuilderMixin):
         nick_outer.addWidget(nick_content)
         nick_group.toggled.connect(nick_content.setVisible)
 
-        root_layout.addWidget(nick_group)
-
         # 初期コンボ x2
         self._add_nick_combo()
         self._add_nick_combo()
@@ -189,7 +197,16 @@ class RightPanel(QWidget, PropBuilderMixin):
         self._prop_layout.setSizeConstraint(
             QLayout.SizeConstraint.SetMinAndMaxSize)
         scroll.setWidget(self._prop_widget)
-        root_layout.addWidget(scroll, 1)
+
+        # ニックネームエリアとプロパティエリアをスプリッターで結合
+        # → ドラッグで高さを自由に調整できる
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(nick_group)
+        splitter.addWidget(scroll)
+        splitter.setStretchFactor(0, 0)   # nick_group: 伸縮なし
+        splitter.setStretchFactor(1, 1)   # scroll: 残り全体を使う
+        splitter.setSizes([200, 400])     # 初期サイズ（ピクセル）
+        root_layout.addWidget(splitter, 1)
 
     def update_mouse_pos(self, x: float, y: float):
         """Canvas.mouse_world_pos シグナルを受け取り、マウス座標ラベルを更新する。
@@ -397,8 +414,11 @@ class RightPanel(QWidget, PropBuilderMixin):
                 obj = self._find_by_nick_label(last_cb.currentText())
                 if obj is not None:
                     self._add_nick_combo()
-                    return  # _add_nick_combo 内で _refresh_nick_combos が呼ばれる
+                    # _add_nick_combo 内で _refresh_nick_combos が呼ばれる
+                    self._trim_trailing_none_combos()
+                    return
         self._refresh_nick_combos()
+        self._trim_trailing_none_combos()
 
     def _remove_nick_combo(self):
         """末尾のニックネーム選択コンボボックスを 1 個削除する。
@@ -410,6 +430,20 @@ class RightPanel(QWidget, PropBuilderMixin):
             cb = self._nick_combos.pop()
             self._nick_combo_area.removeWidget(cb)
             cb.deleteLater()
+
+    def _trim_trailing_none_combos(self):
+        """末尾に「（なし）」が2個以上続く場合、1個になるよう余分を削除する。
+
+        最低1個のコンボは常に保持する。
+        """
+        while len(self._nick_combos) >= 2:
+            if (self._nick_combos[-1].currentText() == "(なし)"
+                    and self._nick_combos[-2].currentText() == "(なし)"):
+                cb = self._nick_combos.pop()
+                self._nick_combo_area.removeWidget(cb)
+                cb.deleteLater()
+            else:
+                break
 
     # ─── 隣接図形の計算 ──────────────────────────────────────
     SNAP_TOL = SNAP_TOL  # models.SNAP_TOL を参照（= 1.0 m）
@@ -1336,6 +1370,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         self._selected = selected
         self._sync_combos_to_selection(selected)  # まず選択図形をコンボに設定
         self._refresh_nick_combos()               # 設定後に次コンボの選択肢を更新
+        self._trim_trailing_none_combos()         # 末尾の余分な（なし）を除去
         self._rebuild_props()
 
     def _sync_combos_to_selection(self, selected: list):
