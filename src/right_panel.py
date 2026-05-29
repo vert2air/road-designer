@@ -1656,10 +1656,12 @@ class RightPanel(QWidget, PropBuilderMixin):
         Clothoid については、対応する Line/Circle が複製されていれば
         その複製物を参照するクロソイドを作成し、されていなければ
         元の Line/Circle を参照する。
+        縦断線形情報（ElementProfile）も同時に複製する。
         """
         effective = self._effective_set(self._selected)
         self.request_push_undo.emit()
-        id_map: dict = {}
+        id_map: dict = {}       # id(obj_py) → new_obj（Clothoid 解決用）
+        elem_id_map: dict = {}  # 旧整数ID → 新整数ID（ElementProfile 複製用）
         new_objs: list = []
         clothoids_to_copy = [o for o in effective
                              if isinstance(o, Clothoid)]
@@ -1674,6 +1676,7 @@ class RightPanel(QWidget, PropBuilderMixin):
                 for seg in obj.segments:
                     new_seg = Segment(new_line, seg.t_start, seg.t_end)
                     new_seg.id = new_id()
+                    elem_id_map[seg.id] = new_seg.id
                     new_line.segments.append(new_seg)
                 self.scene.add_line(new_line)
                 id_map[id(obj)] = new_line
@@ -1685,6 +1688,7 @@ class RightPanel(QWidget, PropBuilderMixin):
                 for arc in obj.arcs:
                     new_arc = Arc(new_ci, arc.angle_start, arc.angle_end)
                     new_arc.id = new_id()
+                    elem_id_map[arc.id] = new_arc.id
                     new_ci.arcs.append(new_arc)
                 self.scene.add_circle(new_ci)
                 id_map[id(obj)] = new_ci
@@ -1697,10 +1701,84 @@ class RightPanel(QWidget, PropBuilderMixin):
                                snap_segment=clo.snap_segment,
                                snap_arc=clo.snap_arc)
             new_clo.id = new_id()
+            elem_id_map[clo.id] = new_clo.id
             self.scene.add_clothoid(new_clo)
             new_objs.append(new_clo)
+        # 縦断線形情報を複製
+        self._copy_element_profiles(elem_id_map)
         self.scene_changed.emit()
         self.request_select.emit(new_objs)
+
+    def _copy_element_profiles(self, elem_id_map: dict):
+        """旧要素 ID → 新要素 ID のマッピングを使って ElementProfile を複製する。
+
+        GradeLine・VerticalCurve もすべて新しい ID で複製し、
+        GradeLine↔VerticalCurve の相互参照（next_curve/prev_curve および
+        prev_line_id/next_line_id）も新しい ID 体系で再構築する。
+
+        Parameters
+        ----------
+        elem_id_map : dict[int, int]
+            旧 Segment/Arc/Clothoid の整数 ID → 新要素の整数 ID。
+        """
+        from vertical_profile import ElementProfile, GradeLine, VerticalCurve
+
+        for ep in list(self.scene.element_profiles):
+            if ep.element_id not in elem_id_map:
+                continue
+
+            # ── GradeLine を複製 ──────────────────────────────
+            gl_id_map: dict = {}   # 旧 GradeLine.id → 新 GradeLine
+            new_gls: list = []
+            for gl in ep.grade_lines:
+                new_gl = GradeLine()
+                new_gl.id = new_id()
+                new_gl.dist_start = gl.dist_start
+                new_gl.elev_start = gl.elev_start
+                new_gl.dist_end = gl.dist_end
+                new_gl.elev_end = gl.elev_end
+                gl_id_map[gl.id] = new_gl
+                new_gls.append(new_gl)
+
+            # ── VerticalCurve を複製 ──────────────────────────
+            vc_id_map: dict = {}   # 旧 VerticalCurve.id → 新 VerticalCurve
+            new_vcs: list = []
+            for vc in ep.vertical_curves:
+                new_vc = VerticalCurve()
+                new_vc.id = new_id()
+                new_vc.pvi_dist = vc.pvi_dist
+                new_vc.pvi_elev = vc.pvi_elev
+                new_vc.g1 = vc.g1
+                new_vc.g2 = vc.g2
+                new_vc.length = vc.length
+                # prev/next_line_id を新 GradeLine の ID に更新
+                pgl = gl_id_map.get(vc.prev_line_id)
+                ngl = gl_id_map.get(vc.next_line_id)
+                new_vc.prev_line_id = pgl.id if pgl else -1
+                new_vc.next_line_id = ngl.id if ngl else -1
+                vc_id_map[vc.id] = new_vc
+                new_vcs.append(new_vc)
+
+            # ── GradeLine の next/prev_curve 参照を再構築 ────
+            for gl in ep.grade_lines:
+                new_gl = gl_id_map[gl.id]
+                if gl.next_curve is not None:
+                    new_gl.next_curve = vc_id_map.get(gl.next_curve.id)
+                if gl.prev_curve is not None:
+                    new_gl.prev_curve = vc_id_map.get(gl.prev_curve.id)
+
+            # ── ElementProfile 本体を複製 ────────────────────
+            new_ep = ElementProfile()
+            new_ep.id = new_id()
+            new_ep.element_id = elem_id_map[ep.element_id]
+            new_ep.element_type = ep.element_type
+            new_ep.plan_length = ep.plan_length
+            new_ep.reversed_flag = ep.reversed_flag
+            new_ep.elev_start = ep.elev_start
+            new_ep.elev_end = ep.elev_end
+            new_ep.grade_lines = new_gls
+            new_ep.vertical_curves = new_vcs
+            self.scene.element_profiles.append(new_ep)
 
     def _clear_props(self):
         """プロパティレイアウトの全ウィジェットを即時削除する。
