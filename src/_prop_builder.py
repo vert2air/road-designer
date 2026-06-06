@@ -1880,7 +1880,11 @@ class PropBuilderMixin:
                 self._block = True
                 existing.off_a = sb_a.value()
                 existing.off_b = sb_b.value()
-                existing.solve()
+                existing.solve()   # ci.center を更新
+                # 円に付属するクロソイドを再計算
+                for clo in self.scene.clothoids:
+                    if clo.circle is existing.circle:
+                        clo.compute()
                 self._block = False
                 self.scene_changed.emit()
 

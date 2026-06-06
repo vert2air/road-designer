@@ -1538,6 +1538,8 @@ class Canvas(QWidget):
             conn = ln.connection
             if conn and conn.kind == "smooth" and conn.circle is not None:
                 self._update_smooth_circle(conn)
+        # TwoLineOffsetConstraint: 直線が動いたら円中心を追従させる
+        self._propagate_two_line_oc_for_line(ln)
 
     def _propagate_circle(self, ci: Circle):
         """円 ``ci`` の変形をクロソイド・オフセット拘束に伝播する。
@@ -1589,18 +1591,45 @@ class Canvas(QWidget):
         self._propagate_two_line_offset_constraints(ci)
 
     def _propagate_two_line_offset_constraints(self, ci: 'Circle'):
-        """TwoLineOffsetConstraint のうち ci を参照するものについて両直線を再計算する。
+        """円 ci の半径変化を TwoLineOffsetConstraint に伝播する。
+
+        ci が circle として含まれる TwoLineOffsetConstraint に対して
+        solve() を呼び出し、円中心を再計算する（2直線は動かさない）。
+        solve() 後に ci に付属するクロソイドを再計算する。
 
         Parameters
         ----------
         ci : Circle
-            変化した円（center または radius が変わった円）。
+            半径または位置が変化した円。
         """
         for oc in self.scene.two_line_offset_constraints:
             if oc.circle is ci:
-                oc.solve()
-                self._propagate_line(oc.line_a)
-                self._propagate_line(oc.line_b)
+                oc.solve()   # ci.center を更新（直線は動かさない）
+                # ci.center が変わったのでクロソイドを再計算
+                for clo in self.scene.clothoids:
+                    if clo.circle is ci:
+                        clo.compute()
+                self.scene_changed.emit()
+                self.update()
+
+    def _propagate_two_line_oc_for_line(self, ln: 'Line'):
+        """直線 ln の移動を TwoLineOffsetConstraint に伝播する。
+
+        ln が line_a または line_b として含まれる TwoLineOffsetConstraint に
+        対して solve() を呼び出し、円中心を再計算する。
+
+        Parameters
+        ----------
+        ln : Line
+            移動した直線。
+        """
+        for oc in self.scene.two_line_offset_constraints:
+            if oc.line_a is ln or oc.line_b is ln:
+                oc.solve()   # oc.circle.center を更新
+                # 円に付属するクロソイドを再計算
+                for clo in self.scene.clothoids:
+                    if clo.circle is oc.circle:
+                        clo.compute()
                 self.scene_changed.emit()
                 self.update()
 

@@ -1631,29 +1631,36 @@ class OffsetConstraint:
 
 @dataclass
 class TwoLineOffsetConstraint:
-    """2直線 A・B を円 C に対してオフセット拘束するデータクラス。
+    """2直線 A・B と円 C のオフセット拘束データクラス。
 
-    直線 A の方向を保ったまま、円 C の中心から A への垂直距離を
-    ``C.radius + off_a`` に保つ。同様に直線 B も ``C.radius + off_b`` に保つ。
-    円 C の半径が変更された場合、両直線は自動的に追従してスライドする。
+    直線 A・B は固定し、両直線からの距離拘束を満たすよう円 C の中心位置を
+    求める（直線の位置・方向は変えない）。
+
+    拘束条件:
+
+    * ``dist(line_a, C.center) = C.radius + off_a``
+    * ``dist(line_b, C.center) = C.radius + off_b``
+
+    直線が移動したとき、あるいは ``off_a`` / ``off_b`` / ``C.radius`` が
+    変更されたときに :meth:`solve` を呼ぶことで円中心が再計算される。
 
     Attributes
     ----------
     id : int
         グローバルユニーク ID。
     line_a : Line
-        拘束される直線 A。
+        拘束の基準となる直線 A。
     line_b : Line
-        拘束される直線 B。
+        拘束の基準となる直線 B。
     circle : Circle
-        拘束の基準となる円 C。
+        中心位置が拘束される円 C。
     off_a : float
         直線 A と円 C のオフセット量 [m]。
-        ``dist(line_a, C.center) = C.radius + off_a`` が維持される。
     off_b : float
         直線 B と円 C のオフセット量 [m]。
     feasible : bool
         最後の :meth:`solve` が成功した場合 ``True``。
+        2直線が平行（行列式 ≈ 0）のとき ``False``。
     """
 
     id: int = field(default_factory=new_id)
@@ -1666,63 +1673,61 @@ class TwoLineOffsetConstraint:
 
     def __post_init__(self):
         """内部符号フラグ ``_eps_a``・``_eps_b`` を初期化する。"""
-        self._eps_a: int = 0   # sign of signed_dist(circle.center) for line_a
-        self._eps_b: int = 0   # sign of signed_dist(circle.center) for line_b
-
-    def _solve_one(self, ln, eps: int, off: float) -> bool:
-        """直線 ``ln`` を円 C から ``off`` だけオフセットした位置にスライドする。
-
-        直線の方向ベクトルは変えず、法線方向にのみ平行移動する。
-
-        Parameters
-        ----------
-        ln : Line
-            移動する直線。
-        eps : int
-            符号（+1 または -1）。正のとき円中心が直線の左側に来る。
-        off : float
-            オフセット量 ``off_a`` または ``off_b``。
-
-        Returns
-        -------
-        bool
-            常に ``True``。
-        """
-        c_center = self.circle.center
-        target_r = self.circle.radius + off
-        # signed_dist(c_center) = d.cross(c_center - ref_start)
-        # 左法線 n = Vec2(-d.y, d.x) に対して
-        # shift = signed_dist_current - eps * target_r
-        current_s = ln.signed_dist(c_center)
-        shift = current_s - eps * target_r
-        d = ln.direction
-        # 左法線方向に shift だけ移動（符号に注意）
-        # 移動後: signed_dist_new = current_s - shift = eps * target_r ✓
-        nx, ny = -d.y, d.x
-        ln.ref_start = Vec2(ln.ref_start.x + shift * nx,
-                            ln.ref_start.y + shift * ny)
-        ln.ref_end = Vec2(ln.ref_end.x + shift * nx,
-                          ln.ref_end.y + shift * ny)
-        return True
+        self._eps_a: int = 0   # sign(signed_dist_a(C.center))  設定時に固定
+        self._eps_b: int = 0   # sign(signed_dist_b(C.center))
 
     def solve(self) -> bool:
-        """off_a・off_b から直線 A・B の参照点を再計算する。
+        """2直線の現在位置から円 C の中心を再計算する。
 
-        各直線の方向を固定したまま、円 C の中心から各直線への垂直距離が
-        ``C.radius + off_a`` / ``C.radius + off_b`` になるよう平行移動する。
+        各直線の左法線 ``n`` を使って連立方程式を解く::
+
+            n_a · P = c_a + ε_a · (C.radius + off_a)
+            n_b · P = c_b + ε_b · (C.radius + off_b)
+
+        ここで ``c = n · ref_start``（直線の切片）、``ε`` は設定時に固定した符号。
+
+        2直線が平行（行列式 < 1e-9）のときは ``feasible=False`` を設定して
+        ``False`` を返す（円中心は変更しない）。
 
         Returns
         -------
         bool
-            line_a・line_b・circle のいずれかが ``None`` でなければ常に ``True``。
+            計算成功のとき ``True``、2直線が平行のとき ``False``。
         """
         if self.line_a is None or self.line_b is None or self.circle is None:
             self.feasible = False
             return False
         if self._eps_a == 0 or self._eps_b == 0:
             self.calc_offsets_from_current()
-        self._solve_one(self.line_a, self._eps_a, self.off_a)
-        self._solve_one(self.line_b, self._eps_b, self.off_b)
+
+        d_a = self.line_a.direction
+        d_b = self.line_b.direction
+        # 左法線 n = Vec2(-d.y, d.x)
+        n_ax, n_ay = -d_a.y, d_a.x
+        n_bx, n_by = -d_b.y, d_b.x
+
+        # 切片 c = n · ref_start
+        rs_a = self.line_a.ref_start
+        rs_b = self.line_b.ref_start
+        c_a = n_ax * rs_a.x + n_ay * rs_a.y
+        c_b = n_bx * rs_b.x + n_by * rs_b.y
+
+        r_a = self.circle.radius + self.off_a
+        r_b = self.circle.radius + self.off_b
+
+        rhs_a = c_a + self._eps_a * r_a
+        rhs_b = c_b + self._eps_b * r_b
+
+        # 2×2 連立方程式: n_a · P = rhs_a, n_b · P = rhs_b
+        det = n_ax * n_by - n_ay * n_bx
+        if abs(det) < 1e-9:
+            self.feasible = False
+            return False   # 2直線が平行
+
+        px = (rhs_a * n_by - rhs_b * n_ay) / det
+        py = (n_ax * rhs_b - n_bx * rhs_a) / det
+
+        self.circle.center = Vec2(px, py)
         self.feasible = True
         return True
 
