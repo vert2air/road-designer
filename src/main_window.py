@@ -239,6 +239,8 @@ class MainWindow(QMainWindow):
         self._canvas.mouse_world_pos.connect(
             self._right_panel.update_mouse_pos)
         self._canvas.hover_changed.connect(self._right_panel.update_hovered)
+        self._canvas.measure_dist_changed.connect(
+            self._right_panel.update_measure_dist)
 
         rp = self._right_panel
         rp.request_smooth_connect.connect(self._do_smooth_connect)

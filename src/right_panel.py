@@ -113,6 +113,12 @@ class RightPanel(QWidget, PropBuilderMixin):
         coord_xy.addWidget(self._lbl_mouse_x)
         coord_xy.addWidget(self._lbl_mouse_y)
         coord_layout.addLayout(coord_xy)
+        # 距離測定ラベル（ラバーバンド選択中のみ表示）
+        self._lbl_measure_dist = QLabel("")
+        self._lbl_measure_dist.setStyleSheet(
+            "color: #50c8ff; font-weight: bold;")
+        self._lbl_measure_dist.hide()
+        coord_layout.addWidget(self._lbl_measure_dist)
         # ホバー中の図形名ラベル（図形がある時のみ表示）
         self._lbl_hovered = QLabel("")
         self._lbl_hovered.setWordWrap(True)
@@ -218,6 +224,21 @@ class RightPanel(QWidget, PropBuilderMixin):
         """
         self._lbl_mouse_x.setText(f"X: {x:.3f}")
         self._lbl_mouse_y.setText(f"Y: {y:.3f}")
+
+    def update_measure_dist(self, dist: float):
+        """Canvas.measure_dist_changed シグナルを受け取り、距離ラベルを更新する。
+
+        Parameters
+        ----------
+        dist : float
+            ラバーバンド対角線のワールド距離 [m]。-1 のとき非表示にする。
+        """
+        if dist < 0:
+            self._lbl_measure_dist.hide()
+            self._lbl_measure_dist.setText("")
+        else:
+            self._lbl_measure_dist.setText(f"距離: {dist:.3f} m")
+            self._lbl_measure_dist.show()
 
     def update_hovered(self, obj):
         """Canvas.hover_changed シグナルを受け取り、ホバー中の図形名を表示する。

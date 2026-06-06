@@ -116,6 +116,7 @@ class Canvas(QWidget):
     scene_changed = Signal()       # シーン変更
     mouse_world_pos = Signal(float, float)  # マウスのワールド座標
     hover_changed = Signal(object)         # ホバー中の図形（None のとき非ホバー）
+    measure_dist_changed = Signal(float)   # ラバーバンド対角距離（非測定時 -1）
 
     MODE_SELECT = "select"
     MODE_LINE = "line"
@@ -1047,6 +1048,9 @@ class Canvas(QWidget):
         painter.setBrush(QBrush(QColor(80, 200, 255, 30)))
         painter.drawRect(rect)
         painter.setBrush(Qt.BrushStyle.NoBrush)
+        # 対角線（始点 → 終点）を実線で描画
+        painter.setPen(QPen(QColor(80, 200, 255), 1, Qt.PenStyle.SolidLine))
+        painter.drawLine(QPointF(s.x, s.y), QPointF(e.x, e.y))
 
     def _draw_handles(self, painter: QPainter):
         """選択中の図形のハンドルを円として描画する。
@@ -1174,10 +1178,14 @@ class Canvas(QWidget):
             self.update()
             return
 
-        # ラバーバンド選択中: 終点を更新して再描画
+        # ラバーバンド選択中: 終点を更新して再描画・距離を emit
         if self._rubber_select_start is not None:
             self._rubber_select_end = sw
             self.mouse_world_pos.emit(w.x, w.y)
+            ws = self.s2w(self._rubber_select_start.x,
+                          self._rubber_select_start.y)
+            dist = math.hypot(w.x - ws.x, w.y - ws.y)
+            self.measure_dist_changed.emit(dist)
             self.update()
             return
 
@@ -1255,6 +1263,7 @@ class Canvas(QWidget):
                 self.selection_changed.emit(self._selected)
                 self._rubber_select_start = None
                 self._rubber_select_end = None
+                self.measure_dist_changed.emit(-1.0)
                 self.update()
                 return
 
@@ -1324,6 +1333,7 @@ class Canvas(QWidget):
             self._rubber_end = None
             self._rubber_select_start = None
             self._rubber_select_end = None
+            self.measure_dist_changed.emit(-1.0)
             self.update()
         elif k == Qt.Key.Key_Delete:
             self._delete_selected()
