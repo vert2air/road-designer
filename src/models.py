@@ -476,6 +476,9 @@ class Segment:
         self.t_end = t_end
         self.snap_prev: Optional[Segment] = None
         self.snap_next: Optional[Segment] = None
+        # どのクロソイドの接点が各端点を決めているかを記録する（Arc と同様）。
+        self.clothoid_start: Optional[int] = None  # t_start 側の clothoid ID
+        self.clothoid_end: Optional[int] = None    # t_end 側の clothoid ID
 
     @property
     def start(self) -> Vec2:
@@ -492,11 +495,17 @@ class Segment:
         return (self.end - self.start).length()
 
     def to_dict(self) -> dict:
-        """{"id", "t_start", "t_end"} 形式の辞書に変換する。
+        """{"id","t_start","t_end"[,"clothoid_start","clothoid_end"]} 形式。
 
         親 Line への参照はシリアライズしない（from_dict で再設定する）。
+        clothoid_* は None のとき省略する。
         """
-        return {"id": self.id, "t_start": self.t_start, "t_end": self.t_end}
+        d = {"id": self.id, "t_start": self.t_start, "t_end": self.t_end}
+        if self.clothoid_start is not None:
+            d["clothoid_start"] = self.clothoid_start
+        if self.clothoid_end is not None:
+            d["clothoid_end"] = self.clothoid_end
+        return d
 
     @staticmethod
     def from_dict(d: dict, line: Line) -> 'Segment':
@@ -509,7 +518,10 @@ class Segment:
         line : Line
             この線分が属する親直線（Line.from_dict が渡す）。
         """
-        return Segment(line, d["t_start"], d["t_end"], d["id"])
+        seg = Segment(line, d["t_start"], d["t_end"], d["id"])
+        seg.clothoid_start = d.get("clothoid_start")
+        seg.clothoid_end = d.get("clothoid_end")
+        return seg
 
 
 # ─── 直線接続 ────────────────────────────────────────────────
@@ -658,6 +670,11 @@ class Arc:
         self.circle = circle
         self.angle_start = angle_start
         self.angle_end = angle_end
+        # どのクロソイドの接点が各端点を決めているかを記録する。
+        # None は「クロソイドとの接点ではない（手動配置）」を意味する。
+        # ファイルに保存・復元することで、ロード後も追従関係を維持できる。
+        self.clothoid_start: Optional[int] = None  # angle_start 側の clothoid ID
+        self.clothoid_end: Optional[int] = None    # angle_end 側の clothoid ID
 
     @property
     def start(self) -> Vec2:
@@ -688,16 +705,26 @@ class Arc:
         return self.circle.radius * self.arc_angle()
 
     def to_dict(self) -> dict:
-        """{"id", "angle_start", "angle_end"} 形式の辞書に変換する。"""
-        return {
+        """{"id","angle_start","angle_end"[,"clothoid_start","clothoid_end"]}
+        形式の辞書に変換する。clothoid_*は None のとき省略する。"""
+        d = {
             "id": self.id,
             "angle_start": self.angle_start,
-            "angle_end": self.angle_end}
+            "angle_end": self.angle_end,
+        }
+        if self.clothoid_start is not None:
+            d["clothoid_start"] = self.clothoid_start
+        if self.clothoid_end is not None:
+            d["clothoid_end"] = self.clothoid_end
+        return d
 
     @staticmethod
     def from_dict(d: dict, circle: Circle) -> 'Arc':
         """辞書と親 Circle から Arc を復元する。"""
-        return Arc(circle, d["angle_start"], d["angle_end"], d["id"])
+        arc = Arc(circle, d["angle_start"], d["angle_end"], d["id"])
+        arc.clothoid_start = d.get("clothoid_start")
+        arc.clothoid_end = d.get("clothoid_end")
+        return arc
 
 
 # ─── クロソイド計算 (Clothoid.py のロジックを使用) ───────────────
@@ -1063,134 +1090,180 @@ class Clothoid:
     def _apply_segment_snap(self):
         """線側接点に最も近い Segment 端点を接点 t 値に移動する（snap_segment=True 専用）。
 
-        最近傍線分の選択には端点距離でなく `_dist_to_seg`（線分全体への距離）を
-        使うため、接点が線分の中央付近にある場合でも正しい線分を選べる。
+        ``seg.clothoid_end == self.id``（非 reversed）または
+        ``seg.clothoid_start == self.id``（reversed）の線分を優先して更新する。
+        clothoid ID 未設定のときは最近傍線分を選ぶ。
 
-        既存の `_split_seg_ids` があれば先にクリアする（snap=off からの切り替え）。
-        `_split_seg_ids` が空でも、接点の t 値を境界として持つ線分ペアがあれば
-        統合して余分な線分を削除する（旧バグで split_seg_ids が失われた場合の救済）。
+        snap=off からの切り替え時は先に `_clear_segment_split` で分割を解除する。
 
         Notes
         -----
-        移動後に t_start >= t_end になる場合は反対端点を ±0.1 に強制移動して
+        更新後に t_start >= t_end になる場合は反対端点を ±0.1 に強制移動して
         線分の縮退を防ぐ。
         """
         if not self.line.segments:
             return
         self._clear_segment_split()   # snap=off で作った分割があれば解除
 
-        # _split_seg_ids が空でも、接点 t 値を境界に持つ分割線分ペアを探して統合する。
-        # （to_dict で split_seg_ids が保存されなかった旧バグで情報が失われた場合の救済）
-        # _apply_segment_split は reversed_flag によらず常に:
-        #   元の線分 → AX (t_start〜t_x) に縮小、XB (t_x〜元t_end) を新規生成
-        # _clear_segment_split の正しい動作:
-        #   AX.t_end = XB.t_end (元の t_end に戻す)、XB を削除
-        # → その後 _apply_segment_snap で best_seg.t_end = t_x に snap される
-        if not self._split_seg_ids and self._line_pt is not None:
-            t_x = self.line.project_t(self._line_pt)
-            TOL = 1e-6
-            seg_ax = next((s for s in self.line.segments
-                           if abs(s.t_end - t_x) < TOL), None)
-            seg_xb = next((s for s in self.line.segments
-                           if abs(s.t_start - t_x) < TOL and
-                           (seg_ax is None or s is not seg_ax)), None)
-            if seg_ax and seg_xb:
-                # _clear_segment_split と同等: AX を元の t_end に戻し XB を削除
-                seg_ax.t_end = seg_xb.t_end
-                if seg_xb in self.line.segments:
-                    self.line.segments.remove(seg_xb)
-                # 救済後、seg_ax と t_start が同じで範囲が小さい別の線分が存在する場合、
-                # それが正規の線分（他のクロソイドの snap 結果など）で seg_ax が余剰ならば
-                # seg_ax を削除する（seg_ax.t_start を共有する線分が他にあるか確認）
-                duplicates = [s for s in self.line.segments
-                              if s is not seg_ax
-                              and abs(s.t_start - seg_ax.t_start) < TOL]
-                if duplicates:
-                    # 他の線分が同じ t_start から始まる → seg_ax が分割由来の余剰線分
-                    if seg_ax in self.line.segments:
-                        self.line.segments.remove(seg_ax)
-
         contact = self._line_pt
-        best_seg = min(self.line.segments,
-                       key=lambda s: min((s.start - contact).length(),
-                                         (s.end - contact).length()))
         t = self.line.project_t(contact)
+
+        # clothoid ID で追従対象の線分を特定する
         if not self.reversed_flag:
-            best_seg.t_end = t
-            if best_seg.t_start >= best_seg.t_end - 1e-9:
-                best_seg.t_start = best_seg.t_end - 0.1
+            seg = next(
+                (s for s in self.line.segments
+                 if s.clothoid_end == self.id), None)
         else:
-            best_seg.t_start = t
-            if best_seg.t_end <= best_seg.t_start + 1e-9:
-                best_seg.t_end = best_seg.t_start + 0.1
+            seg = next(
+                (s for s in self.line.segments
+                 if s.clothoid_start == self.id), None)
+
+        if seg is None:
+            # 初回 or clothoid ID 未設定: 最近傍線分を選ぶ
+            seg = min(self.line.segments,
+                      key=lambda s: min(
+                          (s.start - contact).length(),
+                          (s.end - contact).length()))
+
+        if not self.reversed_flag:
+            seg.t_end = t
+            seg.clothoid_end = self.id
+            if seg.t_start >= seg.t_end - 1e-9:
+                seg.t_start = seg.t_end - 0.1
+        else:
+            seg.t_start = t
+            seg.clothoid_start = self.id
+            if seg.t_end <= seg.t_start + 1e-9:
+                seg.t_end = seg.t_start + 0.1
 
     # ── snap=off: 線分を接点で分割 ───────────────────────────
     def _apply_segment_split(self):
-        """線側接点 X で最も近い線分 AB を AX・XB に分割する（snap_segment=False 専用）。
+        """線側接点 X で線分端点を追従更新する（snap_segment=False 専用）。
 
-        既に `_split_seg_ids` が設定済みの場合は AX.t_end と XB.t_start を
-        現在の t_x に追従更新するだけで再分割しない（パフォーマンスと安定性）。
+        **設計方針**: 線分の端点が「どのクロソイドの接点か」を
+        ``seg.clothoid_start`` / ``seg.clothoid_end`` に記録し追従更新する。
+        弧と同様の 4 ステップで処理する。
 
-        Notes
-        -----
-        - 接点が線分の端点に非常に近い（t_x が境界から 1e-6 以内）場合は分割しない
-        - 分割生成した線分の ID を `_split_seg_ids = [AX.id, XB.id]` に記録する
-        - `_split_seg_ids` に含まれる線分は候補から除外（自己参照を防ぐ）
+        1. **clothoid ID による追従更新** (最優先)
+        2. **旧 _split_seg_ids による後方互換**（更新後に clothoid ID を設定）
+        3. **境界検出**（接点が既存境界に一致 → clothoid ID 設定）
+        4. **新規分割**（接点が線分内部 → 分割して clothoid ID 設定）
         """
         if not self.line.segments:
             return
         contact = self._line_pt
         t_x = self.line.project_t(contact)
 
-        # 既存の分割線分があれば追従更新（再分割しない）
+        # ── ステップ1: clothoid ID による追従更新 ────────────
+        seg_e = next(
+            (s for s in self.line.segments
+             if s.clothoid_end == self.id), None)
+        seg_s = next(
+            (s for s in self.line.segments
+             if s.clothoid_start == self.id), None)
+        if seg_e is not None or seg_s is not None:
+            if seg_e is not None:
+                seg_e.t_end = t_x
+            if seg_s is not None:
+                seg_s.t_start = t_x
+            return
+
+        # ── ステップ2: _split_seg_ids による後方互換 ─────────
         if self._split_seg_ids:
             segs_by_id = {s.id: s for s in self.line.segments}
-            seg_ax = segs_by_id.get(self._split_seg_ids[0])
-            seg_xb = segs_by_id.get(self._split_seg_ids[1]) if len(
-                self._split_seg_ids) > 1 else None
-            if seg_ax and seg_xb:
-                seg_ax.t_end = t_x
-                seg_xb.t_start = t_x
+            ax = segs_by_id.get(self._split_seg_ids[0])
+            xb = (segs_by_id.get(self._split_seg_ids[1])
+                  if len(self._split_seg_ids) > 1 else None)
+            if ax and xb:
+                ax.t_end = t_x
+                xb.t_start = t_x
+                ax.clothoid_end = self.id   # 以後はステップ1で追従
+                xb.clothoid_start = self.id
                 return
-            # 分割線分が消えていたらリセット
             self._split_seg_ids = []
 
-        # 分割元となる線分を選ぶ（自分が作った分割線分は除外）
-        candidates = [
-            s for s in self.line.segments if s.id not in self._split_seg_ids]
+        # ── ステップ3: 境界検出 → clothoid ID を設定 ─────────
+        # 内端境界の場合は境界を挟む両方の線分に clothoid ID を設定する。
+        TOL = 1e-6
+        for s in self.line.segments:
+            if abs(s.t_end - t_x) < TOL:       # 終端に一致
+                s.clothoid_end = self.id
+                s.t_end = t_x
+                # 同じ境界を始端とする線分にも設定（内端境界の場合）
+                for u in self.line.segments:
+                    if u is not s and abs(u.t_start - t_x) < TOL:
+                        u.clothoid_start = self.id
+                        u.t_start = t_x
+                        break
+                return
+            if abs(s.t_start - t_x) < TOL:     # 始端に一致
+                s.clothoid_start = self.id
+                s.t_start = t_x
+                # 同じ境界を終端とする線分にも設定（内端境界の場合）
+                for u in self.line.segments:
+                    if u is not s and abs(u.t_end - t_x) < TOL:
+                        u.clothoid_end = self.id
+                        u.t_end = t_x
+                        break
+                return
+
+        # ── ステップ4: 内部分割 ───────────────────────────────
+        candidates = [s for s in self.line.segments]
         if not candidates:
             return
-        best_seg = min(candidates, key=lambda s: self._dist_to_seg(contact, s))
+        best_seg = min(candidates,
+                       key=lambda s: self._dist_to_seg(contact, s))
 
-        # t_x が線分の範囲外なら分割しない
-        if t_x <= best_seg.t_start + 1e-6 or t_x >= best_seg.t_end - 1e-6:
+        if t_x <= best_seg.t_start + TOL or t_x >= best_seg.t_end - TOL:
             return
 
-        # 元の線分を AX に縮め、XB を新規追加
+        old_end_owner = best_seg.clothoid_end
         t_orig_end = best_seg.t_end
-        best_seg.t_end = t_x                               # AX (元の線分を縮める)
-        seg_xb = Segment(self.line, t_x, t_orig_end)       # XB (新規)
+        best_seg.t_end = t_x
+        best_seg.clothoid_end = self.id
+        seg_xb = Segment(self.line, t_x, t_orig_end)
+        seg_xb.clothoid_start = self.id
+        seg_xb.clothoid_end = old_end_owner     # 旧終端所有者を引き継ぐ
         self.line.segments.append(seg_xb)
         self.line.segments.sort(key=lambda s: s.t_start)
         self._split_seg_ids = [best_seg.id, seg_xb.id]
 
     def _clear_segment_split(self):
-        """snap=off で分割した線分を元の 1 本に戻す。
+        """snap=off で作った分割線分を元の 1 本に戻す。
 
-        `_split_seg_ids[1]`（XB）を削除し、`_split_seg_ids[0]`（AX）の
-        t_end を XB の元の t_end に戻す。その後 `_split_seg_ids` をクリアする。
+        ``seg.clothoid_end == self.id`` の線分（seg_e）と
+        ``seg.clothoid_start == self.id`` の線分（seg_s）を特定し、
+        seg_e の終端を seg_s の終端まで延ばして seg_s を削除する。
+        clothoid ID が未設定の場合は ``_split_seg_ids`` でフォールバックする。
 
-        snap_segment: False → True の切り替え時と、`Scene.remove_clothoid` 時に呼ばれる。
+        snap_segment: False → True の切り替え時と、``Scene.remove_clothoid`` 時に呼ばれる。
         """
-        if not self._split_seg_ids:
-            return
-        segs_by_id = {s.id: s for s in self.line.segments}
-        seg_ax = segs_by_id.get(self._split_seg_ids[0])
-        seg_xb = segs_by_id.get(self._split_seg_ids[1]) if len(
-            self._split_seg_ids) > 1 else None
-        if seg_ax and seg_xb and seg_xb in self.line.segments:
-            seg_ax.t_end = seg_xb.t_end   # AX の終端を XB の終端に戻す
-            self.line.segments.remove(seg_xb)
+        seg_e = next(
+            (s for s in self.line.segments
+             if s.clothoid_end == self.id), None)
+        seg_s = next(
+            (s for s in self.line.segments
+             if s.clothoid_start == self.id), None)
+
+        # clothoid ID が未設定のとき _split_seg_ids でフォールバック
+        if seg_e is None and seg_s is None and self._split_seg_ids:
+            segs_by_id = {s.id: s for s in self.line.segments}
+            seg_e = segs_by_id.get(self._split_seg_ids[0])
+            seg_s = (segs_by_id.get(self._split_seg_ids[1])
+                     if len(self._split_seg_ids) > 1 else None)
+
+        if (seg_e is not None and seg_s is not None
+                and seg_e is not seg_s):
+            seg_e.t_end = seg_s.t_end
+            seg_e.clothoid_end = seg_s.clothoid_end
+            seg_s.clothoid_start = None
+            if seg_s in self.line.segments:
+                self.line.segments.remove(seg_s)
+        elif seg_s is not None:
+            seg_s.clothoid_start = None
+        elif seg_e is not None:
+            seg_e.clothoid_end = None
+
         self._split_seg_ids = []
 
     @staticmethod
@@ -1225,122 +1298,205 @@ class Clothoid:
     def _apply_arc_snap(self):
         """円側接点に最も近い Arc 端点を接点角度に移動する（snap_arc=True 専用）。
 
-        左カーブ → arc.angle_start を circle_pt の角度に設定する。
-        右カーブ → arc.angle_end を circle_pt の角度に設定する。
+        左カーブ → arc.clothoid_start == self.id の弧（または最近傍弧）の
+        angle_start を更新し、clothoid_start を設定する。
+        右カーブ → clothoid_end の弧の angle_end を更新する。
 
-        円弧が存在しない場合は中心角 45° の円弧を自動生成して circle.arcs に追加する。
-        既存の `_split_arc_ids` があれば先にクリアする（snap=off からの切り替え）。
-        `_split_arc_ids` が空でも、接点角度を境界として持つ分割円弧ペアがあれば
-        統合して余分な円弧を削除する（旧バグで split_arc_ids が失われた場合の救済）。
+        snap=off からの切り替え時は先に `_clear_arc_split` で分割を解除する。
         """
-        self._clear_arc_split()       # snap=off で作った分割があれば解除
-
-        # _split_arc_ids が空でも、接点角度を境界に持つ分割円弧ペアを探して統合する
-        if not self._split_arc_ids and self._circle_pt is not None:
-            contact = self._circle_pt
-            angle_x = math.atan2(contact.y - self.circle.center.y,
-                                 contact.x - self.circle.center.x)
-            TOL = 1e-4  # rad
-            arc_ax = next((a for a in self.circle.arcs
-                           if abs(a.angle_end - angle_x) < TOL), None)
-            arc_xb = next((a for a in self.circle.arcs
-                           if abs(a.angle_start - angle_x) < TOL and
-                           (arc_ax is None or a is not arc_ax)), None)
-            if arc_ax and arc_xb:
-                arc_ax.angle_end = arc_xb.angle_end
-                if arc_xb in self.circle.arcs:
-                    self.circle.arcs.remove(arc_xb)
+        self._clear_arc_split()   # snap=off で作った分割があれば解除
 
         circle = self.circle
         contact = self._circle_pt
         angle_contact = math.atan2(contact.y - circle.center.y,
                                    contact.x - circle.center.x)
-        if circle.arcs:
-            def arc_dist(arc):
-                a = arc.angle_start if self.is_left_curve else arc.angle_end
-                return abs(
-                    (a - angle_contact + math.pi)
-                    % (2 * math.pi) - math.pi)
-            arc = min(circle.arcs, key=arc_dist)
+
+        # clothoid ID で追従対象の弧を特定する（保存/ロード後も有効）
+        if self.is_left_curve:
+            arc = next(
+                (a for a in circle.arcs
+                 if a.clothoid_start == self.id), None)
         else:
-            if self.is_left_curve:
-                arc = Arc(circle, angle_contact, angle_contact + math.pi / 4)
+            arc = next(
+                (a for a in circle.arcs
+                 if a.clothoid_end == self.id), None)
+
+        if arc is None:
+            # 初回 or clothoid ID 未設定: 最近傍弧を選ぶ
+            if circle.arcs:
+                def arc_dist(a):
+                    ang = (a.angle_start if self.is_left_curve
+                           else a.angle_end)
+                    return abs(
+                        (ang - angle_contact + math.pi)
+                        % (2 * math.pi) - math.pi)
+                arc = min(circle.arcs, key=arc_dist)
             else:
-                arc = Arc(circle, angle_contact - math.pi / 4, angle_contact)
-            circle.arcs.append(arc)
+                if self.is_left_curve:
+                    arc = Arc(
+                        circle, angle_contact,
+                        angle_contact + math.pi / 4)
+                else:
+                    arc = Arc(
+                        circle, angle_contact - math.pi / 4,
+                        angle_contact)
+                circle.arcs.append(arc)
 
         if self.is_left_curve:
             arc.angle_start = angle_contact
+            arc.clothoid_start = self.id
         else:
             arc.angle_end = angle_contact
+            arc.clothoid_end = self.id
 
     # ── snap=off: 円弧を接点で分割 ───────────────────────────
     def _apply_arc_split(self):
-        """円側接点 X で最も近い円弧を 2 分割する（snap_arc=False 専用）。
+        """円側接点 X で円弧の端点を追従更新する（snap_arc=False 専用）。
 
-        既に `_split_arc_ids` が設定済みの場合は arc_ax.angle_end と
-        arc_xb.angle_start を現在の angle_x に追従更新するだけで再分割しない。
+        **設計方針**: 弧の端点が「どのクロソイドの接点か」を
+        ``arc.clothoid_start`` / ``arc.clothoid_end`` に記録し、
+        それを使って追従更新する。これによりファイル保存/ロードを
+        経ても接続関係が失われない。
 
-        分割対象の円弧は接点が内部に含まれるもの（端点から 1e-4 rad 以上内側）。
-        `_split_arc_ids = [arc_ax.id, arc_xb.id]` に記録する。
+        処理ステップ:
+
+        1. **clothoid ID による追従更新** (最優先)
+           - ``arc.clothoid_end == self.id`` の弧の angle_end を更新
+           - ``arc.clothoid_start == self.id`` の弧の angle_start を更新
+        2. **旧 _split_arc_ids による後方互換**
+           - clothoid ID 未設定の旧ファイル向け。更新後に clothoid ID を設定。
+        3. **境界検出によるID設定**
+           - 接点が既存弧の端点付近（1e-3 rad）→ clothoid ID を付与して終了。
+           - 始端判定は正・負両方向を許容（angle の巻き込み対応）。
+        4. **新規分割**
+           - 接点が弧の内部 → 弧を 2 分割して clothoid ID を設定。
         """
         if not self.circle.arcs:
             return
         contact = self._circle_pt
         angle_x = math.atan2(contact.y - self.circle.center.y,
                              contact.x - self.circle.center.x)
+        _pi2 = 2 * math.pi
 
-        # 既存の分割円弧があれば追従更新
+        # ── ステップ1: clothoid ID による追従更新 ────────────
+        arc_e = next(
+            (a for a in self.circle.arcs
+             if a.clothoid_end == self.id), None)
+        arc_s = next(
+            (a for a in self.circle.arcs
+             if a.clothoid_start == self.id), None)
+        if arc_e is not None or arc_s is not None:
+            if arc_e is not None:
+                arc_e.angle_end = angle_x
+            if arc_s is not None:
+                arc_s.angle_start = angle_x
+            return
+
+        # ── ステップ2: _split_arc_ids による後方互換 ─────────
         if self._split_arc_ids:
             arcs_by_id = {a.id: a for a in self.circle.arcs}
-            arc_ax = arcs_by_id.get(self._split_arc_ids[0])
-            arc_xb = arcs_by_id.get(self._split_arc_ids[1]) if len(
-                self._split_arc_ids) > 1 else None
-            if arc_ax and arc_xb:
-                # arc_ax: start→X, arc_xb: X→end
-                arc_ax.angle_end = angle_x
-                arc_xb.angle_start = angle_x
+            ax = arcs_by_id.get(self._split_arc_ids[0])
+            xb = (arcs_by_id.get(self._split_arc_ids[1])
+                  if len(self._split_arc_ids) > 1 else None)
+            if ax and xb:
+                ax.angle_end = angle_x
+                xb.angle_start = angle_x
+                ax.clothoid_end = self.id   # 以後はステップ1で追従
+                xb.clothoid_start = self.id
                 return
             self._split_arc_ids = []
 
-        # 分割元となる円弧を選ぶ（接点が範囲内にあるもの）
+        # ── ステップ3: 境界検出 → clothoid ID を設定 ─────────
+        # 内端境界の場合は境界を挟む両方の弧に clothoid ID を設定する。
+        # 片方にしか設定しないとステップ1での追従更新が一方向だけになり
+        # 角度がズレて隙間が生じる。
+        for a in self.circle.arcs:
+            span = a.arc_angle()
+            rel = (angle_x - a.angle_start) % _pi2
+            if abs(rel - span) < 1e-3:            # 終端に一致
+                a.clothoid_end = self.id
+                a.angle_end = angle_x
+                # 同じ境界を始端とする弧にも設定（内端境界の場合）
+                for b in self.circle.arcs:
+                    if b is not a:
+                        rel_b = (angle_x - b.angle_start) % _pi2
+                        if rel_b < 1e-3 or rel_b > _pi2 - 1e-3:
+                            b.clothoid_start = self.id
+                            b.angle_start = angle_x
+                            break
+                return
+            if rel < 1e-3 or rel > _pi2 - 1e-3:  # 始端に一致（両方向）
+                a.clothoid_start = self.id
+                a.angle_start = angle_x
+                # 同じ境界を終端とする弧にも設定（内端境界の場合）
+                for b in self.circle.arcs:
+                    if b is not a:
+                        rel_b = (angle_x - b.angle_start) % _pi2
+                        if abs(rel_b - b.arc_angle()) < 1e-3:
+                            b.clothoid_end = self.id
+                            b.angle_end = angle_x
+                            break
+                return
+
+        # ── ステップ4: 内部分割 ───────────────────────────────
         best_arc = None
         for a in self.circle.arcs:
-            if a.id in self._split_arc_ids:
-                continue
             span = a.arc_angle()
-            rel = (angle_x - a.angle_start) % (2 * math.pi)
-            if 1e-4 < rel < span - 1e-4:   # 端点でなく内部に接点がある
+            rel = (angle_x - a.angle_start) % _pi2
+            if 1e-4 < rel < span - 1e-4:
                 best_arc = a
                 break
         if best_arc is None:
             return
 
-        # 元の円弧を (start→X) に縮め、(X→end) を新規追加
+        old_end_owner = best_arc.clothoid_end   # 分割前の終端所有者を引き継ぐ
         orig_end = best_arc.angle_end
-        best_arc.angle_end = angle_x                          # start→X
-        arc_xb = Arc(self.circle, angle_x, orig_end)          # X→end
+        best_arc.angle_end = angle_x
+        best_arc.clothoid_end = self.id
+        arc_xb = Arc(self.circle, angle_x, orig_end)
+        arc_xb.clothoid_start = self.id
+        arc_xb.clothoid_end = old_end_owner     # 旧終端所有者を引き継ぐ
         self.circle.arcs.append(arc_xb)
         self._split_arc_ids = [best_arc.id, arc_xb.id]
 
     def _clear_arc_split(self):
-        """snap=off で分割した円弧を元の 1 本に戻す。
+        """snap=off で作った分割円弧を元の 1 本に戻す。
 
-        `_split_arc_ids[0]`（start→X）の angle_end を `_split_arc_ids[1]`（X→end）
-        の angle_end で上書きし、`_split_arc_ids[1]` を circle.arcs から削除する。
-        その後 `_split_arc_ids` をクリアする。
+        ``arc.clothoid_end == self.id`` の弧（arc_e）と
+        ``arc.clothoid_start == self.id`` の弧（arc_s）を特定し、
+        arc_e の終端を arc_s の終端まで延ばして arc_s を削除する。
+        clothoid ID が未設定の場合は ``_split_arc_ids`` でフォールバックする。
 
-        snap_arc: False → True の切り替え時と、`Scene.remove_clothoid` 時に呼ばれる。
+        snap_arc: False → True の切り替え時と、``Scene.remove_clothoid`` 時に呼ばれる。
         """
-        if not self._split_arc_ids:
-            return
-        arcs_by_id = {a.id: a for a in self.circle.arcs}
-        arc_ax = arcs_by_id.get(self._split_arc_ids[0])
-        arc_xb = arcs_by_id.get(self._split_arc_ids[1]) if len(
-            self._split_arc_ids) > 1 else None
-        if arc_ax and arc_xb and arc_xb in self.circle.arcs:
-            arc_ax.angle_end = arc_xb.angle_end
-            self.circle.arcs.remove(arc_xb)
+        arc_e = next(
+            (a for a in self.circle.arcs
+             if a.clothoid_end == self.id), None)
+        arc_s = next(
+            (a for a in self.circle.arcs
+             if a.clothoid_start == self.id), None)
+
+        # clothoid ID が未設定のとき _split_arc_ids でフォールバック
+        if arc_e is None and arc_s is None and self._split_arc_ids:
+            arcs_by_id = {a.id: a for a in self.circle.arcs}
+            arc_e = arcs_by_id.get(self._split_arc_ids[0])
+            arc_s = (arcs_by_id.get(self._split_arc_ids[1])
+                     if len(self._split_arc_ids) > 1 else None)
+
+        if (arc_e is not None and arc_s is not None
+                and arc_e is not arc_s):
+            # arc_e（start→X）と arc_s（X→end）を統合
+            # arc_s の終端所有権を arc_e に引き継ぐ
+            arc_e.angle_end = arc_s.angle_end
+            arc_e.clothoid_end = arc_s.clothoid_end
+            arc_s.clothoid_start = None
+            if arc_s in self.circle.arcs:
+                self.circle.arcs.remove(arc_s)
+        elif arc_s is not None:
+            arc_s.clothoid_start = None   # 外端（始端のみ）を解放
+        elif arc_e is not None:
+            arc_e.clothoid_end = None     # 外端（終端のみ）を解放
+
         self._split_arc_ids = []
 
     # ── プロパティ ─────────────────────────────────────────────

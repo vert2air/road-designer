@@ -1518,11 +1518,14 @@ class Canvas(QWidget):
         self.update()
 
     def _propagate_line(self, ln: Line, _updating_smooth: bool = False):
-        """直線 ln の変更をクロソイドとスムーズ接続の円に伝播する。
+        """直線 ln の変更をクロソイドと接続先に伝播する。
 
         ``ln`` を参照する全クロソイドの ``compute()`` を呼び出す。
-        ``_updating_smooth=False`` のとき、スムーズ接続の円も
-        :meth:`_update_smooth_circle` で更新する（無限再帰を防ぐフラグ）。
+        ``_updating_smooth=False`` のとき:
+
+        - スムーズ接続の円を :meth:`_update_smooth_circle` で更新する。
+        - 折れ線接続の相手直線を :meth:`_follow_polyline_connection`
+          で平行移動して共有端点を追従させる。
 
         Parameters
         ----------
@@ -1536,8 +1539,11 @@ class Canvas(QWidget):
                 clo.compute()
         if not _updating_smooth:
             conn = ln.connection
-            if conn and conn.kind == "smooth" and conn.circle is not None:
-                self._update_smooth_circle(conn)
+            if conn is not None:
+                if conn.kind == "smooth" and conn.circle is not None:
+                    self._update_smooth_circle(conn)
+                elif conn.kind == "polyline":
+                    self._follow_polyline_connection(conn, ln)
         # TwoLineOffsetConstraint: 直線が動いたら円中心を追従させる
         self._propagate_two_line_oc_for_line(ln)
 
@@ -1658,12 +1664,58 @@ class Canvas(QWidget):
     def propagate_from_line(self, ln: 'Line'):
         """外部（プロパティパネル等）から直線 ln の変化をチェーン伝播させる。
 
-        TwoLineOffsetConstraint を解いて円中心を更新し、
-        さらに下流の OffsetConstraint まで連鎖させる。
+        :meth:`_propagate_line` を呼ぶことで、クロソイド再計算・
+        スムーズ接続の円の再配置・折れ線接続の追従・TwoLineOC 連鎖を
+        まとめて実行する。
         """
-        self._propagate_two_line_oc_for_line(ln)
+        self._propagate_line(ln)
         self.scene_changed.emit()
         self.update()
+
+    def _follow_polyline_connection(
+            self, conn: 'LineConnection', moved: Line):
+        """折れ線接続で moved が動いたとき、接続先の直線を平行移動して追従させる。
+
+        moved の共有端点が ``conn.shared_point`` から移動していた場合、
+        差分ベクトル ``delta`` で接続先直線を丸ごと平行移動し
+        ``conn.shared_point`` を更新する。その後 :meth:`_propagate_line`
+        を再帰的に呼んで接続先直線のクロソイド等も更新する。
+
+        再帰防止: ``conn.shared_point`` を先に更新するため、接続先直線の
+        :meth:`_propagate_line` が再び本メソッドを呼んでも
+        ``delta.length() < 1e-9`` の判定で即座に返る。
+
+        Parameters
+        ----------
+        conn : LineConnection
+            2直線間の折れ線接続オブジェクト。
+        moved : Line
+            今回移動した直線。
+        """
+        la, lb = conn.line_a, conn.line_b
+        if moved is la:
+            new_pt = (la.ref_end if conn.a_end_is_shared
+                      else la.ref_start)
+            other = lb
+        elif moved is lb:
+            new_pt = (lb.ref_start if conn.b_start_is_shared
+                      else lb.ref_end)
+            other = la
+        else:
+            return
+
+        delta = new_pt - conn.shared_point
+        if delta.length() < 1e-9:
+            return   # 変化なし → 再帰終端
+
+        conn.shared_point = new_pt   # 先に更新して再帰を止める
+
+        # 接続先直線を平行移動（方向を変えずに端点を追従させる）
+        other.ref_start = other.ref_start + delta
+        other.ref_end = other.ref_end + delta
+
+        # 接続先に伝播（クロソイド再計算・TwoLineOC 追従 etc.）
+        self._propagate_line(other)
 
     def _update_smooth_circle(self, conn: 'LineConnection'):
         """
