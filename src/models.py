@@ -1629,6 +1629,148 @@ class OffsetConstraint:
         return oc
 
 
+@dataclass
+class TwoLineOffsetConstraint:
+    """2直線 A・B を円 C に対してオフセット拘束するデータクラス。
+
+    直線 A の方向を保ったまま、円 C の中心から A への垂直距離を
+    ``C.radius + off_a`` に保つ。同様に直線 B も ``C.radius + off_b`` に保つ。
+    円 C の半径が変更された場合、両直線は自動的に追従してスライドする。
+
+    Attributes
+    ----------
+    id : int
+        グローバルユニーク ID。
+    line_a : Line
+        拘束される直線 A。
+    line_b : Line
+        拘束される直線 B。
+    circle : Circle
+        拘束の基準となる円 C。
+    off_a : float
+        直線 A と円 C のオフセット量 [m]。
+        ``dist(line_a, C.center) = C.radius + off_a`` が維持される。
+    off_b : float
+        直線 B と円 C のオフセット量 [m]。
+    feasible : bool
+        最後の :meth:`solve` が成功した場合 ``True``。
+    """
+
+    id: int = field(default_factory=new_id)
+    line_a: object = None   # Line A（循環参照回避のため object 型）
+    line_b: object = None   # Line B
+    circle: object = None   # Circle C
+    off_a: float = 0.0
+    off_b: float = 0.0
+    feasible: bool = True
+
+    def __post_init__(self):
+        """内部符号フラグ ``_eps_a``・``_eps_b`` を初期化する。"""
+        self._eps_a: int = 0   # sign of signed_dist(circle.center) for line_a
+        self._eps_b: int = 0   # sign of signed_dist(circle.center) for line_b
+
+    def _solve_one(self, ln, eps: int, off: float) -> bool:
+        """直線 ``ln`` を円 C から ``off`` だけオフセットした位置にスライドする。
+
+        直線の方向ベクトルは変えず、法線方向にのみ平行移動する。
+
+        Parameters
+        ----------
+        ln : Line
+            移動する直線。
+        eps : int
+            符号（+1 または -1）。正のとき円中心が直線の左側に来る。
+        off : float
+            オフセット量 ``off_a`` または ``off_b``。
+
+        Returns
+        -------
+        bool
+            常に ``True``。
+        """
+        c_center = self.circle.center
+        target_r = self.circle.radius + off
+        # signed_dist(c_center) = d.cross(c_center - ref_start)
+        # 左法線 n = Vec2(-d.y, d.x) に対して
+        # shift = signed_dist_current - eps * target_r
+        current_s = ln.signed_dist(c_center)
+        shift = current_s - eps * target_r
+        d = ln.direction
+        # 左法線方向に shift だけ移動（符号に注意）
+        # 移動後: signed_dist_new = current_s - shift = eps * target_r ✓
+        nx, ny = -d.y, d.x
+        ln.ref_start = Vec2(ln.ref_start.x + shift * nx,
+                            ln.ref_start.y + shift * ny)
+        ln.ref_end = Vec2(ln.ref_end.x + shift * nx,
+                          ln.ref_end.y + shift * ny)
+        return True
+
+    def solve(self) -> bool:
+        """off_a・off_b から直線 A・B の参照点を再計算する。
+
+        各直線の方向を固定したまま、円 C の中心から各直線への垂直距離が
+        ``C.radius + off_a`` / ``C.radius + off_b`` になるよう平行移動する。
+
+        Returns
+        -------
+        bool
+            line_a・line_b・circle のいずれかが ``None`` でなければ常に ``True``。
+        """
+        if self.line_a is None or self.line_b is None or self.circle is None:
+            self.feasible = False
+            return False
+        if self._eps_a == 0 or self._eps_b == 0:
+            self.calc_offsets_from_current()
+        self._solve_one(self.line_a, self._eps_a, self.off_a)
+        self._solve_one(self.line_b, self._eps_b, self.off_b)
+        self.feasible = True
+        return True
+
+    def calc_offsets_from_current(self) -> None:
+        """現在の直線・円の位置関係から off_a・off_b と符号フラグを算出する。
+
+        * ``off_a = dist(line_a, circle.center) - circle.radius``
+        * ``off_b = dist(line_b, circle.center) - circle.radius``
+        * ``_eps_a = sign(signed_dist_a(circle.center))`` (+1 or -1)
+        * ``_eps_b = sign(signed_dist_b(circle.center))``
+        """
+        if self.line_a is None or self.line_b is None or self.circle is None:
+            return
+        c = self.circle.center
+        r = self.circle.radius
+        self.off_a = self.line_a.distance_to(c) - r
+        self.off_b = self.line_b.distance_to(c) - r
+        sa = self.line_a.signed_dist(c)
+        sb = self.line_b.signed_dist(c)
+        self._eps_a = +1 if sa >= 0 else -1
+        self._eps_b = +1 if sb >= 0 else -1
+
+    def to_dict(self) -> dict:
+        """{"id","la_id","lb_id","circle_id","off_a","off_b"} 形式の辞書に変換する。"""
+        return {
+            'id': self.id,
+            'la_id': self.line_a.id if self.line_a else None,
+            'lb_id': self.line_b.id if self.line_b else None,
+            'circle_id': self.circle.id if self.circle else None,
+            'off_a': self.off_a,
+            'off_b': self.off_b,
+        }
+
+    @staticmethod
+    def from_dict(d: dict,
+                  lines_by_id: dict,
+                  circles_by_id: dict) -> 'TwoLineOffsetConstraint':
+        """辞書から TwoLineOffsetConstraint を復元する。"""
+        oc = TwoLineOffsetConstraint()
+        oc.id = d['id']
+        oc.line_a = lines_by_id.get(d.get('la_id'))
+        oc.line_b = lines_by_id.get(d.get('lb_id'))
+        oc.circle = circles_by_id.get(d.get('circle_id'))
+        oc.off_a = d.get('off_a', 0.0)
+        oc.off_b = d.get('off_b', 0.0)
+        return oc
+
+
 # ─── 縦断線形モデル（backward-compat 再エクスポート） ─────────────────
 # 実体は vertical_profile.py に移動。既存のインポートは引き続き
 #   from models import plan_length_of, ElementProfile, ...
@@ -1662,6 +1804,8 @@ class Scene:
         全クロソイド。
     offset_constraints : list[OffsetConstraint]
         直線-2円のオフセット拘束。円の変形に合わせて直線が自動追従する。
+    two_line_offset_constraints : list[TwoLineOffsetConstraint]
+        2直線-1円のオフセット拘束。円の変形に合わせて2直線が自動追従する。
     element_profiles : list[ElementProfile]
         縦断線形データ（要素単位）。
     vertical_alignments : list[VerticalAlignment]
@@ -1678,6 +1822,7 @@ class Scene:
         self.vertical_alignments: list[VerticalAlignment] = []  # 旧フォーマット互換
         self.element_profiles: list[ElementProfile] = []         # 要素単位の縦断データ
         self.offset_constraints: list['OffsetConstraint'] = []
+        self.two_line_offset_constraints: list['TwoLineOffsetConstraint'] = []
         self.nicknames: dict[int, str] = {}   # id → nickname
 
     def get_nickname(self, obj_id: int, prefix: str = "") -> str:
@@ -1859,6 +2004,8 @@ class Scene:
             _assign(clo)
         for oc in self.offset_constraints:
             _assign(oc)
+        for oc in self.two_line_offset_constraints:
+            _assign(oc)
 
     def to_dict(self) -> dict:
         """シーン全体を JSON シリアライズ可能な辞書に変換する。
@@ -1906,6 +2053,8 @@ class Scene:
             "clothoids": [_with_nick(c.to_dict()) for c in self.clothoids],
             "offset_constraints": [
                 oc.to_dict() for oc in self.offset_constraints],
+            "two_line_offset_constraints": [
+                oc.to_dict() for oc in self.two_line_offset_constraints],
             "element_profiles": [
                 ep.to_dict() for ep in self.element_profiles],
             "vertical_alignments": [
@@ -2049,6 +2198,14 @@ class Scene:
             if (oc.get("line_id") in lines_by_id
                 and oc.get("ca_id") in circles_by_id
                 and oc.get("cb_id") in circles_by_id)
+        ]
+
+        sc.two_line_offset_constraints = [
+            TwoLineOffsetConstraint.from_dict(oc, lines_by_id, circles_by_id)
+            for oc in d.get("two_line_offset_constraints", [])
+            if (oc.get("la_id") in lines_by_id
+                and oc.get("lb_id") in lines_by_id
+                and oc.get("circle_id") in circles_by_id)
         ]
 
         for k, v in d.get("nicknames", {}).items():

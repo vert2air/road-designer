@@ -1583,6 +1583,24 @@ class Canvas(QWidget):
                 self._propagate_line(oc.line)
                 self.scene_changed.emit()
                 self.update()
+        # TwoLineOffsetConstraint（2直線-1円）の追従
+        self._propagate_two_line_offset_constraints(ci)
+
+    def _propagate_two_line_offset_constraints(self, ci: 'Circle'):
+        """TwoLineOffsetConstraint のうち ci を参照するものについて両直線を再計算する。
+
+        Parameters
+        ----------
+        ci : Circle
+            変化した円（center または radius が変わった円）。
+        """
+        for oc in self.scene.two_line_offset_constraints:
+            if oc.circle is ci:
+                oc.solve()
+                self._propagate_line(oc.line_a)
+                self._propagate_line(oc.line_b)
+                self.scene_changed.emit()
+                self.update()
 
     def _update_smooth_circle(self, conn: 'LineConnection'):
         """

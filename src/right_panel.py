@@ -74,6 +74,8 @@ class RightPanel(QWidget, PropBuilderMixin):
     request_delete = Signal(list)   # 削除要求
     request_set_offset = Signal(object, object, object)  # line, ci_a, ci_b
     request_clear_offset = Signal(object)                  # line
+    request_set_two_line_offset = Signal(object, object, object)   # ln_a, ln_b, ci
+    request_clear_two_line_offset = Signal(object, object)         # ln_a, ln_b
     request_add_arcs = Signal(object, list)            # circle, [Arc]
     request_undo = Signal()                        # Undo 要求
     request_push_undo = Signal()                        # プロパティ変更前の状態保存
@@ -1832,6 +1834,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         * 2 個 (Line + Circle): :meth:`_build_line_circle`
         * 2 個 その他: 各図形に :meth:`_build_single` を呼ぶ
         * 3 個 (Circle + Circle + Line): :meth:`_build_offset_constraint`
+        * 3 個 (Line + Line + Circle): :meth:`_build_two_line_offset_constraint`
         * 3 個以上その他: 図形数とニックネーム一覧を表示
         """
         self._clear_props()
@@ -1893,11 +1896,28 @@ class RightPanel(QWidget, PropBuilderMixin):
             return
 
         # ── 3図形以上 ─────────────────────────────────────────
-        # 2円 + 1直線 → オフセット拘束
-        circles = [o for o in sel if isinstance(o, Circle)]
-        lines = [o for o in sel if isinstance(o, Line)]
-        if len(circles) == 2 and len(lines) == 1 and n == 3:
-            self._build_offset_constraint(lines[0], circles[0], circles[1])
+        # Segment→Line / Arc→Circle に昇格して重複除去した有効オブジェクト列
+        def _to_base(o):
+            if isinstance(o, Segment):
+                return o.line
+            if isinstance(o, Arc):
+                return o.circle
+            return o
+
+        eff_objs = list(dict.fromkeys(_to_base(o) for o in sel))
+        eff_circles = [o for o in eff_objs if isinstance(o, Circle)]
+        eff_lines = [o for o in eff_objs if isinstance(o, Line)]
+
+        # 2円 + 1直線 → OffsetConstraint
+        if len(eff_circles) == 2 and len(eff_lines) == 1 and len(eff_objs) == 3:
+            self._build_offset_constraint(
+                eff_lines[0], eff_circles[0], eff_circles[1])
+            return
+
+        # 1円 + 2直線 → TwoLineOffsetConstraint
+        if len(eff_circles) == 1 and len(eff_lines) == 2 and len(eff_objs) == 3:
+            self._build_two_line_offset_constraint(
+                eff_lines[0], eff_lines[1], eff_circles[0])
             return
 
         # ラバーバンド選択または一般的な複数選択 → 操作パネル

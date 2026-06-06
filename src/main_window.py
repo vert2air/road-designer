@@ -252,6 +252,10 @@ class MainWindow(QMainWindow):
         rp.request_flip_clothoid.connect(self._do_flip_clothoid)
         rp.request_set_offset.connect(self._do_set_offset_constraint)
         rp.request_clear_offset.connect(self._do_clear_offset_constraint)
+        rp.request_set_two_line_offset.connect(
+            self._do_set_two_line_offset_constraint)
+        rp.request_clear_two_line_offset.connect(
+            self._do_clear_two_line_offset_constraint)
         rp.request_push_undo.connect(self._canvas.push_undo)
         rp.request_select.connect(self._canvas.set_selection)
         rp.request_delete.connect(self._do_delete_objects)
@@ -660,6 +664,61 @@ class MainWindow(QMainWindow):
         self._canvas.push_undo()
         self.scene.offset_constraints = [
             oc for oc in self.scene.offset_constraints if oc.line is not ln
+        ]
+        self._canvas.scene_changed.emit()
+        self._right_panel.update_selection(self._canvas._selected, self.scene)
+
+    def _do_set_two_line_offset_constraint(self,
+                                           ln_a: 'Line', ln_b: 'Line',
+                                           ci: 'Circle'):
+        """``request_set_two_line_offset`` シグナルを受けて拘束を新規設定する。
+
+        同じ ``({ln_a, ln_b}, ci)`` の組み合わせが既に存在する場合は何もしない。
+
+        Parameters
+        ----------
+        ln_a : Line
+            拘束される直線 A。
+        ln_b : Line
+            拘束される直線 B。
+        ci : Circle
+            拘束の基準となる円 C。
+        """
+        from models import TwoLineOffsetConstraint
+        existing = next(
+            (oc for oc in self.scene.two_line_offset_constraints
+             if {oc.line_a, oc.line_b} == {ln_a, ln_b} and oc.circle is ci),
+            None
+        )
+        if existing is not None:
+            return
+        self._canvas.push_undo()
+        oc = TwoLineOffsetConstraint()
+        oc.line_a = ln_a
+        oc.line_b = ln_b
+        oc.circle = ci
+        oc.calc_offsets_from_current()
+        self.scene.two_line_offset_constraints.append(oc)
+        self._canvas.scene_changed.emit()
+        self._right_panel.update_selection(self._canvas._selected, self.scene)
+
+    def _do_clear_two_line_offset_constraint(self,
+                                             ln_a: 'Line', ln_b: 'Line'):
+        """``request_clear_two_line_offset`` シグナルを受けて拘束を解除する。
+
+        ``{oc.line_a, oc.line_b} == {ln_a, ln_b}`` を満たす全拘束を削除する。
+
+        Parameters
+        ----------
+        ln_a : Line
+            拘束を解除する直線 A。
+        ln_b : Line
+            拘束を解除する直線 B。
+        """
+        self._canvas.push_undo()
+        self.scene.two_line_offset_constraints = [
+            oc for oc in self.scene.two_line_offset_constraints
+            if {oc.line_a, oc.line_b} != {ln_a, ln_b}
         ]
         self._canvas.scene_changed.emit()
         self._right_panel.update_selection(self._canvas._selected, self.scene)
