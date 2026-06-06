@@ -1618,6 +1618,9 @@ class Canvas(QWidget):
         ln が line_a または line_b として含まれる TwoLineOffsetConstraint に
         対して solve() を呼び出し、円中心を再計算する。
 
+        円中心の更新後に :meth:`_propagate_offset_constraints` を呼ぶことで、
+        その円を参照する OffsetConstraint への連鎖伝播も行う。
+
         Parameters
         ----------
         ln : Line
@@ -1630,6 +1633,9 @@ class Canvas(QWidget):
                 for clo in self.scene.clothoids:
                     if clo.circle is oc.circle:
                         clo.compute()
+                # 連鎖: 更新された円を参照する OffsetConstraint にも伝播
+                # （TwoLineOC の solve は冪等なので無限ループにはならない）
+                self._propagate_offset_constraints(oc.circle)
                 self.scene_changed.emit()
                 self.update()
 
