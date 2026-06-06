@@ -1873,9 +1873,14 @@ class PropBuilderMixin:
                     if clo.line is existing.line:
                         clo.compute()
                 self._block = False
-                # 連鎖: ln を参照する TwoLineOC へ伝播
-                self.request_propagate_line.emit(existing.line)
+                # 連鎖伝播 + 即時再描画
+                # シグナル経由では描画更新が遅延するため直接呼び出す
+                if self._canvas_ref is not None:
+                    self._canvas_ref.propagate_from_line(existing.line)
+                else:
+                    self.request_propagate_line.emit(existing.line)
                 self.scene_changed.emit()
+                self._canvas_update()
 
         sb_a.valueChanged.connect(on_off_changed)
         sb_b.valueChanged.connect(on_off_changed)
@@ -1972,9 +1977,14 @@ class PropBuilderMixin:
                     if clo.circle is existing.circle:
                         clo.compute()
                 self._block = False
-                # 連鎖: ci を参照する OffsetConstraint へ伝播
-                self.request_propagate_circle.emit(existing.circle)
+                # 連鎖伝播 + 即時再描画
+                # シグナル経由では描画更新が遅延するため直接呼び出す
+                if self._canvas_ref is not None:
+                    self._canvas_ref.propagate_from_circle(existing.circle)
+                else:
+                    self.request_propagate_circle.emit(existing.circle)
                 self.scene_changed.emit()
+                self._canvas_update()
 
         sb_a.valueChanged.connect(on_off_changed)
         sb_b.valueChanged.connect(on_off_changed)

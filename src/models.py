@@ -1060,6 +1060,13 @@ class Clothoid:
                 pts.append(Vec2(wx, wy))
                 out_idx += 1
 
+        # フレネル積分の数値誤差を補正:
+        # pts[0] は lc（線側接点）、pts[-1] は cc（円側接点）の近似値になるが
+        # 微小な誤差があり円弧との接続点がズレて見える。
+        # 両端を厳密な接点座標で上書きして描画上のギャップをなくす。
+        if pts:
+            pts[0] = Vec2(lc.x, lc.y)
+            pts[-1] = Vec2(cc.x, cc.y)
         self._points = pts
         self._update_snaps()
 

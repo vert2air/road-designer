@@ -1656,8 +1656,10 @@ class Canvas(QWidget):
 
         TwoLineOC の solve 済み ci.center を使って OffsetConstraint を解き、
         さらに下流の TwoLineOC まで連鎖させる。
+        伝播完了後に repaint() で即時再描画する（update() の遅延を避ける）。
         """
         self._propagate_offset_constraints(ci)
+        self._rebuild_handles()   # ハンドルのキャッシュを最新ジオメトリで更新
         self.scene_changed.emit()
         self.update()
 
@@ -1669,6 +1671,7 @@ class Canvas(QWidget):
         まとめて実行する。
         """
         self._propagate_line(ln)
+        self._rebuild_handles()   # ハンドルのキャッシュを最新ジオメトリで更新
         self.scene_changed.emit()
         self.update()
 

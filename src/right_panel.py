@@ -102,6 +102,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         self.scene = scene
         self._selected: list = []
         self._block = False  # UI → モデル更新の再帰防止
+        self._canvas_ref = None  # キャンバスへの直接参照（直接更新用）
 
         self.setMinimumWidth(260)
         self.setMaximumWidth(360)
@@ -1272,8 +1273,28 @@ class RightPanel(QWidget, PropBuilderMixin):
 
         return result
 
+    def set_canvas(self, canvas) -> None:
+        """キャンバスへの直接参照を設定する。
+
+        シグナル経由の描画更新では遅延が生じる場合があるため、
+        オフセット変更時など即時更新が必要な箇所でキャンバスを
+        直接呼び出すために使う。``MainWindow._connect_signals`` から呼ばれる。
+        """
+        self._canvas_ref = canvas
+
+    def _canvas_update(self) -> None:
+        """キャンバスを即時再描画する。
+
+        ``_canvas_ref`` が設定されていれば ``repaint()`` を呼び出す。
+        未設定の場合は ``scene_changed`` シグナルで代替する。
+        """
+        if self._canvas_ref is not None:
+            self._canvas_ref.repaint()
+        else:
+            self.scene_changed.emit()
+
     def _redraw(self):
-        """全クロソイドを compute() で再計算し scene_changed を emit する。
+        """全クロソイドを compute() で再計算してキャンバスを即時再描画する。
 
         数値入力や snap 設定変更後にクロソイドの状態が不整合になった場合の
         手動修復用として「再描画」ボタンから呼ばれる。
@@ -1281,6 +1302,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         for clo in self.scene.clothoids:
             clo.compute()
         self.scene_changed.emit()
+        self._canvas_update()
 
     def _delete_selected_objs(self):
         """コンボボックスで選択中の図形を QMessageBox 確認後に削除する。

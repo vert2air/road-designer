@@ -264,6 +264,9 @@ class MainWindow(QMainWindow):
         rp.request_select.connect(self._canvas.set_selection)
         rp.request_delete.connect(self._do_delete_objects)
         rp.scene_changed.connect(self._on_scene_changed)
+        rp.scene_changed.connect(self._canvas.update)
+        # キャンバス参照を右パネルに渡す（直接 repaint() 呼び出し用）
+        rp.set_canvas(self._canvas)
 
     # ─── イベントハンドラ ─────────────────────────────────────
     def _on_selection_changed(self, selected: list):
