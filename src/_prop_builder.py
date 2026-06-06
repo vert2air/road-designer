@@ -1767,8 +1767,13 @@ class PropBuilderMixin:
         form.addRow("円 A:", QLabel(nick_a))
         form.addRow("円 B:", QLabel(nick_b))
 
-        off_a_init = existing.off_a if existing else 0.0
-        off_b_init = existing.off_b if existing else 0.0
+        if existing is not None:
+            off_a_init = existing.off_a
+            off_b_init = existing.off_b
+        else:
+            # 未設定時は現在の距離から自動計算（0 のままだと設定時に図形が動く）
+            off_a_init = ln.distance_to(ci_a.center) - ci_a.radius
+            off_b_init = ln.distance_to(ci_b.center) - ci_b.radius
         sb_a = _make_spinbox(off_a_init, lo=-1000,
                              hi=1000, step=0.1, decimals=3)
         sb_b = _make_spinbox(off_b_init, lo=-1000,
