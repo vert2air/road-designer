@@ -1788,7 +1788,13 @@ class PropBuilderMixin:
                 existing.off_a = sb_a.value()
                 existing.off_b = sb_b.value()
                 existing.solve()
+                # 直線に付属するクロソイドを再計算
+                for clo in self.scene.clothoids:
+                    if clo.line is existing.line:
+                        clo.compute()
                 self._block = False
+                # 連鎖: ln を参照する TwoLineOC へ伝播
+                self.request_propagate_line.emit(existing.line)
                 self.scene_changed.emit()
 
         sb_a.valueChanged.connect(on_off_changed)
@@ -1886,6 +1892,8 @@ class PropBuilderMixin:
                     if clo.circle is existing.circle:
                         clo.compute()
                 self._block = False
+                # 連鎖: ci を参照する OffsetConstraint へ伝播
+                self.request_propagate_circle.emit(existing.circle)
                 self.scene_changed.emit()
 
         sb_a.valueChanged.connect(on_off_changed)

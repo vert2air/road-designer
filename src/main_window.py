@@ -256,6 +256,10 @@ class MainWindow(QMainWindow):
             self._do_set_two_line_offset_constraint)
         rp.request_clear_two_line_offset.connect(
             self._do_clear_two_line_offset_constraint)
+        rp.request_propagate_circle.connect(
+            self._do_propagate_circle)
+        rp.request_propagate_line.connect(
+            self._do_propagate_line)
         rp.request_push_undo.connect(self._canvas.push_undo)
         rp.request_select.connect(self._canvas.set_selection)
         rp.request_delete.connect(self._do_delete_objects)
@@ -748,6 +752,22 @@ class MainWindow(QMainWindow):
         ]
         self._canvas.scene_changed.emit()
         self._right_panel.update_selection(self._canvas._selected, self.scene)
+
+    def _do_propagate_circle(self, ci):
+        """``request_propagate_circle`` を受けて円 ci の変化を連鎖伝播する。
+
+        TwoLineOC で解決済みの ci.center を起点に、ci を参照する
+        OffsetConstraint → 直線 → TwoLineOC の順に伝播する。
+        """
+        self._canvas.propagate_from_circle(ci)
+
+    def _do_propagate_line(self, ln):
+        """``request_propagate_line`` を受けて直線 ln の変化を連鎖伝播する。
+
+        OffsetConstraint で解決済みの ln の位置を起点に、ln を参照する
+        TwoLineOffsetConstraint → 円 → OffsetConstraint の順に伝播する。
+        """
+        self._canvas.propagate_from_line(ln)
 
     # ─── 縦断線形 ────────────────────────────────────────────
     def _get_or_create_ep(self, obj, rev: bool):

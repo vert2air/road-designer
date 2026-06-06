@@ -1550,7 +1550,10 @@ class Canvas(QWidget):
         伝播の順序:
 
         1. ``ci`` を参照する全クロソイドに :meth:`Clothoid.compute` を呼ぶ
-        2. :meth:`_propagate_offset_constraints` でオフセット拘束追従
+        2. :meth:`_propagate_two_line_offset_constraints` で
+           TwoLineOffsetConstraint を先に解いて ``ci.center`` を確定させる。
+           （半径変化時に 2直線からの距離を維持するため先行させる）
+        3. :meth:`_propagate_offset_constraints` でオフセット拘束追従
 
         Parameters
         ----------
@@ -1560,7 +1563,9 @@ class Canvas(QWidget):
         for clo in self.scene.clothoids:
             if clo.circle is ci:
                 clo.compute()
-        # OffsetConstraint の追従
+        # TwoLineOC を先に解いて ci.center を確定させる（半径変化への対応）
+        self._propagate_two_line_offset_constraints(ci)
+        # 確定した ci.center を使って OffsetConstraint を解く
         self._propagate_offset_constraints(ci)
 
     def _propagate_offset_constraints(self, ci: 'Circle'):
@@ -1638,6 +1643,27 @@ class Canvas(QWidget):
                 self._propagate_offset_constraints(oc.circle)
                 self.scene_changed.emit()
                 self.update()
+
+    # ─── 外部公開・伝播ヘルパー ──────────────────────────────────
+    def propagate_from_circle(self, ci: 'Circle'):
+        """外部（プロパティパネル等）から円 ci の変化をチェーン伝播させる。
+
+        TwoLineOC の solve 済み ci.center を使って OffsetConstraint を解き、
+        さらに下流の TwoLineOC まで連鎖させる。
+        """
+        self._propagate_offset_constraints(ci)
+        self.scene_changed.emit()
+        self.update()
+
+    def propagate_from_line(self, ln: 'Line'):
+        """外部（プロパティパネル等）から直線 ln の変化をチェーン伝播させる。
+
+        TwoLineOffsetConstraint を解いて円中心を更新し、
+        さらに下流の OffsetConstraint まで連鎖させる。
+        """
+        self._propagate_two_line_oc_for_line(ln)
+        self.scene_changed.emit()
+        self.update()
 
     def _update_smooth_circle(self, conn: 'LineConnection'):
         """

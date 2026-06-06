@@ -77,6 +77,8 @@ class RightPanel(QWidget, PropBuilderMixin):
     # ln_a, ln_b, ci
     request_set_two_line_offset = Signal(object, object, object)
     request_clear_two_line_offset = Signal(object, object)  # ln_a, ln_b
+    request_propagate_circle = Signal(object)   # circle → OffsetConstraint 連鎖
+    request_propagate_line = Signal(object)     # line → TwoLineOC 連鎖
     request_add_arcs = Signal(object, list)            # circle, [Arc]
     request_undo = Signal()                        # Undo 要求
     request_push_undo = Signal()                        # プロパティ変更前の状態保存
