@@ -406,8 +406,88 @@ class PropBuilderMixin:
         # 関連図形
         self._add_related_objects(obj)
 
+        # 関連オフセット拘束
+        self._add_related_constraints(obj)
+
         # 縦断設計情報
         self._add_vertical_profile_info(obj)
+
+    def _add_related_constraints(self, obj):
+        """obj に関連するオフセット拘束一覧を右パネルに追加する。
+
+        OffsetConstraint（1直線 + 2円）と TwoLineOffsetConstraint
+        （2直線 + 1円）を対象に、obj に関係する拘束を列挙する。
+        各拘束行の「選択」ボタンを押すと、その拘束に含まれる全図形が
+        キャンバスで選択され、拘束のプロパティパネルに切り替わる。
+
+        Parameters
+        ----------
+        obj : Line or Circle or Segment or Arc
+            関連拘束を検索する起点のオブジェクト。
+        """
+        # Segment/Arc は親オブジェクトで検索
+        base = obj
+        if isinstance(obj, Segment):
+            base = obj.line
+        elif isinstance(obj, Arc):
+            base = obj.circle
+
+        def _nick(o):
+            """表示用の短いニックネームを返す。"""
+            oid = getattr(o, 'id', None)
+            if oid is None:
+                return '?'
+            custom = self.scene.nicknames.get(oid)
+            if custom:
+                return custom
+            if isinstance(o, Line):
+                return f'直線#{oid}'
+            if isinstance(o, Circle):
+                return f'円#{oid}'
+            return f'#{oid}'
+
+        rows = []   # (label_str, [objs_to_select])
+
+        # OffsetConstraint（直線 ← 2円）
+        for oc in self.scene.offset_constraints:
+            if (oc.line is base
+                    or oc.circle_a is base
+                    or oc.circle_b is base):
+                label = (f"{_nick(oc.line)} ← "
+                         f"{_nick(oc.circle_a)} · "
+                         f"{_nick(oc.circle_b)}")
+                rows.append(
+                    (label, [oc.line, oc.circle_a, oc.circle_b]))
+
+        # TwoLineOffsetConstraint（円 ← 2直線）
+        for oc in self.scene.two_line_offset_constraints:
+            if (oc.line_a is base
+                    or oc.line_b is base
+                    or oc.circle is base):
+                label = (f"{_nick(oc.circle)} ← "
+                         f"{_nick(oc.line_a)} · "
+                         f"{_nick(oc.line_b)}")
+                rows.append(
+                    (label, [oc.line_a, oc.line_b, oc.circle]))
+
+        if not rows:
+            return
+
+        grp = QGroupBox("オフセット拘束")
+        lay = QVBoxLayout(grp)
+        for label, sel_objs in rows:
+            row_lay = QHBoxLayout()
+            lbl = QLabel(label)
+            lbl.setWordWrap(True)
+            row_lay.addWidget(lbl, stretch=1)
+            btn = QPushButton("選択")
+            btn.setFixedWidth(44)
+            btn.clicked.connect(
+                lambda _, os=sel_objs:
+                self.request_select.emit(os))
+            row_lay.addWidget(btn)
+            lay.addLayout(row_lay)
+        self._prop_layout.addWidget(grp)
 
     def _add_vertical_profile_info(self, obj):
         """対応する ElementProfile が存在すれば縦断情報を右パネルに追加する。
