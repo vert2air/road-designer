@@ -79,15 +79,15 @@ class ProfileCanvas(QWidget):
         ハンドルの描画半径 [px]。
     HIT_TOL : int = 8
         図形ヒット判定の許容距離 [px]。
-    CB_H : int = 26
-        カラーバーの高さ [px]。
+    CB_H : int = 42
+        カラーバーの高さ [px]（3行ラベル用）。
     """
     selection_changed = Signal(object)
     mouse_world_pos = Signal(float, float)
 
     HANDLE_R = 6   # ハンドル半径 [px]
     HIT_TOL = 8   # ヒット許容距離 [px]
-    CB_H = 26  # カラーバー高さ [px]
+    CB_H = 42  # カラーバー高さ [px]（3行ラベル用）
 
     def __init__(self, scene: Scene, parent=None):
         """ProfileCanvas を初期化する。
@@ -634,17 +634,37 @@ class ProfileCanvas(QWidget):
             x1 = self.w2s(offset + L, 0).x()
             painter.fillRect(int(x0), cb_y, max(
                 int(x1 - x0), 1), self.CB_H, color)
-            # ラベル
+            # ラベル（3行: 1行目=距離、2行目=種別+ID、3行目=ニックネーム）
             painter.setPen(QPen(QColor(255, 255, 255)))
-            eid = getattr(elem, 'id', None)
-            name = self.scene.nicknames.get(eid, "")
-            kind = ("線分" if isinstance(elem, Segment) else
-                    "クロ" if isinstance(elem, Clothoid) else "円弧")
-            label = f"{kind}" + (f"[{name}]" if name else "") + f" {L:.0f}m"
+            if isinstance(elem, Segment):
+                nick_id = getattr(elem.line, 'id', None)
+                kind = "線分"
+                disp_id = nick_id
+            elif isinstance(elem, Arc):
+                nick_id = getattr(elem.circle, 'id', None)
+                kind = "円弧"
+                disp_id = nick_id
+            else:  # Clothoid
+                nick_id = getattr(elem, 'id', None)
+                kind = "クロ"
+                disp_id = nick_id
+            name = self.scene.nicknames.get(nick_id, "") if nick_id is not None else ""
+            label_w = max(int(x1 - x0) - 4, 1)
+            row_h = self.CB_H // 3
+            align = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+            # 1行目: 距離
             painter.drawText(
-                int(x0) + 2, cb_y, max(int(x1 - x0) - 4, 1), self.CB_H,
-                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                label)
+                int(x0) + 2, cb_y, label_w, row_h, align,
+                f"{L:.0f}m")
+            # 2行目: 種別(#ID)
+            painter.drawText(
+                int(x0) + 2, cb_y + row_h, label_w, row_h, align,
+                f"{kind}(#{disp_id})")
+            # 3行目: ニックネーム（あれば）
+            if name:
+                painter.drawText(
+                    int(x0) + 2, cb_y + row_h * 2, label_w, row_h, align,
+                    name)
             # 要素境界の縦線
             painter.setPen(
                 QPen(QColor(255, 255, 255, 180), 1, Qt.PenStyle.DashLine))
