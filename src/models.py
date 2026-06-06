@@ -1776,6 +1776,74 @@ class TwoLineOffsetConstraint:
         return oc
 
 
+def detect_constraint_cycle(scene, inputs: set, outputs: set) -> bool:
+    """新しいオフセット拘束を追加するとループが生まれるか BFS で検査する。
+
+    オフセット拘束の伝播方向:
+
+    * ``Circle → Line`` : OffsetConstraint（円が動けば直線が動く）
+    * ``Line → Circle`` : TwoLineOffsetConstraint（直線が動けば円が動く）
+
+    新しい拘束の出力ノード群（``outputs``）から BFS でグラフを辿り、
+    入力ノード群（``inputs``）に到達できれば循環が生まれる。
+
+    Parameters
+    ----------
+    scene : Scene
+        現在のシーン（既存の拘束リストを参照する）。
+    inputs : set
+        新しい拘束への入力オブジェクト集合
+        （OffsetConstraint なら {circle_a, circle_b}、
+        TwoLineOffsetConstraint なら {line_a, line_b}）。
+    outputs : set
+        新しい拘束の出力オブジェクト集合
+        （OffsetConstraint なら {line}、
+        TwoLineOffsetConstraint なら {circle}）。
+
+    Returns
+    -------
+    bool
+        循環が検出された場合 ``True``。
+    """
+    from collections import deque
+    visited: set[int] = set()
+    queue: deque = deque()
+
+    for node in outputs:
+        if id(node) not in visited:
+            visited.add(id(node))
+            queue.append(node)
+
+    while queue:
+        node = queue.popleft()
+
+        # 入力ノードに到達 → ループ確定
+        if node in inputs:
+            return True
+
+        if isinstance(node, Line):
+            # Line → Circle（TwoLineOffsetConstraint 経由）
+            for oc in scene.two_line_offset_constraints:
+                if oc.circle is None:
+                    continue
+                if oc.line_a is node or oc.line_b is node:
+                    if id(oc.circle) not in visited:
+                        visited.add(id(oc.circle))
+                        queue.append(oc.circle)
+
+        elif isinstance(node, Circle):
+            # Circle → Line（OffsetConstraint 経由）
+            for oc in scene.offset_constraints:
+                if oc.line is None:
+                    continue
+                if oc.circle_a is node or oc.circle_b is node:
+                    if id(oc.line) not in visited:
+                        visited.add(id(oc.line))
+                        queue.append(oc.line)
+
+    return False
+
+
 # ─── 縦断線形モデル（backward-compat 再エクスポート） ─────────────────
 # 実体は vertical_profile.py に移動。既存のインポートは引き続き
 #   from models import plan_length_of, ElementProfile, ...

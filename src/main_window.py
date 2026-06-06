@@ -630,7 +630,7 @@ class MainWindow(QMainWindow):
         ci_b : Circle
             円 B。
         """
-        from models import OffsetConstraint
+        from models import OffsetConstraint, detect_constraint_cycle
         # 既存の拘束が同じ組み合わせであれば上書きしない
         existing = next(
             (oc for oc in self.scene.offset_constraints
@@ -638,6 +638,19 @@ class MainWindow(QMainWindow):
             None
         )
         if existing is not None:
+            return
+        # 循環依存チェック
+        if detect_constraint_cycle(
+                self.scene,
+                inputs={ci_a, ci_b},
+                outputs={ln}):
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "オフセット拘束 – 循環検出",
+                "この拘束を追加すると拘束のループが生まれます。\n"
+                "設定をキャンセルしました。"
+            )
             return
         self._canvas.push_undo()
         oc = OffsetConstraint()
@@ -684,13 +697,26 @@ class MainWindow(QMainWindow):
         ci : Circle
             拘束の基準となる円 C。
         """
-        from models import TwoLineOffsetConstraint
+        from models import TwoLineOffsetConstraint, detect_constraint_cycle
         existing = next(
             (oc for oc in self.scene.two_line_offset_constraints
              if {oc.line_a, oc.line_b} == {ln_a, ln_b} and oc.circle is ci),
             None
         )
         if existing is not None:
+            return
+        # 循環依存チェック
+        if detect_constraint_cycle(
+                self.scene,
+                inputs={ln_a, ln_b},
+                outputs={ci}):
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "オフセット拘束（2直線-1円）– 循環検出",
+                "この拘束を追加すると拘束のループが生まれます。\n"
+                "設定をキャンセルしました。"
+            )
             return
         self._canvas.push_undo()
         oc = TwoLineOffsetConstraint()
