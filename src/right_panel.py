@@ -74,8 +74,9 @@ class RightPanel(QWidget, PropBuilderMixin):
     request_delete = Signal(list)   # 削除要求
     request_set_offset = Signal(object, object, object)  # line, ci_a, ci_b
     request_clear_offset = Signal(object)                  # line
-    request_set_two_line_offset = Signal(object, object, object)   # ln_a, ln_b, ci
-    request_clear_two_line_offset = Signal(object, object)         # ln_a, ln_b
+    # ln_a, ln_b, ci
+    request_set_two_line_offset = Signal(object, object, object)
+    request_clear_two_line_offset = Signal(object, object)  # ln_a, ln_b
     request_add_arcs = Signal(object, list)            # circle, [Arc]
     request_undo = Signal()                        # Undo 要求
     request_push_undo = Signal()                        # プロパティ変更前の状態保存
@@ -1909,13 +1910,15 @@ class RightPanel(QWidget, PropBuilderMixin):
         eff_lines = [o for o in eff_objs if isinstance(o, Line)]
 
         # 2円 + 1直線 → OffsetConstraint
-        if len(eff_circles) == 2 and len(eff_lines) == 1 and len(eff_objs) == 3:
+        if (len(eff_circles) == 2
+                and len(eff_lines) == 1 and len(eff_objs) == 3):
             self._build_offset_constraint(
                 eff_lines[0], eff_circles[0], eff_circles[1])
             return
 
         # 1円 + 2直線 → TwoLineOffsetConstraint
-        if len(eff_circles) == 1 and len(eff_lines) == 2 and len(eff_objs) == 3:
+        if (len(eff_circles) == 1
+                and len(eff_lines) == 2 and len(eff_objs) == 3):
             self._build_two_line_offset_constraint(
                 eff_lines[0], eff_lines[1], eff_circles[0])
             return

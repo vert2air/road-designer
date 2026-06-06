@@ -1828,7 +1828,8 @@ class PropBuilderMixin:
         既存の拘束がない場合（未設定）:
 
         * ``off_a``・``off_b`` のスピンボックス（初期値 0）
-        * 「オフセット拘束を設定」ボタン → ``request_set_two_line_offset.emit(ln_a, ln_b, ci)``
+        * 「オフセット拘束を設定」ボタン
+          → ``request_set_two_line_offset.emit(ln_a, ln_b, ci)``
 
         Parameters
         ----------
@@ -1839,7 +1840,6 @@ class PropBuilderMixin:
         ci : Circle
             拘束の基準となる円 C。
         """
-        from models import TwoLineOffsetConstraint
         self._prop_layout.addWidget(QLabel("─ オフセット拘束（2直線-1円）─"))
 
         # 既存の拘束を検索
@@ -1867,8 +1867,10 @@ class PropBuilderMixin:
             # 未設定時は現在の距離から自動計算して表示する（0 のままだと設定時に図形が動く）
             off_a_init = ln_a.distance_to(ci.center) - ci.radius
             off_b_init = ln_b.distance_to(ci.center) - ci.radius
-        sb_a = _make_spinbox(off_a_init, lo=-1000, hi=1000, step=0.1, decimals=3)
-        sb_b = _make_spinbox(off_b_init, lo=-1000, hi=1000, step=0.1, decimals=3)
+        sb_a = _make_spinbox(off_a_init, lo=-1000,
+                             hi=1000, step=0.1, decimals=3)
+        sb_b = _make_spinbox(off_b_init, lo=-1000,
+                             hi=1000, step=0.1, decimals=3)
         form.addRow("off_a [m]:", sb_a)
         form.addRow("off_b [m]:", sb_b)
         self._prop_layout.addWidget(grp)
@@ -2083,7 +2085,7 @@ class PropBuilderMixin:
         sel : list
             現在の選択図形リスト（Segment/Arc と親 Line/Circle が混在可）。
         """
-        from models import Line, Circle, Arc, Segment, Clothoid
+        from models import Line, Circle, Clothoid
 
         # ── サマリ ──────────────────────────────────────────
         effective = self._effective_set(sel)

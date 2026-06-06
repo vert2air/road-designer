@@ -648,7 +648,8 @@ class ProfileCanvas(QWidget):
                 nick_id = getattr(elem, 'id', None)
                 kind = "クロ"
                 disp_id = nick_id
-            name = self.scene.nicknames.get(nick_id, "") if nick_id is not None else ""
+            name = (self.scene.nicknames.get(nick_id, "")
+                    if nick_id is not None else "")
             label_w = max(int(x1 - x0) - 4, 1)
             row_h = self.CB_H // 3
             align = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft

@@ -696,7 +696,8 @@ class Canvas(QWidget):
         # Segment: 両端点が矩形内 → Segment と親 Line を追加
         for ln in self.scene.lines:
             for seg in ln.segments:
-                if in_r(seg.start.x, seg.start.y) and in_r(seg.end.x, seg.end.y):
+                if (in_r(seg.start.x, seg.start.y)
+                        and in_r(seg.end.x, seg.end.y)):
                     add(seg)
                     add(ln)
 
@@ -1038,7 +1039,8 @@ class Canvas(QWidget):
         painter : QPainter
             描画先のペインター。
         """
-        if self._rubber_select_start is None or self._rubber_select_end is None:
+        if (self._rubber_select_start is None
+                or self._rubber_select_end is None):
             return
         s, e = self._rubber_select_start, self._rubber_select_end
         x0, y0 = min(s.x, e.x), min(s.y, e.y)
