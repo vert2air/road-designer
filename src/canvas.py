@@ -33,8 +33,13 @@ C_HANDLE_REF = QColor(130, 130, 130)
 C_HANDLE_END = QColor(220, 50, 50)
 C_HANDLE_RAD = QColor(40, 180, 80)
 C_HANDLE_INT = QColor(220, 140, 20)
+C_BBOX = QColor(80, 160, 255, 180)     # AABB 枠線
+C_BBOX_VERTEX = QColor(80, 160, 255)   # 頂点ハンドル
+C_BBOX_DIAG = QColor(255, 160, 40)     # 対角線
 
 HANDLE_RADIUS = 7  # px
+BBOX_VERTEX_R = 6   # px  AABB 頂点ハンドル半径
+BBOX_EDGE_W = 10    # px  辺のヒット幅（片側）
 
 # ─── ヒットテスト閾値 ───────────────────────────────────────────
 HIT_DIST = 8  # px
@@ -169,6 +174,13 @@ class Canvas(QWidget):
 
         # ハンドルキャッシュ
         self._handles: list[Handle] = []
+
+        # 複数選択時の AABB 変換ドラッグ
+        # mode: None | 'translate' | 'scale' | 'rotate'
+        self._bbox_drag_mode: Optional[str] = None
+        self._bbox_drag_start_w: Optional[Vec2] = None   # ドラッグ開始ワールド座標
+        self._bbox_drag_snapshot: Optional[dict] = None  # ドラッグ開始時のスナップショット
+        self._bbox_drag_aabb = None  # ドラッグ開始時の AABB（固定値）
 
         # undo スタック (最大 500)
         self._undo_stack: deque[dict] = deque(maxlen=500)
@@ -313,6 +325,299 @@ class Canvas(QWidget):
         self._rebuild_handles()
         self.selection_changed.emit(self._selected)
         self.update()
+
+    # ─── AABB 変換ドラッグ（複数選択時）────────────────────────
+
+    def _is_multi_select(self) -> bool:
+        """複数の独立した図形が選択されているか判定する。
+
+        Segment/Arc はその親 Line/Circle を代表とみなし、代表が 2 種以上
+        あれば複数選択と判断する。
+        """
+        from models import Segment, Arc
+        reps: set = set()
+        for obj in self._selected:
+            if isinstance(obj, Segment) and obj.line is not None:
+                reps.add(id(obj.line))
+            elif isinstance(obj, Arc) and obj.circle is not None:
+                reps.add(id(obj.circle))
+            else:
+                reps.add(id(obj))
+        return len(reps) >= 2
+
+    def _selection_aabb(self):
+        """選択図形の AABB を (min_x, min_y, max_x, max_y) で返す。
+
+        有効点が無ければ None を返す。
+        """
+        pts = []
+        for obj in self._selected:
+            if isinstance(obj, Line):
+                for seg in obj.segments:
+                    pts += [(seg.start.x, seg.start.y),
+                            (seg.end.x, seg.end.y)]
+                if not obj.segments:
+                    pts += [(obj.ref_start.x, obj.ref_start.y),
+                            (obj.ref_end.x, obj.ref_end.y)]
+            elif isinstance(obj, Circle):
+                r = obj.radius
+                pts += [(obj.center.x - r, obj.center.y),
+                        (obj.center.x + r, obj.center.y),
+                        (obj.center.x, obj.center.y - r),
+                        (obj.center.x, obj.center.y + r)]
+            elif isinstance(obj, Clothoid) and obj.points:
+                pts += [(p.x, p.y) for p in obj.points]
+            elif isinstance(obj, Segment):
+                pts += [(obj.start.x, obj.start.y),
+                        (obj.end.x, obj.end.y)]
+            elif isinstance(obj, Arc):
+                ci = obj.circle
+                if ci:
+                    r = ci.radius
+                    pts += [(ci.center.x - r, ci.center.y),
+                            (ci.center.x + r, ci.center.y),
+                            (ci.center.x, ci.center.y - r),
+                            (ci.center.x, ci.center.y + r)]
+        if not pts:
+            return None
+        xs, ys = zip(*pts)
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def _bbox_corners_s(self, aabb):
+        """AABB の 4 頂点をスクリーン座標で返す（TL, TR, BR, BL 順）。
+
+        aabb は (min_x, min_y, max_x, max_y) のタプル。
+        """
+        mn_x, mn_y, mx_x, mx_y = aabb
+        return [
+            self.w2s(Vec2(mn_x, mx_y)),  # TL（ワールドy上 → スクリーン上）
+            self.w2s(Vec2(mx_x, mx_y)),  # TR
+            self.w2s(Vec2(mx_x, mn_y)),  # BR
+            self.w2s(Vec2(mn_x, mn_y)),  # BL
+        ]
+
+    def _hit_bbox(self, sw: Vec2):
+        """スクリーン座標 sw が AABB ハンドルに当たるか判定する。
+
+        Returns
+        -------
+        str or None
+            'vertex_0'..'vertex_3' / 'edge_0'..'edge_3' / 'diagonal' / None
+            頂点優先、対角線次、辺の順で判定する。
+        """
+        if not self._is_multi_select():
+            return None
+        aabb = self._selection_aabb()
+        if aabb is None:
+            return None
+        corners = self._bbox_corners_s(aabb)
+
+        # 頂点ヒット（最優先）
+        for i, c in enumerate(corners):
+            if math.hypot(sw.x - c.x(), sw.y - c.y()) <= BBOX_VERTEX_R + 4:
+                return f'vertex_{i}'
+
+        # 対角線ヒット（線分との距離）
+        mn_x, mn_y, mx_x, mx_y = aabb
+
+        def dist_to_seg_s(ax, ay, bx, by, px, py):
+            dx, dy = bx - ax, by - ay
+            t = ((px - ax) * dx + (py - ay) * dy) / (
+                dx * dx + dy * dy + 1e-12)
+            t = max(0.0, min(1.0, t))
+            return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+        for i in range(2):
+            a, b = corners[i], corners[i + 2]
+            d = dist_to_seg_s(a.x(), a.y(), b.x(), b.y(), sw.x, sw.y)
+            if d <= 8:
+                return 'diagonal'
+
+        # 辺ヒット（辺の中点付近）
+        for i in range(4):
+            a, b = corners[i], corners[(i + 1) % 4]
+            d = dist_to_seg_s(a.x(), a.y(), b.x(), b.y(), sw.x, sw.y)
+            if d <= BBOX_EDGE_W:
+                return f'edge_{i}'
+
+        return None
+
+    def _effective_set(self, selected: list) -> list:
+        """選択リストから代表の Line/Circle/Clothoid を重複なく返す。
+
+        Segment → 親 Line、Arc → 親 Circle に昇格する。
+        """
+        seen: set = set()
+        result = []
+        for obj in selected:
+            if isinstance(obj, Segment) and obj.line is not None:
+                target = obj.line
+            elif isinstance(obj, Arc) and obj.circle is not None:
+                target = obj.circle
+            else:
+                target = obj
+            if id(target) not in seen:
+                seen.add(id(target))
+                result.append(target)
+        return result
+
+    def _snapshot_selected(self) -> dict:
+        """選択図形の現在ジオメトリをスナップショットとして返す。
+
+        ドラッグ中に「開始時の状態」から変換を計算するために使う。
+        """
+        snap = {}
+        effective = self._effective_set(self._selected)
+        for obj in effective:
+            if isinstance(obj, Line):
+                snap[id(obj)] = {
+                    'ref_start': Vec2(obj.ref_start.x, obj.ref_start.y),
+                    'ref_end': Vec2(obj.ref_end.x, obj.ref_end.y),
+                }
+            elif isinstance(obj, Circle):
+                snap[id(obj)] = {
+                    'center': Vec2(obj.center.x, obj.center.y),
+                    'radius': obj.radius,
+                    'arc_angles': [(a.angle_start, a.angle_end)
+                                   for a in obj.arcs],
+                }
+        return snap
+
+    def _apply_snapshot(self, snap: dict):
+        """スナップショットを選択図形に復元する（ドラッグ中の再適用用）。"""
+        effective = self._effective_set(self._selected)
+        for obj in effective:
+            s = snap.get(id(obj))
+            if s is None:
+                continue
+            if isinstance(obj, Line):
+                obj.ref_start = Vec2(s['ref_start'].x, s['ref_start'].y)
+                obj.ref_end = Vec2(s['ref_end'].x, s['ref_end'].y)
+            elif isinstance(obj, Circle):
+                obj.center = Vec2(s['center'].x, s['center'].y)
+                obj.radius = s['radius']
+                for arc, (as_, ae) in zip(obj.arcs, s['arc_angles']):
+                    arc.angle_start = as_
+                    arc.angle_end = ae
+
+    def _bbox_apply_translate(self, dx: float, dy: float):
+        """スナップショットから復元し dx/dy 平行移動を適用する。"""
+        self._apply_snapshot(self._bbox_drag_snapshot)
+        effective = self._effective_set(self._selected)
+        moved_ids: set = set()
+        for obj in effective:
+            if isinstance(obj, Line):
+                obj.ref_start = Vec2(obj.ref_start.x + dx,
+                                     obj.ref_start.y + dy)
+                obj.ref_end = Vec2(obj.ref_end.x + dx, obj.ref_end.y + dy)
+                moved_ids.add(id(obj))
+            elif isinstance(obj, Circle):
+                obj.center = Vec2(obj.center.x + dx, obj.center.y + dy)
+                moved_ids.add(id(obj))
+        self._recompute_after_bbox(moved_ids)
+
+    def _bbox_apply_scale(self, factor: float, center: Vec2):
+        """スナップショットから復元し center 基準で factor 倍拡縮する。"""
+        if abs(factor) < 1e-6:
+            return
+        self._apply_snapshot(self._bbox_drag_snapshot)
+        effective = self._effective_set(self._selected)
+        cx, cy = center.x, center.y
+
+        def sc(v: Vec2) -> Vec2:
+            return Vec2(cx + (v.x - cx) * factor,
+                        cy + (v.y - cy) * factor)
+
+        moved_ids: set = set()
+        for obj in effective:
+            if isinstance(obj, Line):
+                obj.ref_start = sc(obj.ref_start)
+                obj.ref_end = sc(obj.ref_end)
+                moved_ids.add(id(obj))
+            elif isinstance(obj, Circle):
+                obj.center = sc(obj.center)
+                obj.radius = obj.radius * abs(factor)
+                moved_ids.add(id(obj))
+        self._recompute_after_bbox(moved_ids)
+
+    def _bbox_apply_rotate(self, angle_rad: float, center: Vec2):
+        """スナップショットから復元し center 基準で angle_rad 回転する。"""
+        self._apply_snapshot(self._bbox_drag_snapshot)
+        effective = self._effective_set(self._selected)
+        cx, cy = center.x, center.y
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+
+        def rot(v: Vec2) -> Vec2:
+            dx_r = v.x - cx
+            dy_r = v.y - cy
+            return Vec2(cx + dx_r * cos_a - dy_r * sin_a,
+                        cy + dx_r * sin_a + dy_r * cos_a)
+
+        moved_ids: set = set()
+        for obj in effective:
+            if isinstance(obj, Line):
+                obj.ref_start = rot(obj.ref_start)
+                obj.ref_end = rot(obj.ref_end)
+                moved_ids.add(id(obj))
+            elif isinstance(obj, Circle):
+                obj.center = rot(obj.center)
+                for arc in obj.arcs:
+                    arc.angle_start += angle_rad
+                    arc.angle_end += angle_rad
+                moved_ids.add(id(obj))
+        self._recompute_after_bbox(moved_ids)
+
+    def _recompute_after_bbox(self, moved_ids: set):
+        """AABB 変換後にクロソイドを再計算して画面を更新する。"""
+        for clo in self.scene.clothoids:
+            if id(clo.line) in moved_ids or id(clo.circle) in moved_ids:
+                clo.compute()
+        self._rebuild_handles()
+        self.update()
+
+    def _draw_bbox_handles(self, painter: QPainter):
+        """複数選択時の AABB 変換ハンドルを描画する。
+
+        頂点（塗り潰し円）・辺（矩形の線）・対角線（破線）・中心点を描く。
+        """
+        if not self._is_multi_select():
+            return
+        aabb = self._selection_aabb()
+        if aabb is None:
+            return
+        mn_x, mn_y, mx_x, mx_y = aabb
+        corners = self._bbox_corners_s(aabb)
+
+        # 矩形枠（辺）
+        pen = QPen(C_BBOX, 1.5, Qt.PenStyle.SolidLine)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        poly = QPolygonF([c for c in corners])
+        painter.drawPolygon(poly)
+
+        # 対角線（1点鎖線）
+        pen_diag = QPen(C_BBOX_DIAG, 1.5, Qt.PenStyle.DashDotLine)
+        painter.setPen(pen_diag)
+        painter.drawLine(corners[0], corners[2])
+        painter.drawLine(corners[1], corners[3])
+
+        # AABB 中心（小さい十字）
+        cx_s = self.w2s(Vec2((mn_x + mx_x) / 2, (mn_y + mx_y) / 2))
+        painter.setPen(QPen(C_BBOX_DIAG, 1.5))
+        r = 5
+        painter.drawLine(
+            QPointF(cx_s.x() - r, cx_s.y()),
+            QPointF(cx_s.x() + r, cx_s.y()))
+        painter.drawLine(
+            QPointF(cx_s.x(), cx_s.y() - r),
+            QPointF(cx_s.x(), cx_s.y() + r))
+
+        # 頂点ハンドル
+        painter.setPen(QPen(C_BBOX_VERTEX, 1.5))
+        painter.setBrush(QBrush(C_BBOX_VERTEX))
+        for c in corners:
+            painter.drawEllipse(c, BBOX_VERTEX_R, BBOX_VERTEX_R)
 
     def _rebuild_handles(self):
         """選択図形に対応するハンドルを再構築して ``_handles`` リストを更新する。
@@ -780,6 +1085,8 @@ class Canvas(QWidget):
         self._draw_rubber(painter)
         # ラバーバンド選択矩形（Shift+ドラッグ）
         self._draw_rubber_select(painter)
+        # AABB 変換ハンドル（複数選択時）
+        self._draw_bbox_handles(painter)
         # ハンドル
         self._draw_handles(painter)
 
@@ -1098,6 +1405,17 @@ class Canvas(QWidget):
             self._mouse_moved_px = 0
 
             if self.mode == self.MODE_SELECT:
+                # AABB 変換ハンドルヒット?（複数選択時、通常ハンドルより優先）
+                bbox_hit = self._hit_bbox(sw)
+                if bbox_hit is not None:
+                    self.push_undo()
+                    self._bbox_drag_mode = bbox_hit
+                    self._bbox_drag_start_w = w
+                    self._bbox_drag_snapshot = self._snapshot_selected()
+                    # ドラッグ開始時の AABB を固定（毎フレーム再計算すると発散）
+                    self._bbox_drag_aabb = self._selection_aabb()
+                    return
+
                 # ハンドルヒット?
                 h = self._hit_handle(sw)
                 if h:
@@ -1175,6 +1493,11 @@ class Canvas(QWidget):
             self.update()
             return
 
+        # AABB 変換ドラッグ中
+        if self._bbox_drag_mode is not None and self._bbox_drag_start_w:
+            self._do_bbox_drag(w)
+            return
+
         if self._drag_start_screen:
             dx = sw.x - self._drag_start_screen.x
             dy = sw.y - self._drag_start_screen.y
@@ -1241,6 +1564,16 @@ class Canvas(QWidget):
             return
 
         if btn == Qt.MouseButton.LeftButton:
+            # AABB 変換ドラッグ完了
+            if self._bbox_drag_mode is not None:
+                self._bbox_drag_mode = None
+                self._bbox_drag_start_w = None
+                self._bbox_drag_snapshot = None
+                self._bbox_drag_aabb = None
+                self.scene_changed.emit()
+                self.selection_changed.emit(self._selected)
+                return
+
             # ラバーバンド選択完了
             if self._rubber_select_start is not None:
                 sel = self._complete_rubber_select()
@@ -1418,6 +1751,62 @@ class Canvas(QWidget):
                               b_start_is_shared=b_start_shared)
         a.connection = conn
         b.connection = conn
+
+    # ─── AABB 変換ドラッグ処理 ───────────────────────────────────
+    def _do_bbox_drag(self, w: Vec2):
+        """AABB 変換ドラッグの各フレーム処理。
+
+        _bbox_drag_mode に応じて平行移動・拡大縮小・回転を適用する。
+        スナップショットから毎フレーム再計算するため累積誤差が出ない。
+
+        Parameters
+        ----------
+        w : Vec2
+            現在のマウスワールド座標。
+        """
+        mode = self._bbox_drag_mode
+        start = self._bbox_drag_start_w
+        if mode is None or start is None:
+            return
+
+        # ドラッグ開始時に固定した AABB を使う（毎フレーム再計算すると発散）
+        aabb = self._bbox_drag_aabb
+        if aabb is None:
+            return
+        mn_x, mn_y, mx_x, mx_y = aabb
+        cx = (mn_x + mx_x) / 2
+        cy = (mn_y + mx_y) / 2
+        center = Vec2(cx, cy)
+
+        if mode.startswith('edge_'):
+            # 平行移動: ドラッグ差分をそのまま適用
+            dx = w.x - start.x
+            dy = w.y - start.y
+            self._bbox_apply_translate(dx, dy)
+
+        elif mode.startswith('vertex_'):
+            # 拡大縮小: X/Y それぞれの倍率を求め大きい方を採用（XY同率）
+            idx = int(mode[-1])
+            corners_w = [
+                Vec2(mn_x, mx_y), Vec2(mx_x, mx_y),
+                Vec2(mx_x, mn_y), Vec2(mn_x, mn_y),
+            ]
+            orig_corner = corners_w[idx]
+            orig_dx = abs(orig_corner.x - cx)
+            orig_dy = abs(orig_corner.y - cy)
+            cur_dx = abs(w.x - cx)
+            cur_dy = abs(w.y - cy)
+            fx = cur_dx / orig_dx if orig_dx > 1e-6 else 1.0
+            fy = cur_dy / orig_dy if orig_dy > 1e-6 else 1.0
+            factor = max(fx, fy)
+            self._bbox_apply_scale(factor, center)
+
+        elif mode == 'diagonal':
+            # 回転: ドラッグ開始点→中心の角度と現在点→中心の角度の差
+            start_ang = math.atan2(start.y - cy, start.x - cx)
+            cur_ang = math.atan2(w.y - cy, w.x - cx)
+            angle_rad = cur_ang - start_ang
+            self._bbox_apply_rotate(angle_rad, center)
 
     # ─── ドラッグ処理 ─────────────────────────────────────────
     def _do_drag(self, w: Vec2):
