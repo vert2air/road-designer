@@ -117,17 +117,18 @@ uv run pytest -m spec -v
 
 ### カバレッジ計測
 
+`uv run pytest` を実行すると、ターミナル表示と `htmlcov/index.html` の両方が
+自動生成されます（ブランチカバレッジ込み）。
+
 ```bash
-# ターミナルに未カバー行を表示（spec テストは除外）
-uv run pytest --cov=src --cov-branch --cov-report=term-missing
-
-# HTML レポートを生成（htmlcov/index.html で確認）
-uv run pytest --cov=src --cov-branch --cov-report=html
-
-# 通常テスト＋仕様適合テストを合算する場合
+# 通常テストを実行（htmlcov/ が生成される）
 uv run pytest
-uv run pytest -m spec --cov-append
+
+# 仕様適合テストを追加計測して htmlcov/ を更新する場合
+uv run pytest -m spec --cov-append --cov-report=term-missing --cov-report=html
 ```
+
+`htmlcov/index.html` をブラウザで開くとファイル別・行別の詳細が確認できます。
 
 ### Windows での注意
 
