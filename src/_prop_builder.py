@@ -252,7 +252,23 @@ class _FlexSpinBox(QDoubleSpinBox):
 
     デフォルト実装の minimumSizeHint が約 120px を主張するため、
     右パネルで水平スクロールが発生する問題を防ぐためにオーバーライドする。
+
+    マウスホイールはクリックでフォーカスを当てた後だけ受け付ける。
+    デフォルトの WheelFocus ポリシーはホイール操作だけでフォーカスを
+    付与するため、StrongFocus に変更して hover 中の誤操作を防ぐ。
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from PySide6.QtCore import Qt
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):
+        """フォーカス時のみホイールで値を変更する。"""
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
 
     def minimumSizeHint(self):
         """最小サイズヒントを返す（幅を 40px に制限）。

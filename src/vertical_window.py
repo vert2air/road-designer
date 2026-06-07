@@ -26,13 +26,29 @@ from models import (Vec2, GradeLine, VerticalCurve,
 from _prop_builder import _separator
 
 
+class _FocusSpinBox(QDoubleSpinBox):
+    """フォーカス時のみホイール操作を受け付ける QDoubleSpinBox。
+
+    ホバーしながらホイールを回しても値が変わらない。
+    デフォルトの WheelFocus ポリシーはホイール操作だけでフォーカスを
+    付与するため、StrongFocus に変更して hover 中の誤操作を防ぐ。
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from PySide6.QtCore import Qt
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
 def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
                   step: float = 1.0, decimals: int = 3) -> QDoubleSpinBox:
-    """設定済みの QDoubleSpinBox を生成して返すファクトリ関数。
-
-    .. note::
-        ``_prop_builder._make_spinbox`` は ``_FlexSpinBox``（マウスホイール対応）を返すが、
-        こちらは素の ``QDoubleSpinBox`` を返す。縦断線形ウィンドウの操作感に合わせた意図的な差異。
+    """設定済みの _FocusSpinBox を生成して返すファクトリ関数。
 
     Parameters
     ----------
@@ -45,7 +61,7 @@ def _make_spinbox(val: float, lo: float = -1e6, hi: float = 1e6,
     decimals : int, optional
         小数点以下桁数。
     """
-    sb = QDoubleSpinBox()
+    sb = _FocusSpinBox()
     sb.setRange(lo, hi)
     sb.setSingleStep(step)
     sb.setDecimals(decimals)
