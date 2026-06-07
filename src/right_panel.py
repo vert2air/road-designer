@@ -1400,11 +1400,14 @@ class RightPanel(QWidget, PropBuilderMixin):
     def update_selection(self, selected: list, scene: Scene):
         """外部（Canvas）から選択変更を受け取り、パネル全体を更新する。
 
-        処理順は ``_sync_combos_to_selection`` → ``_refresh_nick_combos``
-        → ``_rebuild_props`` の順で行う。先にコンボへ選択図形を設定してから
-        ``_refresh_nick_combos`` を呼ぶことで、設計画面でのクリック選択でも
-        右パネルのコンボ操作でも「手段を問わず 1 個目のコンボが設定された
-        直後に 2 個目の高優先候補が更新される」要件を満たす。
+        処理順:
+
+        1. ``_refresh_nick_combos`` で scene 最新の items に再構築する。
+           scene が変わった直後は古い items しかなく ``_sync_combos_to_selection``
+           の ``findText`` が失敗するため、先に items を更新する必要がある。
+        2. ``_sync_combos_to_selection`` でコンボへ選択図形を設定する。
+        3. ``_refresh_nick_combos`` を再度呼び、選択後の隣接候補を正しく更新する。
+        4. ``_trim_trailing_none_combos`` で末尾の余分な（なし）を除去する。
 
         Parameters
         ----------
@@ -1415,9 +1418,10 @@ class RightPanel(QWidget, PropBuilderMixin):
         """
         self.scene = scene
         self._selected = selected
-        self._sync_combos_to_selection(selected)  # まず選択図形をコンボに設定
-        self._refresh_nick_combos()               # 設定後に次コンボの選択肢を更新
-        self._trim_trailing_none_combos()         # 末尾の余分な（なし）を除去
+        self._refresh_nick_combos()          # まず items を最新 scene で再構築
+        self._sync_combos_to_selection(selected)   # 次に選択図形をコンボに設定
+        self._refresh_nick_combos()          # 選択反映後に隣接候補を更新
+        self._trim_trailing_none_combos()    # 末尾の余分な（なし）を除去
         self._rebuild_props()
 
     def _sync_combos_to_selection(self, selected: list):
