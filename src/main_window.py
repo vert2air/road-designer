@@ -114,6 +114,11 @@ class MainWindow(QMainWindow):
         act_open.triggered.connect(self._open)
         file_menu.addAction(act_open)
 
+        act_merge = QAction("追加で読み込む(&M)...", self)
+        act_merge.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        act_merge.triggered.connect(self._merge)
+        file_menu.addAction(act_merge)
+
         file_menu.addSeparator()
 
         act_clear = QAction("全削除", self)
@@ -457,6 +462,34 @@ class MainWindow(QMainWindow):
             self, "開く", "", "Road Design JSON (*.rdjson);;JSON (*.json)")
         if path:
             self._open_file(path)
+
+    def _merge(self):
+        """ファイルを選択して現在の Scene に追加（マージ）する。
+
+        - 既存の選択をすべて解除する。
+        - 追加した図形（Line / Circle / Clothoid）のみを選択状態にする。
+        - Undo に記録してから追加する。
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self, "追加で読み込む", "",
+            "Road Design JSON (*.rdjson);;JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "読み込みエラー", str(e))
+            return
+
+        self._canvas.push_undo()
+        added = self.scene.merge_from_dict(data)
+
+        # 追加した図形のみ選択・ハンドル再構築
+        self._canvas._selected = list(added)
+        self._canvas._rebuild_handles()
+        self._canvas.scene_changed.emit()
+        self._canvas.selection_changed.emit(self._canvas._selected)
 
     def _open_file(self, path: str) -> bool:
         """指定パスのファイルを読み込んで Scene を更新する。

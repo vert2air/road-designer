@@ -2535,6 +2535,131 @@ class Scene:
 
         return sc
 
+    def merge_from_dict(self, d: dict) -> list:
+        """辞書データを既存 Scene に追加（マージ）する。
+
+        :meth:`from_dict` と同じ解釈ルールで図形を読み込み、
+        既存の lines / circles / clothoids 等に追記する。
+        ID 衝突は ``new_id()`` で自動回避する（既存 ID との重複も含む）。
+
+        Parameters
+        ----------
+        d : dict
+            :meth:`to_dict` が返す形式の辞書。
+
+        Returns
+        -------
+        list
+            追加された Line / Circle / Clothoid オブジェクトのリスト。
+            呼び出し元がこのリストを選択状態にすることを想定している。
+        """
+        added: list = []
+        lines_by_id: dict = {}
+        circles_by_id: dict = {}
+
+        def _extract_nick(raw: dict):
+            nick = raw.get("nickname")
+            fid = raw.get("id")
+            if nick and fid is not None:
+                self.nicknames[fid] = nick
+
+        # 既存 ID をすべて収集して衝突回避セットを作る
+        seen_ids: set[int] = set()
+        for ln in self.lines:
+            seen_ids.add(ln.id)
+            seen_ids.update(s.id for s in ln.segments)
+        for ci in self.circles:
+            seen_ids.add(ci.id)
+            seen_ids.update(a.id for a in ci.arcs)
+        seen_ids.update(c.id for c in self.clothoids)
+        seen_ids.update(o.id for o in self.offset_constraints)
+        seen_ids.update(o.id for o in self.two_line_offset_constraints)
+
+        def _resolve_id(raw: dict) -> int:
+            fid = raw.get("id")
+            if fid is None or fid in seen_ids:
+                fid = new_id()
+                raw["id"] = fid
+            seen_ids.add(fid)
+            return fid
+
+        id_remap: dict[int, int] = {}
+
+        for ld in d.get("lines", []):
+            _extract_nick(ld)
+            original_id = ld.get("id")
+            _resolve_id(ld)
+            if original_id is not None and ld["id"] != original_id:
+                id_remap[original_id] = ld["id"]
+            for sd in ld.get("segments", []):
+                _resolve_id(sd)
+            ln = Line.from_dict(ld)
+            self.lines.append(ln)
+            lines_by_id[ln.id] = ln
+            if original_id is not None and original_id != ln.id:
+                lines_by_id[original_id] = ln
+            added.append(ln)
+
+        for cd in d.get("circles", []):
+            _extract_nick(cd)
+            original_id = cd.get("id")
+            _resolve_id(cd)
+            if original_id is not None and cd["id"] != original_id:
+                id_remap[original_id] = cd["id"]
+            for ad in cd.get("arcs", []):
+                _resolve_id(ad)
+            ci = Circle.from_dict(cd)
+            self.circles.append(ci)
+            circles_by_id[ci.id] = ci
+            if original_id is not None and original_id != ci.id:
+                circles_by_id[original_id] = ci
+            added.append(ci)
+
+        for cd in d.get("clothoids", []):
+            _extract_nick(cd)
+            _resolve_id(cd)
+            ln = lines_by_id.get(cd["line_id"])
+            ci = circles_by_id.get(cd["circle_id"])
+            if ln and ci:
+                clo = Clothoid(ln, ci, cd.get("reversed_flag", False),
+                               cd.get("snap_segment", False),
+                               cd.get("snap_arc", False),
+                               cd.get("id"))
+                saved_sids = cd.get("split_seg_ids", [])
+                saved_aids = cd.get("split_arc_ids", [])
+                if saved_sids or saved_aids:
+                    clo._split_seg_ids = list(saved_sids)
+                    clo._split_arc_ids = list(saved_aids)
+                    clo.compute()
+                self.clothoids.append(clo)
+                added.append(clo)
+
+        self.offset_constraints += [
+            OffsetConstraint.from_dict(oc, lines_by_id, circles_by_id)
+            for oc in d.get("offset_constraints", [])
+            if (oc.get("line_id") in lines_by_id
+                and oc.get("ca_id") in circles_by_id
+                and oc.get("cb_id") in circles_by_id)
+        ]
+        self.two_line_offset_constraints += [
+            TwoLineOffsetConstraint.from_dict(oc, lines_by_id, circles_by_id)
+            for oc in d.get("two_line_offset_constraints", [])
+            if (oc.get("la_id") in lines_by_id
+                and oc.get("lb_id") in lines_by_id
+                and oc.get("circle_id") in circles_by_id)
+        ]
+
+        for k, v in d.get("nicknames", {}).items():
+            kid = int(k)
+            # id_remap で振り直されていれば新 ID に転記する
+            self.nicknames[id_remap.get(kid, kid)] = v
+
+        # IDカウンタを更新
+        if seen_ids:
+            _reset_id_counter_after(max(seen_ids))
+
+        return added
+
 
 # ── チェーン順序解決ユーティリティ ───────────────────────────────
 
