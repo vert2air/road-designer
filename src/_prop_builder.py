@@ -1896,11 +1896,8 @@ class PropBuilderMixin:
                         clo.compute()
                 self._block = False
                 # 連鎖伝播 + 即時再描画
-                # シグナル経由では描画更新が遅延するため直接呼び出す
                 if self._canvas_ref is not None:
                     self._canvas_ref.propagate_from_line(existing.line)
-                else:
-                    self.request_propagate_line.emit(existing.line)
                 self.scene_changed.emit()
                 self._canvas_update()
 
@@ -2000,11 +1997,9 @@ class PropBuilderMixin:
                         clo.compute()
                 self._block = False
                 # 連鎖伝播 + 即時再描画
-                # シグナル経由では描画更新が遅延するため直接呼び出す
+                # 連鎖伝播 + 即時再描画
                 if self._canvas_ref is not None:
                     self._canvas_ref.propagate_from_circle(existing.circle)
-                else:
-                    self.request_propagate_circle.emit(existing.circle)
                 self.scene_changed.emit()
                 self._canvas_update()
 
