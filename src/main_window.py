@@ -133,6 +133,11 @@ class MainWindow(QMainWindow):
         act_fit.triggered.connect(self._canvas.fit_all)
         edit_menu.addAction(act_fit)
 
+        edit_menu.addSeparator()
+        act_renum = QAction("ID を振り直す(&R)...", self)
+        act_renum.triggered.connect(self._renumber_ids)
+        edit_menu.addAction(act_renum)
+
         # ── 表示 ──────────────────────────────────────────────
         view_menu = mb.addMenu("表示(&V)")
         self._act_right_panel = QAction("右パネルを表示", self)
@@ -297,6 +302,25 @@ class MainWindow(QMainWindow):
         # ニックネームコンボボックスの選択肢を常に最新に保つ
         self._right_panel.scene = self.scene
         self._right_panel._refresh_nick_combos()
+
+    def _renumber_ids(self):
+        """「ID を振り直す」メニュー操作のハンドラ。
+
+        確認ダイアログを表示してから Scene.renumber_ids() を実行する。
+        振り直し後はコンボボックスと右パネルを再構築して表示を更新する。
+        """
+        from PySide6.QtWidgets import QMessageBox
+        ret = QMessageBox.question(
+            self, "ID を振り直す",
+            "全図形の ID を 1 から連番に振り直します。\n"
+            "この操作は元に戻せません。続けますか？",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        )
+        if ret != QMessageBox.StandardButton.Ok:
+            return
+        self.scene.renumber_ids()
+        self._on_scene_changed()
+        self._canvas.update()
 
     # ─── ツールバー/メニュー操作 ─────────────────────────────
     def _toggle_right_panel(self):

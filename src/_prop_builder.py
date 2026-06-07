@@ -599,9 +599,10 @@ class PropBuilderMixin:
         lay = QVBoxLayout(grp)
         for rel in related:
             rid = getattr(rel, 'id', None)
-            prefix = ("line" if isinstance(rel, Line) else
-                      "circle" if isinstance(rel, Circle) else "clothoid")
-            name = self.scene.get_nickname(rid, prefix) if rid else str(rel)
+            type_label = ("直線" if isinstance(rel, Line) else
+                          "円" if isinstance(rel, Circle) else "クロソイド")
+            name = (self.scene.display_name(rid, type_label)
+                    if rid else str(rel))
             # ニックネームを上段、ボタンを下段にして幅を節約
             lay.addWidget(QLabel(name))
             btn_row = QHBoxLayout()
@@ -725,7 +726,7 @@ class PropBuilderMixin:
         for seg in segs:
             start = seg.start
             end = seg.end
-            nick = self.scene.get_nickname(seg.id, 'seg')
+            nick = self.scene.display_name(seg.id, '線分')
 
             # 外側: ボタンを右端に固定、ラベルは残り幅を使う
             row = QHBoxLayout()
@@ -992,7 +993,7 @@ class PropBuilderMixin:
         lay = QVBoxLayout(grp)
         lay.setSpacing(4)
         for arc in arcs:
-            nick = self.scene.get_nickname(arc.id, 'arc')
+            nick = self.scene.display_name(arc.id, '円弧')
             ang_s = math.degrees(arc.angle_start)
             ang_e = math.degrees(arc.angle_end)
             arc_len = arc.arc_length()
@@ -1139,7 +1140,7 @@ class PropBuilderMixin:
         ln = seg.line
 
         # 親の直線情報（読み取り専用）
-        ln_nick = self.scene.get_nickname(ln.id, 'line')
+        ln_nick = self.scene.display_name(ln.id, '直線')
         lbl_ln = QLabel(f"親直線: {ln_nick}  (ID:{ln.id})")
         lbl_ln.setWordWrap(True)
         btn_sel_ln = QPushButton("直線を選択")
@@ -1295,7 +1296,7 @@ class PropBuilderMixin:
         ci = arc.circle
 
         # 親の円情報（読み取り専用）
-        ci_nick = self.scene.get_nickname(ci.id, 'circle')
+        ci_nick = self.scene.display_name(ci.id, '円')
         lbl_ci = QLabel(f"親円: {ci_nick}  (ID:{ci.id})")
         lbl_ci.setWordWrap(True)
         btn_sel_ci = QPushButton("円を選択")
@@ -1455,8 +1456,8 @@ class PropBuilderMixin:
         """
         grp = QGroupBox("線分の結合")
         lay = QVBoxLayout(grp)
-        la_nick = self.scene.get_nickname(seg_a.line.id, 'line')
-        lb_nick = self.scene.get_nickname(seg_b.line.id, 'line')
+        la_nick = self.scene.display_name(seg_a.line.id, '直線')
+        lb_nick = self.scene.display_name(seg_b.line.id, '直線')
         lay.addWidget(QLabel(f"線分#{seg_a.id} (直線:{la_nick})"))
         lay.addWidget(QLabel(f"線分#{seg_b.id} (直線:{lb_nick})"))
         lay.addWidget(_separator())
@@ -1637,8 +1638,8 @@ class PropBuilderMixin:
         """
         grp = QGroupBox("円弧の結合")
         lay = QVBoxLayout(grp)
-        ca_nick = self.scene.get_nickname(arc_a.circle.id, 'circle')
-        cb_nick = self.scene.get_nickname(arc_b.circle.id, 'circle')
+        ca_nick = self.scene.display_name(arc_a.circle.id, '円')
+        cb_nick = self.scene.display_name(arc_b.circle.id, '円')
         lay.addWidget(QLabel(f"円弧#{arc_a.id} (円:{ca_nick})"))
         lay.addWidget(QLabel(f"円弧#{arc_b.id} (円:{cb_nick})"))
         lay.addWidget(_separator())
@@ -1856,9 +1857,9 @@ class PropBuilderMixin:
         grp = QGroupBox("オフセット拘束")
         form = QFormLayout(grp)
 
-        nick_ln = self.scene.get_nickname(ln.id, "line")
-        nick_a = self.scene.get_nickname(ci_a.id, "circle")
-        nick_b = self.scene.get_nickname(ci_b.id, "circle")
+        nick_ln = self.scene.display_name(ln.id, "直線")
+        nick_a = self.scene.display_name(ci_a.id, "円")
+        nick_b = self.scene.display_name(ci_b.id, "円")
         form.addRow("直線:", QLabel(nick_ln))
         form.addRow("円 A:", QLabel(nick_a))
         form.addRow("円 B:", QLabel(nick_b))
@@ -1960,9 +1961,9 @@ class PropBuilderMixin:
         grp = QGroupBox("オフセット拘束（2直線-1円）")
         form = QFormLayout(grp)
 
-        nick_a = self.scene.get_nickname(ln_a.id, "line")
-        nick_b = self.scene.get_nickname(ln_b.id, "line")
-        nick_c = self.scene.get_nickname(ci.id, "circle")
+        nick_a = self.scene.display_name(ln_a.id, "直線")
+        nick_b = self.scene.display_name(ln_b.id, "直線")
+        nick_c = self.scene.display_name(ci.id, "円")
         form.addRow("直線 A:", QLabel(nick_a))
         form.addRow("直線 B:", QLabel(nick_b))
         form.addRow("円 C:", QLabel(nick_c))

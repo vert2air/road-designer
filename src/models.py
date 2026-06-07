@@ -2061,24 +2061,42 @@ class Scene:
         self.two_line_offset_constraints: list['TwoLineOffsetConstraint'] = []
         self.nicknames: dict[int, str] = {}   # id → nickname
 
-    def get_nickname(self, obj_id: int, prefix: str = "") -> str:
-        """図形のニックネームを返す。未設定のとき "nickname_{prefix}_{obj_id}" を返す。
+    def get_nickname(self, obj_id: int) -> Optional[str]:
+        """図形のニックネームを返す。未設定のとき None を返す。
 
         Parameters
         ----------
         obj_id : int
             図形の ID。
-        prefix : str, optional
-            未設定時のデフォルト名に使うプレフィックス（例: "line", "circle"）。
+
+        Returns
+        -------
+        str or None
+            設定済みニックネーム、または None。
+        """
+        return self.nicknames.get(obj_id)
+
+    def display_name(self, obj_id: int, type_label: str) -> str:
+        """表示用ラベルを返す。
+
+        ニックネームが設定されていればそれを返す。
+        未設定のときは ``(type_label#id)`` 形式の文字列を返す。
+        この文字列は画面表示専用で、ファイルには保存されない。
+
+        Parameters
+        ----------
+        obj_id : int
+            図形の ID。
+        type_label : str
+            図形種別の表示文字列（例: "直線", "円", "クロソイド"）。
 
         Returns
         -------
         str
-            設定済みニックネーム、または "nickname_{prefix}_{obj_id}"。
+            設定済みニックネーム、または "(type_label#id)"。
         """
-        if obj_id in self.nicknames:
-            return self.nicknames[obj_id]
-        return f"nickname_{prefix}_{obj_id}"
+        nick = self.nicknames.get(obj_id)
+        return nick if nick else f"({type_label}#{obj_id})"
 
     def set_nickname(self, obj_id: int, name: str):
         """図形のニックネームを設定する。name が空文字のとき辞書から削除する。
@@ -2096,9 +2114,7 @@ class Scene:
             del self.nicknames[obj_id]
 
     def add_line(self, line: Line) -> Line:
-        """Line を lines リストに追加し、デフォルトニックネームを設定する。
-
-        既存ニックネームは上書きしない。
+        """Line を lines リストに追加する。
 
         Returns
         -------
@@ -2106,12 +2122,10 @@ class Scene:
             引数の line をそのまま返す（メソッドチェーン用）。
         """
         self.lines.append(line)
-        if line.id not in self.nicknames:
-            self.nicknames[line.id] = f"nickname_line_{line.id}"
         return line
 
     def add_circle(self, circle: Circle) -> Circle:
-        """Circle を circles リストに追加し、デフォルトニックネームを設定する。
+        """Circle を circles リストに追加する。
 
         Returns
         -------
@@ -2119,12 +2133,10 @@ class Scene:
             引数の circle をそのまま返す（メソッドチェーン用）。
         """
         self.circles.append(circle)
-        if circle.id not in self.nicknames:
-            self.nicknames[circle.id] = f"nickname_circle_{circle.id}"
         return circle
 
     def add_clothoid(self, clothoid: Clothoid) -> Clothoid:
-        """Clothoid を clothoids リストに追加し、デフォルトニックネームを設定する。
+        """Clothoid を clothoids リストに追加する。
 
         Returns
         -------
@@ -2132,8 +2144,6 @@ class Scene:
             引数の clothoid をそのまま返す（メソッドチェーン用）。
         """
         self.clothoids.append(clothoid)
-        if clothoid.id not in self.nicknames:
-            self.nicknames[clothoid.id] = f"nickname_clothoid_{clothoid.id}"
         return clothoid
 
     def remove_line(self, line: Line):
@@ -2213,6 +2223,69 @@ class Scene:
             result.append(obj.line)
             result.append(obj.circle)
         return result
+
+    def renumber_ids(self) -> None:
+        """全図形の ID を 1 から連番に振り直す。
+
+        ID を含むデフォルト名（旧形式）が残っていてもリナンバー後に
+        表示がズレないよう、ニックネーム辞書のキーも新 ID に更新する。
+
+        処理順:
+        1. 全オブジェクトを列挙して old_id → new_id マップを作成
+        2. 各オブジェクトの .id を更新
+        3. Segment.clothoid_start/end・Arc.clothoid_start/end を更新
+        4. nicknames 辞書のキーを更新
+        5. グローバル ID カウンタを新最大値の次に設定
+        """
+        counter = itertools.count(1)
+
+        # ── 1. old→new マッピング生成 ────────────────────────────
+        id_map: dict[int, int] = {}
+        all_objs = []
+        for ln in self.lines:
+            all_objs.append(ln)
+            all_objs.extend(ln.segments)
+        for ci in self.circles:
+            all_objs.append(ci)
+            all_objs.extend(ci.arcs)
+        all_objs.extend(self.clothoids)
+        all_objs.extend(self.offset_constraints)
+        all_objs.extend(self.two_line_offset_constraints)
+        for obj in all_objs:
+            id_map[obj.id] = next(counter)
+
+        # ── 2. .id 更新 ─────────────────────────────────────────
+        for obj in all_objs:
+            obj.id = id_map[obj.id]
+
+        # ── 3. cross-reference 更新 ──────────────────────────────
+        for ln in self.lines:
+            for seg in ln.segments:
+                if seg.clothoid_start is not None:
+                    seg.clothoid_start = id_map.get(
+                        seg.clothoid_start, seg.clothoid_start)
+                if seg.clothoid_end is not None:
+                    seg.clothoid_end = id_map.get(
+                        seg.clothoid_end, seg.clothoid_end)
+        for ci in self.circles:
+            for arc in ci.arcs:
+                if arc.clothoid_start is not None:
+                    arc.clothoid_start = id_map.get(
+                        arc.clothoid_start, arc.clothoid_start)
+                if arc.clothoid_end is not None:
+                    arc.clothoid_end = id_map.get(
+                        arc.clothoid_end, arc.clothoid_end)
+
+        # ── 4. nicknames キー更新 ────────────────────────────────
+        self.nicknames = {
+            id_map[old]: nick
+            for old, nick in self.nicknames.items()
+            if old in id_map
+        }
+
+        # ── 5. カウンタリセット ──────────────────────────────────
+        max_id = max(id_map.values()) if id_map else 0
+        _reset_id_counter_after(max_id)
 
     def _fix_duplicate_ids(self) -> None:
         """Scene 内の id 重複を検出して振り直す。

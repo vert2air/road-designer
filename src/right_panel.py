@@ -264,15 +264,17 @@ class RightPanel(QWidget, PropBuilderMixin):
 
         from models import Segment, Arc, Clothoid, Line, Circle
 
-        def _nick(o, kind):
-            if self.scene is not None:
-                return self.scene.get_nickname(o.id, kind)
-            return f"#{o.id}"
+        def _fmt(o, _kind, type_label):
+            """ニックネームまたは (タイプ#id) 形式の文字列を返す。
 
-        def _fmt(o, kind, type_label):
-            """ニックネーム (タイプ#id) 形式の文字列を返す。"""
-            nick = _nick(o, kind)
-            return f"{nick} ({type_label}#{o.id})"
+            ニックネームが設定されていれば "name (タイプ#id)"、
+            未設定なら "(タイプ#id)" を返す。
+            """
+            if self.scene is None:
+                return f"#{o.id}"
+            nick = self.scene.get_nickname(o.id)
+            base = f"({type_label}#{o.id})"
+            return f"{nick} {base}" if nick else base
 
         lines = []
         if isinstance(obj, Segment):
@@ -713,23 +715,23 @@ class RightPanel(QWidget, PropBuilderMixin):
             順序: 直線 → 線分 → 円 → 円弧 → クロソイド。
         """
         lines_items = sorted([
-            f"{self.scene.get_nickname(ln.id,'line')} [直線#{ln.id}]"
+            f"{self.scene.display_name(ln.id,'直線')} [直線#{ln.id}]"
             for ln in self.scene.lines])
         seg_items = sorted([
             f"線分#{seg.id}"
-            f" (直線:{self.scene.get_nickname(ln.id,'line')})"
+            f" (直線:{self.scene.display_name(ln.id,'直線')})"
             f" [線分#{seg.id}]"
             for ln in self.scene.lines for seg in ln.segments])
         circle_items = sorted([
-            f"{self.scene.get_nickname(ci.id,'circle')} [円#{ci.id}]"
+            f"{self.scene.display_name(ci.id,'円')} [円#{ci.id}]"
             for ci in self.scene.circles])
         arc_items = sorted([
             f"円弧#{arc.id}"
-            f" (円:{self.scene.get_nickname(ci.id,'circle')})"
+            f" (円:{self.scene.display_name(ci.id,'円')})"
             f" [円弧#{arc.id}]"
             for ci in self.scene.circles for arc in ci.arcs])
         clothoid_items = sorted([
-            f"{self.scene.get_nickname(clo.id,'clothoid')}"
+            f"{self.scene.display_name(clo.id,'クロソイド')}"
             f" [クロソイド#{clo.id}]"
             for clo in self.scene.clothoids])
         return (["(なし)"] + lines_items + seg_items
@@ -1367,31 +1369,31 @@ class RightPanel(QWidget, PropBuilderMixin):
         label = _re.sub(r'\s+[\d.]+\s*m$', '', label)
         for ln in self.scene.lines:
             ln_label = (
-                f"{self.scene.get_nickname(ln.id, 'line')} [直線#{ln.id}]")
+                f"{self.scene.display_name(ln.id, '直線')} [直線#{ln.id}]")
             if ln_label == label:
                 return ln
             for seg in ln.segments:
                 seg_label = (
                     f"線分#{seg.id}"
-                    f" (直線:{self.scene.get_nickname(ln.id,'line')})"
+                    f" (直線:{self.scene.display_name(ln.id,'直線')})"
                     f" [線分#{seg.id}]")
                 if seg_label == label:
                     return seg
         for ci in self.scene.circles:
             ci_label = (
-                f"{self.scene.get_nickname(ci.id, 'circle')} [円#{ci.id}]")
+                f"{self.scene.display_name(ci.id, '円')} [円#{ci.id}]")
             if ci_label == label:
                 return ci
             for arc in ci.arcs:
                 arc_label = (
                     f"円弧#{arc.id}"
-                    f" (円:{self.scene.get_nickname(ci.id,'circle')})"
+                    f" (円:{self.scene.display_name(ci.id,'円')})"
                     f" [円弧#{arc.id}]")
                 if arc_label == label:
                     return arc
         for clo in self.scene.clothoids:
             clo_label = (
-                f"{self.scene.get_nickname(clo.id, 'clothoid')}"
+                f"{self.scene.display_name(clo.id, 'クロソイド')}"
                 f" [クロソイド#{clo.id}]")
             if clo_label == label:
                 return clo
@@ -1485,26 +1487,28 @@ class RightPanel(QWidget, PropBuilderMixin):
             "{ニックネーム} [種別#{id}]" 形式。非対応型は空文字。
         """
         if isinstance(obj, Line):
-            return f"{self.scene.get_nickname(obj.id, 'line')} [直線#{obj.id}]"
+            return (
+                f"{self.scene.display_name(obj.id, '直線')}"
+                f" [直線#{obj.id}]")
         if isinstance(obj, Segment):
             ln = obj.line
             return (
                 f"線分#{obj.id}"
-                f" (直線:{self.scene.get_nickname(ln.id,'line')})"
+                f" (直線:{self.scene.display_name(ln.id,'直線')})"
                 f" [線分#{obj.id}]")
         if isinstance(obj, Circle):
             return (
-                f"{self.scene.get_nickname(obj.id, 'circle')}"
+                f"{self.scene.display_name(obj.id, '円')}"
                 f" [円#{obj.id}]")
         if isinstance(obj, Arc):
             ci = obj.circle
             return (
                 f"円弧#{obj.id}"
-                f" (円:{self.scene.get_nickname(ci.id,'circle')})"
+                f" (円:{self.scene.display_name(ci.id,'円')})"
                 f" [円弧#{obj.id}]")
         if isinstance(obj, Clothoid):
             return (
-                f"{self.scene.get_nickname(obj.id, 'clothoid')}"
+                f"{self.scene.display_name(obj.id, 'クロソイド')}"
                 f" [クロソイド#{obj.id}]")
         return ""
 
