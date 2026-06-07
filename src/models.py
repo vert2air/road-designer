@@ -2661,6 +2661,40 @@ class Scene:
         return added
 
 
+# ── 共有ユーティリティ ───────────────────────────────────────────
+
+
+def effective_set(selected: list) -> list:
+    """選択リストから代表の Line/Circle/Clothoid を重複なく返す。
+
+    Segment → 親 Line、Arc → 親 Circle に昇格する。
+    Canvas と RightPanel の両方から呼ばれる共有ヘルパー。
+
+    Parameters
+    ----------
+    selected : list
+        選択中の図形オブジェクトのリスト。
+
+    Returns
+    -------
+    list
+        代表オブジェクトのリスト（id() で重複排除済み）。
+    """
+    seen: set = set()
+    result = []
+    for obj in selected:
+        if isinstance(obj, Segment) and obj.line is not None:
+            target = obj.line
+        elif isinstance(obj, Arc) and obj.circle is not None:
+            target = obj.circle
+        else:
+            target = obj
+        if id(target) not in seen:
+            seen.add(id(target))
+            result.append(target)
+    return result
+
+
 # ── チェーン順序解決ユーティリティ ───────────────────────────────
 
 SNAP_TOL = 1.0   # 端点が同一とみなす距離閾値 [m]

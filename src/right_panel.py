@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
-                    tangent_at, entry_tangent, SNAP_TOL, new_id)
+                    tangent_at, entry_tangent, SNAP_TOL, new_id,
+                    effective_set)
 from _prop_builder import PropBuilderMixin
 # backward-compat re-export（テストが right_panel から直接 import するため）
 from _prop_builder import (  # noqa: F401
@@ -1530,25 +1531,6 @@ class RightPanel(QWidget, PropBuilderMixin):
                     return True
         return False
 
-    def _effective_set(self, selected) -> list:
-        """Segment→親Line、Arc→親Circle に昇格した重複なしリストを返す。
-
-        操作（移動・回転・複製等）の実行対象として使う。
-        Clothoid はそのまま残す（Line/Circle への依存で自動追従するため）。
-        """
-        seen: set = set()
-        result: list = []
-        for obj in selected:
-            target = obj
-            if isinstance(obj, Segment) and obj.line is not None:
-                target = obj.line
-            elif isinstance(obj, Arc) and obj.circle is not None:
-                target = obj.circle
-            if id(target) not in seen:
-                seen.add(id(target))
-                result.append(target)
-        return result
-
     def _selection_bbox_center(self, effective) -> Vec2:
         """有効図形セットの AABB 中心座標を返す。
 
@@ -1557,7 +1539,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         Parameters
         ----------
         effective : list
-            :meth:`_effective_set` で得た図形リスト。
+            :func:`models.effective_set` で得た図形リスト。
 
         Returns
         -------
@@ -1607,7 +1589,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         dx, dy : float
             移動量 [m]。
         """
-        effective = self._effective_set(self._selected)
+        effective = effective_set(self._selected)
         self.request_push_undo.emit()
         moved_ids: set = set()
         for obj in effective:
@@ -1634,7 +1616,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         use_bbox_center : bool
             True → AABB 中心を回転基準、False → 原点 (0, 0) を基準。
         """
-        effective = self._effective_set(self._selected)
+        effective = effective_set(self._selected)
         center = (self._selection_bbox_center(effective)
                   if use_bbox_center else Vec2(0, 0))
         angle_rad = math.radians(angle_deg)
@@ -1677,7 +1659,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         """
         if abs(factor) < 1e-9:
             return
-        effective = self._effective_set(self._selected)
+        effective = effective_set(self._selected)
         center = (self._selection_bbox_center(effective)
                   if use_bbox_center else Vec2(0, 0))
         cx, cy = center.x, center.y
@@ -1710,7 +1692,7 @@ class RightPanel(QWidget, PropBuilderMixin):
         元の Line/Circle を参照する。
         縦断線形情報（ElementProfile）も同時に複製する。
         """
-        effective = self._effective_set(self._selected)
+        effective = effective_set(self._selected)
         self.request_push_undo.emit()
         id_map: dict = {}       # id(obj_py) → new_obj（Clothoid 解決用）
         elem_id_map: dict = {}  # 旧整数ID → 新整数ID（ElementProfile 複製用）

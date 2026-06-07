@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (
     QRadioButton, QButtonGroup,
 )
 
-from models import (Vec2, Line, Segment, Circle, Arc, Clothoid)
+from models import (Vec2, Line, Segment, Circle, Arc, Clothoid,
+                    effective_set)
 
 
 # ── クリップボード: 始点/終点ペア ─────────────────────────────────────────
@@ -247,13 +248,9 @@ def _add_copy_paste_buttons(lay, get_start, get_end,
     lay.addLayout(row)
 
 
-class _FlexSpinBox(QDoubleSpinBox):
-    """パネル幅に追従する QDoubleSpinBox。
+class FocusSpinBox(QDoubleSpinBox):
+    """クリックでフォーカスを当てた後だけホイール操作を受け付ける基底クラス。
 
-    デフォルト実装の minimumSizeHint が約 120px を主張するため、
-    右パネルで水平スクロールが発生する問題を防ぐためにオーバーライドする。
-
-    マウスホイールはクリックでフォーカスを当てた後だけ受け付ける。
     デフォルトの WheelFocus ポリシーはホイール操作だけでフォーカスを
     付与するため、StrongFocus に変更して hover 中の誤操作を防ぐ。
     """
@@ -269,6 +266,14 @@ class _FlexSpinBox(QDoubleSpinBox):
             super().wheelEvent(event)
         else:
             event.ignore()
+
+
+class _FlexSpinBox(FocusSpinBox):
+    """パネル幅に追従する FocusSpinBox。
+
+    デフォルト実装の minimumSizeHint が約 120px を主張するため、
+    右パネルで水平スクロールが発生する問題を防ぐためにオーバーライドする。
+    """
 
     def minimumSizeHint(self):
         """最小サイズヒントを返す（幅を 40px に制限）。
@@ -2207,7 +2212,7 @@ class PropBuilderMixin:
         from models import Line, Circle, Clothoid
 
         # ── サマリ ──────────────────────────────────────────
-        effective = self._effective_set(sel)
+        effective = effective_set(sel)
         n_lines = sum(1 for o in effective if isinstance(o, Line))
         n_circles = sum(1 for o in effective if isinstance(o, Circle))
         n_clothoids = sum(1 for o in effective if isinstance(o, Clothoid))

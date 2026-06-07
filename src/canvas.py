@@ -18,7 +18,7 @@ from PySide6.QtGui import (QPainter, QPen, QBrush, QColor,
                            QPolygonF, QPainterPath)
 
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
-                    LineConnection)
+                    LineConnection, effective_set)
 
 # ─── 色定数 ────────────────────────────────────────────────────
 C_LINE_REF = QColor(160, 160, 160)
@@ -329,21 +329,8 @@ class Canvas(QWidget):
     # ─── AABB 変換ドラッグ（複数選択時）────────────────────────
 
     def _is_multi_select(self) -> bool:
-        """複数の独立した図形が選択されているか判定する。
-
-        Segment/Arc はその親 Line/Circle を代表とみなし、代表が 2 種以上
-        あれば複数選択と判断する。
-        """
-        from models import Segment, Arc
-        reps: set = set()
-        for obj in self._selected:
-            if isinstance(obj, Segment) and obj.line is not None:
-                reps.add(id(obj.line))
-            elif isinstance(obj, Arc) and obj.circle is not None:
-                reps.add(id(obj.circle))
-            else:
-                reps.add(id(obj))
-        return len(reps) >= 2
+        """複数の独立した図形が選択されているか判定する。"""
+        return len(effective_set(self._selected)) >= 2
 
     def _selection_aabb(self):
         """選択図形の AABB を (min_x, min_y, max_x, max_y) で返す。
@@ -442,32 +429,13 @@ class Canvas(QWidget):
 
         return None
 
-    def _effective_set(self, selected: list) -> list:
-        """選択リストから代表の Line/Circle/Clothoid を重複なく返す。
-
-        Segment → 親 Line、Arc → 親 Circle に昇格する。
-        """
-        seen: set = set()
-        result = []
-        for obj in selected:
-            if isinstance(obj, Segment) and obj.line is not None:
-                target = obj.line
-            elif isinstance(obj, Arc) and obj.circle is not None:
-                target = obj.circle
-            else:
-                target = obj
-            if id(target) not in seen:
-                seen.add(id(target))
-                result.append(target)
-        return result
-
     def _snapshot_selected(self) -> dict:
         """選択図形の現在ジオメトリをスナップショットとして返す。
 
         ドラッグ中に「開始時の状態」から変換を計算するために使う。
         """
         snap = {}
-        effective = self._effective_set(self._selected)
+        effective = effective_set(self._selected)
         for obj in effective:
             if isinstance(obj, Line):
                 snap[id(obj)] = {
@@ -485,7 +453,7 @@ class Canvas(QWidget):
 
     def _apply_snapshot(self, snap: dict):
         """スナップショットを選択図形に復元する（ドラッグ中の再適用用）。"""
-        effective = self._effective_set(self._selected)
+        effective = effective_set(self._selected)
         for obj in effective:
             s = snap.get(id(obj))
             if s is None:
@@ -503,7 +471,7 @@ class Canvas(QWidget):
     def _bbox_apply_translate(self, dx: float, dy: float):
         """スナップショットから復元し dx/dy 平行移動を適用する。"""
         self._apply_snapshot(self._bbox_drag_snapshot)
-        effective = self._effective_set(self._selected)
+        effective = effective_set(self._selected)
         moved_ids: set = set()
         for obj in effective:
             if isinstance(obj, Line):
@@ -521,7 +489,7 @@ class Canvas(QWidget):
         if abs(factor) < 1e-6:
             return
         self._apply_snapshot(self._bbox_drag_snapshot)
-        effective = self._effective_set(self._selected)
+        effective = effective_set(self._selected)
         cx, cy = center.x, center.y
 
         def sc(v: Vec2) -> Vec2:
@@ -543,7 +511,7 @@ class Canvas(QWidget):
     def _bbox_apply_rotate(self, angle_rad: float, center: Vec2):
         """スナップショットから復元し center 基準で angle_rad 回転する。"""
         self._apply_snapshot(self._bbox_drag_snapshot)
-        effective = self._effective_set(self._selected)
+        effective = effective_set(self._selected)
         cx, cy = center.x, center.y
         cos_a = math.cos(angle_rad)
         sin_a = math.sin(angle_rad)
