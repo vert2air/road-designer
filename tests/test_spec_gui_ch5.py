@@ -315,14 +315,17 @@ class TestSpec5_8_Nickname:
         assert scene.get_nickname(ci.id) == '交差点B'
 
     def test_unset_nickname_returns_falsy_or_id_format(self):
-        """[5.8] 未設定の場合 get_nickname は空文字か id 形式の文字列を返す。"""
+        """[5.8] 未設定の場合 get_nickname は None を返し、
+        display_name は id 形式の文字列を返す。"""
         from models import Line, Vec2, Scene
         scene = Scene()
         ln = Line(Vec2(0, 0), Vec2(50, 0))
         scene.add_line(ln)
 
-        name = scene.get_nickname(ln.id)
-        assert isinstance(name, str), "get_nickname は str を返すべき"
+        assert scene.get_nickname(ln.id) is None, "未設定は None を返すべき"
+        name = scene.display_name(ln.id, '直線')
+        assert isinstance(name, str), "display_name は str を返すべき"
+        assert str(ln.id) in name, "display_name は id を含むべき"
 
     def test_nickname_is_reflected_in_combo_label(self, make_panel_qt):
         """[5.8] ニックネームを設定するとコンボボックスのラベルに反映される。"""
