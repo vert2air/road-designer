@@ -363,6 +363,78 @@ class PropBuilderMixin:
     ``self._block``・``self.request_*`` シグナル等を RightPanel 側から受け取る。
     """
 
+    # ─── 数値入力行 共通ヘルパー ────────────────────────────────
+    def _make_prop_row(self, label: str, value: float,
+                       setter, undo_pushed: list,
+                       **spinbox_kwargs) -> 'QHBoxLayout':
+        """ラベル + スピンボックス 1 行を生成して接続する。
+
+        Undo ガード（``_block`` チェック + 初回 push）を内包するため、
+        呼び出し元は単純な setter だけを渡せばよい。
+
+        Parameters
+        ----------
+        label : str
+            行ラベル（例: "中心X:"）。
+        value : float
+            スピンボックスの初期値。
+        setter : callable
+            float を受け取ってモデルを更新する関数。
+        undo_pushed : list[bool]
+            [False] で初期化された 1 要素リスト。複数行で共有することで
+            同一操作グループの Undo を 1 回にまとめる。
+        **spinbox_kwargs
+            _make_spinbox に渡すキーワード引数（lo, hi, step, decimals 等）。
+
+        Returns
+        -------
+        QHBoxLayout
+            生成した行レイアウト。
+        """
+        sb = _make_spinbox(value, **spinbox_kwargs)
+
+        def on_value(v):
+            if self._block:
+                return
+            if not undo_pushed[0]:
+                self.request_push_undo.emit()
+                undo_pushed[0] = True
+            setter(v)
+            self.scene_changed.emit()
+
+        sb.valueChanged.connect(on_value)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label))
+        row.addWidget(sb)
+        return row
+
+    def _add_vec2_rows(self, lay, label: str,
+                       get_fn, set_fn) -> None:
+        """Vec2 フィールド用の X/Y 行 2 本を lay に追加する。
+
+        Parameters
+        ----------
+        lay : QVBoxLayout
+            追加先のレイアウト。
+        label : str
+            グループラベル（例: "参照始点"）。
+        get_fn : callable
+            現在値を Vec2 で返すゲッター。
+        set_fn : callable
+            Vec2 を受け取るセッター。
+        """
+        from models import Vec2 as _Vec2
+        lay.addWidget(QLabel(label))
+        undo_pushed = [False]
+        lay.addLayout(self._make_prop_row(
+            "X:", get_fn().x,
+            lambda v: set_fn(_Vec2(v, get_fn().y)),
+            undo_pushed))
+        lay.addLayout(self._make_prop_row(
+            "Y:", get_fn().y,
+            lambda v: set_fn(_Vec2(get_fn().x, v)),
+            undo_pushed))
+
     # ─── snap チェックボックス共通ヘルパー ───────────────────
     def _build_snap_checkboxes(self, clo, lay) -> None:
         """クロソイドの snap 設定チェックボックス 2 つを lay に追加する。
@@ -641,57 +713,12 @@ class PropBuilderMixin:
         grp = QGroupBox("直線プロパティ")
         lay = QVBoxLayout(grp)
 
-        def add_vec2(label, get_fn, set_fn):
-            """Vec2 入力フォーム（X/Y スピンボックス）を _prop_layout に追加する。
-
-            Parameters
-            ----------
-            label : str
-                グループラベル（例: "参照始点"）。
-            get_fn : callable
-                現在値を Vec2 で返すゲッター関数。
-            set_fn : callable
-                Vec2 を受け取るセッター関数。
-            """
-            lay.addWidget(QLabel(label))
-            sbx = _make_spinbox(get_fn().x)
-            sby = _make_spinbox(get_fn().y)
-            _undo_pushed = [False]
-
-            def on_x(v):
-                if self._block:
-                    return
-                if not _undo_pushed[0]:
-                    self.request_push_undo.emit()
-                    _undo_pushed[0] = True
-                old = get_fn()
-                set_fn(Vec2(v, old.y))
-                self.scene_changed.emit()
-
-            def on_y(v):
-                if self._block:
-                    return
-                if not _undo_pushed[0]:
-                    self.request_push_undo.emit()
-                    _undo_pushed[0] = True
-                old = get_fn()
-                set_fn(Vec2(old.x, v))
-                self.scene_changed.emit()
-            sbx.valueChanged.connect(on_x)
-            sby.valueChanged.connect(on_y)
-            row_x = QHBoxLayout()
-            row_x.addWidget(QLabel("X:"))
-            row_x.addWidget(sbx)
-            row_y = QHBoxLayout()
-            row_y.addWidget(QLabel("Y:"))
-            row_y.addWidget(sby)
-            lay.addLayout(row_x)
-            lay.addLayout(row_y)
-
-        add_vec2("参照始点", lambda: ln.ref_start,
-                 lambda v: setattr(ln, 'ref_start', v))
-        add_vec2("参照終点", lambda: ln.ref_end,
-                 lambda v: setattr(ln, 'ref_end', v))
+        self._add_vec2_rows(lay, "参照始点",
+                            lambda: ln.ref_start,
+                            lambda v: setattr(ln, 'ref_start', v))
+        self._add_vec2_rows(lay, "参照終点",
+                            lambda: ln.ref_end,
+                            lambda v: setattr(ln, 'ref_end', v))
 
         # ── Copy / Paste ボタン ────────────────────────────────────
         _add_copy_paste_buttons(
@@ -794,54 +821,19 @@ class PropBuilderMixin:
         grp = QGroupBox("円プロパティ")
         lay = QVBoxLayout(grp)
 
-        row_cx = QHBoxLayout()
-        sb_cx = _make_spinbox(ci.center.x)
-        sb_cy = _make_spinbox(ci.center.y)
-        sb_r = _make_spinbox(ci.radius, 0.001, 1e6, 0.5)
-
-        _undo_pushed = [False]
-
-        def on_cx(v):
-            if self._block:
-                return
-            if not _undo_pushed[0]:
-                self.request_push_undo.emit()
-                _undo_pushed[0] = True
-            ci.center = Vec2(v, ci.center.y)
-            self.scene_changed.emit()
-
-        def on_cy(v):
-            if self._block:
-                return
-            if not _undo_pushed[0]:
-                self.request_push_undo.emit()
-                _undo_pushed[0] = True
-            ci.center = Vec2(ci.center.x, v)
-            self.scene_changed.emit()
-
-        def on_r(v):
-            if self._block:
-                return
-            if not _undo_pushed[0]:
-                self.request_push_undo.emit()
-                _undo_pushed[0] = True
-            ci.radius = max(0.001, v)
-            self.scene_changed.emit()
-
-        sb_cx.valueChanged.connect(on_cx)
-        sb_cy.valueChanged.connect(on_cy)
-        sb_r.valueChanged.connect(on_r)
-
-        row_cx.addWidget(QLabel("中心X:"))
-        row_cx.addWidget(sb_cx)
-        row_cy = QHBoxLayout()
-        row_cy.addWidget(QLabel("中心Y:"))
-        row_cy.addWidget(sb_cy)
-        lay.addLayout(row_cx)
-        lay.addLayout(row_cy)
-        row_r = QHBoxLayout()
-        row_r.addWidget(QLabel("半径:"))
-        row_r.addWidget(sb_r)
+        undo_pushed = [False]
+        lay.addLayout(self._make_prop_row(
+            "中心X:", ci.center.x,
+            lambda v: setattr(ci, 'center', Vec2(v, ci.center.y)),
+            undo_pushed))
+        lay.addLayout(self._make_prop_row(
+            "中心Y:", ci.center.y,
+            lambda v: setattr(ci, 'center', Vec2(ci.center.x, v)),
+            undo_pushed))
+        row_r = self._make_prop_row(
+            "半径:", ci.radius,
+            lambda v: setattr(ci, 'radius', max(0.001, v)),
+            undo_pushed, lo=0.001, hi=1e6, step=0.5)
         lay.addLayout(row_r)
 
         # ── 円弧追加ボタン ────────────────────────────────────────

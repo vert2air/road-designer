@@ -1780,9 +1780,7 @@ class Canvas(QWidget):
     def _do_drag(self, w: Vec2):
         """ハンドルドラッグの各フレーム処理。
 
-        ``_drag_obj`` と ``_drag_tag`` の組み合わせでドラッグ対象を識別し、
-        ワールド座標 w に向けて図形を更新する。更新後は関連する Clothoid や
-        スムーズ接続の円にも変更を伝播し、``scene_changed`` を emit する。
+        型ごとのサブメソッドにディスパッチし、最後に伝播・再描画を行う。
 
         Parameters
         ----------
@@ -1793,70 +1791,80 @@ class Canvas(QWidget):
         tag = self._drag_tag
 
         if isinstance(obj, Line):
-            if tag == "line_ref_start":
-                obj.ref_start = w
-                self._propagate_line(obj)
-            elif tag == "line_ref_end":
-                obj.ref_end = w
-                self._propagate_line(obj)
-
+            self._drag_line(obj, tag, w)
         elif isinstance(obj, Segment):
-            ln = obj.line
-            if tag == "seg_start":
-                t = ln.project_t(w)
-                obj.t_start = t
-            elif tag == "seg_end":
-                t = ln.project_t(w)
-                obj.t_end = t
-
+            self._drag_segment(obj, tag, w)
         elif isinstance(obj, Circle):
-            if tag == "circle_center":
-                if obj.bisector_origin and obj.bisector_dir:
-                    # 二等分線上に束縛
-                    bd = obj.bisector_dir
-                    diff = w - obj.bisector_origin
-                    t = diff.dot(bd)
-                    obj.center = obj.bisector_origin + bd * t
-                else:
-                    obj.center = w
-                self._propagate_circle(obj)
-            elif tag == "circle_radius":
-                r = (w - obj.center).length()
-                if r > 1e-3:
-                    obj.radius = r
-                    self._propagate_circle(obj)
-
+            self._drag_circle(obj, tag, w)
         elif isinstance(obj, Arc):
-            ci = obj.circle
-            if tag == "arc_start":
-                ang = math.atan2(w.y - ci.center.y, w.x - ci.center.x)
-                obj.angle_start = ang
-            elif tag == "arc_end":
-                ang = math.atan2(w.y - ci.center.y, w.x - ci.center.x)
-                obj.angle_end = ang
-
+            self._drag_arc(obj, tag, w)
         elif isinstance(obj, LineConnection):
-            if tag == "shared_pt":
-                la, lb = obj.line_a, obj.line_b
-                # 記録済みの「どちら側が共有点か」に従って参照点を更新
-                if obj.a_end_is_shared:
-                    la.ref_end = w
-                else:
-                    la.ref_start = w
-                if obj.b_start_is_shared:
-                    lb.ref_start = w
-                else:
-                    lb.ref_end = w
-                obj.shared_point = w
-                # 両直線のクロソイド・smooth円を伝播
-                self._propagate_line(la)
-                self._propagate_line(lb)
-                if obj.kind == "smooth" and obj.circle is not None:
-                    self._update_smooth_circle(obj)
+            self._drag_connection(obj, tag, w)
 
         self._rebuild_handles()
         self.scene_changed.emit()
         self.update()
+
+    def _drag_line(self, obj: Line, tag: str, w: Vec2):
+        """Line ハンドルのドラッグ処理。"""
+        if tag == "line_ref_start":
+            obj.ref_start = w
+        elif tag == "line_ref_end":
+            obj.ref_end = w
+        self._propagate_line(obj)
+
+    def _drag_segment(self, obj: Segment, tag: str, w: Vec2):
+        """Segment ハンドルのドラッグ処理（t 値更新）。"""
+        ln = obj.line
+        if tag == "seg_start":
+            obj.t_start = ln.project_t(w)
+        elif tag == "seg_end":
+            obj.t_end = ln.project_t(w)
+
+    def _drag_circle(self, obj: Circle, tag: str, w: Vec2):
+        """Circle ハンドルのドラッグ処理。"""
+        if tag == "circle_center":
+            if obj.bisector_origin and obj.bisector_dir:
+                # 二等分線上に束縛
+                bd = obj.bisector_dir
+                t = (w - obj.bisector_origin).dot(bd)
+                obj.center = obj.bisector_origin + bd * t
+            else:
+                obj.center = w
+            self._propagate_circle(obj)
+        elif tag == "circle_radius":
+            r = (w - obj.center).length()
+            if r > 1e-3:
+                obj.radius = r
+                self._propagate_circle(obj)
+
+    def _drag_arc(self, obj: Arc, tag: str, w: Vec2):
+        """Arc ハンドルのドラッグ処理（角度更新）。"""
+        ci = obj.circle
+        ang = math.atan2(w.y - ci.center.y, w.x - ci.center.x)
+        if tag == "arc_start":
+            obj.angle_start = ang
+        elif tag == "arc_end":
+            obj.angle_end = ang
+
+    def _drag_connection(self, obj: LineConnection, tag: str, w: Vec2):
+        """LineConnection 共有点のドラッグ処理。"""
+        if tag != "shared_pt":
+            return
+        la, lb = obj.line_a, obj.line_b
+        if obj.a_end_is_shared:
+            la.ref_end = w
+        else:
+            la.ref_start = w
+        if obj.b_start_is_shared:
+            lb.ref_start = w
+        else:
+            lb.ref_end = w
+        obj.shared_point = w
+        self._propagate_line(la)
+        self._propagate_line(lb)
+        if obj.kind == "smooth" and obj.circle is not None:
+            self._update_smooth_circle(obj)
 
     def _propagate_line(self, ln: Line, _updating_smooth: bool = False):
         """直線 ln の変更をクロソイドと接続先に伝播する。
@@ -2248,8 +2256,6 @@ class Canvas(QWidget):
             conn.circle = ci
             conn.bisector_dir = bisect
 
-        self.scene_changed.emit()
-        self.update()
         return True
 
     def disconnect_lines(self, line_a: Line, line_b: Line):
@@ -2260,5 +2266,3 @@ class Canvas(QWidget):
         self.push_undo()
         line_a.connection = None
         line_b.connection = None
-        self.scene_changed.emit()
-        self.update()

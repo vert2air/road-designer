@@ -2374,24 +2374,9 @@ class Scene:
     def from_dict(d: dict) -> 'Scene':
         """辞書から Scene を復元する。
 
-        復元順序:
-
-        1. ``lines``（``segments`` を含む）→ ``lines_by_id`` に格納。
-           ``_resolve_id`` で ID が振り直された場合は元の ID でも同じ
-           オブジェクトを引けるフォールバックエントリを追加する。
-        2. ``circles``（``arcs`` を含む）→ ``circles_by_id`` に格納。同様に
-           フォールバックエントリを追加する。
-        3. ``clothoids``（``line_id``・``circle_id`` で参照解決）
-        4. ``offset_constraints``（``line_id``・``ca_id``・``cb_id`` で参照解決）
-        5. ``element_profiles``、``vertical_alignments``
-        6. 旧フォーマット互換（トップレベルの ``grade_lines``/``vertical_curves``）
-        7. 全 ID の最大値 + 1 でカウンタを再設定
-
-        フォールバック参照の設計意図: ``_resolve_id`` によって line の ID が
-        振り直された場合（保存ファイルに ``Line#6`` と ``Segment#6`` が同じ
-        ID を持つ等）、振り直し後の ID だけでなく元の ID でも ``lines_by_id``
-        を引けるようにすることで、clothoid の ``line_id`` が振り直し前の値を
-        指していても参照を解決できクロソイドが消えなくなる。
+        内部で空の Scene を生成して :meth:`merge_from_dict` を呼び出す。
+        ``element_profiles``・``vertical_alignments``・旧フォーマット互換
+        （``grade_lines``/``vertical_curves``）もここで処理する。
 
         Parameters
         ----------
@@ -2405,86 +2390,7 @@ class Scene:
             復元された Scene オブジェクト。
         """
         sc = Scene()
-        lines_by_id = {}
-        circles_by_id = {}
-
-        def _extract_nick(raw: dict, sc: 'Scene'):
-            nick = raw.get("nickname")
-            fid = raw.get("id")
-            if nick and fid is not None:
-                sc.nicknames[fid] = nick
-
-        # ID衝突を検出して振り直すヘルパー
-        seen_ids: set[int] = set()
-
-        def _resolve_id(raw: dict) -> int:
-            """rawの 'id' を取得し、衝突があれば新IDを割り当てる"""
-            fid = raw.get("id")
-            if fid is None:
-                fid = new_id()
-                raw["id"] = fid
-            elif fid in seen_ids:
-                fid = new_id()
-                raw["id"] = fid
-            seen_ids.add(fid)
-            return fid
-
-        # id_remap: 保存時の id → _resolve_id 後の id のマッピング
-        # line/circle の id が振り直された場合でも clothoid の参照を維持する
-        id_remap: dict[int, int] = {}
-
-        for ld in d.get("lines", []):
-            _extract_nick(ld, sc)
-            original_id = ld.get("id")
-            _resolve_id(ld)
-            if original_id is not None and ld["id"] != original_id:
-                id_remap[original_id] = ld["id"]
-            for sd in ld.get("segments", []):
-                _resolve_id(sd)
-            ln = Line.from_dict(ld)
-            sc.lines.append(ln)
-            lines_by_id[ln.id] = ln
-            # 元の id でも引けるようにする（remap前のid → ln）
-            if original_id is not None and original_id != ln.id:
-                lines_by_id[original_id] = ln
-
-        for cd in d.get("circles", []):
-            _extract_nick(cd, sc)
-            original_id = cd.get("id")
-            _resolve_id(cd)
-            if original_id is not None and cd["id"] != original_id:
-                id_remap[original_id] = cd["id"]
-            for ad in cd.get("arcs", []):
-                _resolve_id(ad)
-            ci = Circle.from_dict(cd)
-            sc.circles.append(ci)
-            circles_by_id[ci.id] = ci
-            # 元の id でも引けるようにする
-            if original_id is not None and original_id != ci.id:
-                circles_by_id[original_id] = ci
-
-        for cd in d.get("clothoids", []):
-            _extract_nick(cd, sc)
-            _resolve_id(cd)
-            ln = lines_by_id.get(cd["line_id"])
-            ci = circles_by_id.get(cd["circle_id"])
-            if ln and ci:
-                clo = Clothoid(ln, ci, cd.get("reversed_flag", False),
-                               cd.get("snap_segment", False),
-                               cd.get("snap_arc", False),
-                               cd.get("id"))
-                # _split_seg_ids / _split_arc_ids を復元してから compute() を再実行する。
-                # コンストラクタの compute() 時点ではまだ [] なので _apply_segment_split が
-                # 再実行されて余分な線分を生成してしまう。
-                # 保存済みの ID リストを設定してから再 compute することで
-                # 追従更新モード（再分割なし）で動作させる。
-                saved_sids = cd.get("split_seg_ids", [])
-                saved_aids = cd.get("split_arc_ids", [])
-                if saved_sids or saved_aids:
-                    clo._split_seg_ids = list(saved_sids)
-                    clo._split_arc_ids = list(saved_aids)
-                    clo.compute()   # 追従更新モードで再実行（再分割しない）
-                sc.clothoids.append(clo)
+        sc.merge_from_dict(d)
 
         sc.element_profiles = [ElementProfile.from_dict(ep)
                                for ep in d.get("element_profiles", [])]
@@ -2501,46 +2407,29 @@ class Scene:
             va.vertical_curves = [VerticalCurve.from_dict(v) for v in old_vcs]
             sc.vertical_alignments.append(va)
 
-        sc.offset_constraints = [
-            OffsetConstraint.from_dict(oc, lines_by_id, circles_by_id)
-            for oc in d.get("offset_constraints", [])
-            if (oc.get("line_id") in lines_by_id
-                and oc.get("ca_id") in circles_by_id
-                and oc.get("cb_id") in circles_by_id)
-        ]
-
-        sc.two_line_offset_constraints = [
-            TwoLineOffsetConstraint.from_dict(oc, lines_by_id, circles_by_id)
-            for oc in d.get("two_line_offset_constraints", [])
-            if (oc.get("la_id") in lines_by_id
-                and oc.get("lb_id") in lines_by_id
-                and oc.get("circle_id") in circles_by_id)
-        ]
-
-        for k, v in d.get("nicknames", {}).items():
-            sc.nicknames[int(k)] = v
-
-        # IDカウンタをリセット
-        all_ids = list(seen_ids)
-        all_ids.extend(ep.id for ep in sc.element_profiles)
+        # IDカウンタを element_profiles / vertical_alignments の ID まで含めて更新
+        extra_ids = []
+        extra_ids.extend(ep.id for ep in sc.element_profiles)
         for ep in sc.element_profiles:
-            all_ids.extend(g.id for g in ep.grade_lines)
-            all_ids.extend(v.id for v in ep.vertical_curves)
+            extra_ids.extend(g.id for g in ep.grade_lines)
+            extra_ids.extend(v.id for v in ep.vertical_curves)
         for va in sc.vertical_alignments:
-            all_ids.append(va.id)
-            all_ids.extend(g.id for g in va.grade_lines)
-            all_ids.extend(v.id for v in va.vertical_curves)
-        if all_ids:
-            _reset_id_counter_after(max(all_ids))
+            extra_ids.append(va.id)
+            extra_ids.extend(g.id for g in va.grade_lines)
+            extra_ids.extend(v.id for v in va.vertical_curves)
+        if extra_ids:
+            _reset_id_counter_after(max(extra_ids))
 
         return sc
 
     def merge_from_dict(self, d: dict) -> list:
         """辞書データを既存 Scene に追加（マージ）する。
 
-        :meth:`from_dict` と同じ解釈ルールで図形を読み込み、
-        既存の lines / circles / clothoids 等に追記する。
-        ID 衝突は ``new_id()`` で自動回避する（既存 ID との重複も含む）。
+        ``lines``・``circles``・``clothoids``・``offset_constraints`` を
+        既存データに追記する。ID 衝突は ``new_id()`` で自動回避する。
+
+        ``element_profiles`` / ``vertical_alignments`` / 旧フォーマット互換は
+        :meth:`from_dict` が担当するためここでは処理しない。
 
         Parameters
         ----------
@@ -2576,6 +2465,7 @@ class Scene:
         seen_ids.update(o.id for o in self.two_line_offset_constraints)
 
         def _resolve_id(raw: dict) -> int:
+            """raw の 'id' を取得し、衝突があれば新 ID を割り当てる。"""
             fid = raw.get("id")
             if fid is None or fid in seen_ids:
                 fid = new_id()
@@ -2583,6 +2473,8 @@ class Scene:
             seen_ids.add(fid)
             return fid
 
+        # id_remap: 保存時の id → _resolve_id 後の id のマッピング
+        # line/circle の id が振り直された場合でも clothoid の参照を維持する
         id_remap: dict[int, int] = {}
 
         for ld in d.get("lines", []):
@@ -2596,6 +2488,7 @@ class Scene:
             ln = Line.from_dict(ld)
             self.lines.append(ln)
             lines_by_id[ln.id] = ln
+            # 元の id でも引けるようにする（remap 前の id → ln）
             if original_id is not None and original_id != ln.id:
                 lines_by_id[original_id] = ln
             added.append(ln)
@@ -2625,12 +2518,17 @@ class Scene:
                                cd.get("snap_segment", False),
                                cd.get("snap_arc", False),
                                cd.get("id"))
+                # _split_seg_ids / _split_arc_ids を復元してから compute() を
+                # 再実行する。コンストラクタの compute() 時点ではまだ [] なので
+                # _apply_segment_split が再実行されて余分な線分を生成してしまう。
+                # 保存済みの ID リストを設定してから再 compute することで
+                # 追従更新モード（再分割なし）で動作させる。
                 saved_sids = cd.get("split_seg_ids", [])
                 saved_aids = cd.get("split_arc_ids", [])
                 if saved_sids or saved_aids:
                     clo._split_seg_ids = list(saved_sids)
                     clo._split_arc_ids = list(saved_aids)
-                    clo.compute()
+                    clo.compute()   # 追従更新モードで再実行（再分割しない）
                 self.clothoids.append(clo)
                 added.append(clo)
 
