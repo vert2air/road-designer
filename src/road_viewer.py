@@ -1330,7 +1330,7 @@ class RoadViewer(ShowBase):
             if self._ad_cur_id is not None:
                 for e in self._elem_graph:
                     if e["id"] == self._ad_cur_id:
-                        nick = e.get("nickname", f"#{e['id']}")
+                        nick = e.get("nickname") or f"#{e['id']}"
                         # OnscreenText はデフォルトフォントが ASCII のみ対応
                         # 非ASCII文字を含む場合は ASCII 安全な形式にフォールバック
                         try:
