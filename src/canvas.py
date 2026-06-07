@@ -324,40 +324,24 @@ class Canvas(QWidget):
         seen_connections = set()
 
         # クロソイドにsnapされている端点を収集（ハンドルを出さない）
+        # clothoid_start/end ID で判定する（角度・t値の数値比較より確実）
         snapped_seg_ends: set[tuple] = set()   # (seg_id, 'start'|'end')
         snapped_arc_ends: set[tuple] = set()   # (arc_id, 'start'|'end')
-        for clo in self.scene.clothoids:
-            if not clo.is_valid:
-                continue
-            if clo.snap_segment and clo._line_pt is not None:
-                # snap=on: 線側接点に吸着している端点
-                t_x = clo.line.project_t(clo._line_pt)
-                for seg in clo.line.segments:
-                    if abs(seg.t_end - t_x) < 1e-4:
+        clothoid_ids = {clo.id for clo in self.scene.clothoids
+                        if clo.is_valid}
+        for obj in self._selected:
+            if isinstance(obj, Line):
+                for seg in obj.segments:
+                    if seg.clothoid_end in clothoid_ids:
                         snapped_seg_ends.add((seg.id, 'end'))
-                    if abs(seg.t_start - t_x) < 1e-4:
+                    if seg.clothoid_start in clothoid_ids:
                         snapped_seg_ends.add((seg.id, 'start'))
-            if not clo.snap_segment and clo._split_seg_ids:
-                # split=on: 分割端点（接点）はハンドル不要
-                segs_by_id = {s.id: s for s in clo.line.segments}
-                for sid in clo._split_seg_ids:
-                    seg = segs_by_id.get(sid)
-                    if seg:
-                        # AX の end と XB の start が接点 → どちらも非表示
-                        snapped_seg_ends.add((sid, 'end'))
-                        snapped_seg_ends.add((sid, 'start'))
-            if clo.snap_arc and clo._circle_pt is not None:
-                ang = math.atan2(clo._circle_pt.y - clo.circle.center.y,
-                                 clo._circle_pt.x - clo.circle.center.x)
-                for arc in clo.circle.arcs:
-                    if abs(arc.angle_start - ang) < 1e-4:
+            elif isinstance(obj, Circle):
+                for arc in obj.arcs:
+                    if arc.clothoid_start in clothoid_ids:
                         snapped_arc_ends.add((arc.id, 'start'))
-                    if abs(arc.angle_end - ang) < 1e-4:
+                    if arc.clothoid_end in clothoid_ids:
                         snapped_arc_ends.add((arc.id, 'end'))
-            if not clo.snap_arc and clo._split_arc_ids:
-                for aid in clo._split_arc_ids:
-                    snapped_arc_ends.add((aid, 'end'))
-                    snapped_arc_ends.add((aid, 'start'))
 
         for obj in self._selected:
             if isinstance(obj, Line):
