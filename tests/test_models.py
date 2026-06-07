@@ -993,15 +993,15 @@ class TestScene:
         assert sc.element_profiles == []
         assert sc.nicknames == {}
 
-    # [仕様] add_line: lines に追加、デフォルトニックネームが設定される
+    # [仕様] add_line: lines に追加される（デフォルトニックネームは設定しない）
     def test_add_line(self):
         sc = Scene()
         ln = Line(Vec2(0, 0), Vec2(1, 0))
         sc.add_line(ln)
         assert ln in sc.lines
-        assert ln.id in sc.nicknames
+        assert ln.id not in sc.nicknames  # デフォルトニックネームは設定しない
 
-    # [仕様] add_line: 既存ニックネームは上書きしない
+    # [仕様] add_line: 既存ニックネームは保持される
     def test_add_line_no_overwrite_nickname(self):
         sc = Scene()
         ln = Line(Vec2(0, 0), Vec2(1, 0))
@@ -1077,12 +1077,18 @@ class TestScene:
         result = sc.clothoids_for(ln, ci)
         assert clo in result
 
-    # [仕様] get_nickname: 未設定は "nickname_{prefix}_{id}"
+    # [仕様] get_nickname: 未設定は None を返す
     def test_get_nickname_default(self):
         sc = Scene()
         ln = Line(Vec2(0, 0), Vec2(1, 0))
-        name = sc.get_nickname(ln.id, 'line')
-        assert 'line' in name
+        assert sc.get_nickname(ln.id) is None
+
+    # [仕様] display_name: 未設定は "(type#id)" 形式を返す
+    def test_display_name_default(self):
+        sc = Scene()
+        ln = Line(Vec2(0, 0), Vec2(1, 0))
+        name = sc.display_name(ln.id, '直線')
+        assert '直線' in name
         assert str(ln.id) in name
 
     # [仕様] set_nickname: 空文字で削除
@@ -1687,7 +1693,7 @@ class TestSceneNicknameBranches:
         """[C1] nicknames[id] が存在するとき直接返す分岐（L1739）。"""
         sc = Scene()
         sc.nicknames[999] = 'my_name'
-        assert sc.get_nickname(999, 'test') == 'my_name'
+        assert sc.get_nickname(999) == 'my_name'
 
     # [C1] set_nickname: name が空でないとき L1753 の代入分岐
     def test_set_nickname_nonempty(self):

@@ -1301,7 +1301,6 @@ class RightPanel(QWidget, PropBuilderMixin):
         """
         for clo in self.scene.clothoids:
             clo.compute()
-        self.scene_changed.emit()
         self._canvas_update()
 
     def _delete_selected_objs(self):

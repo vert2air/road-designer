@@ -1484,7 +1484,7 @@ class TestBuildMultipleSelection:
             sc.add_line(ln)
         p.update_selection(lns, sc)
         labels = [w.text() for w in p.findChildren(QLabel)]
-        assert any("3" in t and "図形" in t for t in labels)
+        assert any("3" in t and "直線" in t for t in labels)
 
 
 class TestApplyNickSelect:

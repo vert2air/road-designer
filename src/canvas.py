@@ -596,19 +596,30 @@ class Canvas(QWidget):
         self._handles.clear()
         seen_connections = set()
 
-        # クロソイドにsnapされている端点を収集（ハンドルを出さない）
-        # clothoid_start/end ID で判定する（角度・t値の数値比較より確実）
+        # クロソイドにsnapされている���点を収集（ハンドルを出さない）
         snapped_seg_ends: set[tuple] = set()   # (seg_id, 'start'|'end')
         snapped_arc_ends: set[tuple] = set()   # (arc_id, 'start'|'end')
         clothoid_ids = {clo.id for clo in self.scene.clothoids
                         if clo.is_valid}
         for obj in self._selected:
             if isinstance(obj, Line):
+                # snap=False で分割された線分: 両端ともハンドル不要
+                # (クロソイドが自動生成した分割線分はユーザーが直接動かせない)
+                split_ids: set[int] = set()
+                for clo in self.scene.clothoids:
+                    if (clo.is_valid and not clo.snap_segment
+                            and clo.line is obj):
+                        split_ids.update(clo._split_seg_ids)
                 for seg in obj.segments:
-                    if seg.clothoid_end in clothoid_ids:
-                        snapped_seg_ends.add((seg.id, 'end'))
-                    if seg.clothoid_start in clothoid_ids:
+                    if seg.id in split_ids:
                         snapped_seg_ends.add((seg.id, 'start'))
+                        snapped_seg_ends.add((seg.id, 'end'))
+                    else:
+                        # snap=True: clothoid_end/start の付���た端点のみ除外
+                        if seg.clothoid_end in clothoid_ids:
+                            snapped_seg_ends.add((seg.id, 'end'))
+                        if seg.clothoid_start in clothoid_ids:
+                            snapped_seg_ends.add((seg.id, 'start'))
             elif isinstance(obj, Circle):
                 for arc in obj.arcs:
                     if arc.clothoid_start in clothoid_ids:
