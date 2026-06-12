@@ -8,6 +8,8 @@ CI では -m 'not spec' により除外されるため、開発者が手動で�
 各テストクラスの docstring に対応する仕様書の節番号と条文を引用する。
 """
 import pytest
+from PySide6.QtCore import QPoint
+from PySide6.QtTest import QTest
 
 pytestmark = pytest.mark.spec
 
@@ -177,10 +179,10 @@ class TestSpec5_3_Properties:
         assert len(groups) > 0, "右パネルのプロパティが更新されるべき"
 
 
-# ─── 5.6 図形を削除ボタン ────────────────────────────────────────
+# ─── 5.7 図形を削除ボタン ────────────────────────────────────────
 
-class TestSpec5_6_DeleteButton:
-    """5.6 図形を削除ボタン
+class TestSpec5_7_DeleteButton:
+    """5.7 図形を削除ボタン
 
     仕様書より:
         コンボボックスで選択中の図形を削除する。
@@ -198,7 +200,7 @@ class TestSpec5_6_DeleteButton:
 
     def test_delete_button_shows_confirmation_dialog(
             self, make_panel_qt, monkeypatch):
-        """[5.6] 「図形を削除」ボタンを押すと確認ダイアログが表示される。"""
+        """[5.7] 「図形を削除」ボタンを押すと確認ダイアログが表示される。"""
         from PySide6.QtWidgets import QMessageBox
         from models import Line, Vec2, Scene
         scene = Scene()
@@ -220,7 +222,7 @@ class TestSpec5_6_DeleteButton:
         assert question_called, "確認ダイアログが表示されなかった"
 
     def test_no_answer_cancels_deletion(self, make_panel_qt, monkeypatch):
-        """[5.6] 確認ダイアログで「いいえ」を選ぶと図形が削除されない。"""
+        """[5.7] 確認ダイアログで「いいえ」を選ぶと図形が削除されない。"""
         from PySide6.QtWidgets import QMessageBox
         from models import Line, Vec2, Scene
         scene = Scene()
@@ -240,7 +242,7 @@ class TestSpec5_6_DeleteButton:
         assert len(deleted_objects) == 0, "キャンセルしたのに削除シグナルが発行された"
 
     def test_yes_answer_emits_request_delete(self, make_panel_qt, monkeypatch):
-        """[5.6] 確認ダイアログで「はい」を選ぶと request_delete シグナルが発行される。"""
+        """[5.7] 確認ダイアログで「はい」を選ぶと request_delete シグナルが発行される。"""
         from PySide6.QtWidgets import QMessageBox
         from models import Line, Vec2, Scene
         scene = Scene()
@@ -262,7 +264,7 @@ class TestSpec5_6_DeleteButton:
 
     def test_no_selection_in_combo_does_nothing(
             self, make_panel_qt, monkeypatch):
-        """[5.6] コンボに図形が選択されていないとき削除ボタンを押しても何もしない。"""
+        """[5.7] コンボに図形が選択されていないとき削除ボタンを押しても何もしない。"""
         from PySide6.QtWidgets import QMessageBox
         from models import Scene
         panel, _ = make_panel_qt(scene=Scene())
@@ -280,10 +282,10 @@ class TestSpec5_6_DeleteButton:
         assert not question_called, "選択なしのとき確認ダイアログが出てはいけない"
 
 
-# ─── 5.8 ニックネーム管理 ────────────────────────────────────────
+# ─── 5.9 ニックネーム管理 ────────────────────────────────────────
 
-class TestSpec5_8_Nickname:
-    """5.8 ニックネーム管理
+class TestSpec5_9_Nickname:
+    """5.9 ニックネーム管理
 
     仕様書より:
         各図形（直線・円・クロソイド）に任意のニックネームを設定できる。
@@ -292,7 +294,7 @@ class TestSpec5_8_Nickname:
     """
 
     def test_set_nickname_is_stored_in_scene(self):
-        """[5.8] scene.set_nickname() で設定したニックネームが scene.nicknames に保存される。"""
+        """[5.9] scene.set_nickname() で設定したニックネームが scene.nicknames に保存される。"""
         from models import Line, Vec2, Scene
         scene = Scene()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
@@ -302,7 +304,7 @@ class TestSpec5_8_Nickname:
         assert scene.get_nickname(ln.id) == 'テスト直線A'
 
     def test_nickname_can_be_changed(self):
-        """[5.8] ニックネームを変更すると get_nickname で新しい値が返る。"""
+        """[5.9] ニックネームを変更すると get_nickname で新しい値が返る。"""
         from models import Circle, Vec2, Scene
         scene = Scene()
         ci = Circle(Vec2(0, 0), 50)
@@ -315,7 +317,7 @@ class TestSpec5_8_Nickname:
         assert scene.get_nickname(ci.id) == '交差点B'
 
     def test_unset_nickname_returns_falsy_or_id_format(self):
-        """[5.8] 未設定の場合 get_nickname は None を返し、
+        """[5.9] 未設定の場合 get_nickname は None を返し、
         display_name は id 形式の文字列を返す。"""
         from models import Line, Vec2, Scene
         scene = Scene()
@@ -328,7 +330,7 @@ class TestSpec5_8_Nickname:
         assert str(ln.id) in name, "display_name は id を含むべき"
 
     def test_nickname_is_reflected_in_combo_label(self, make_panel_qt):
-        """[5.8] ニックネームを設定するとコンボボックスのラベルに反映される。"""
+        """[5.9] ニックネームを設定するとコンボボックスのラベルに反映される。"""
         from models import Line, Vec2, Scene
         scene = Scene()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
@@ -348,7 +350,7 @@ class TestSpec5_8_Nickname:
         assert found, "コンボラベルにニックネームが反映されるべき"
 
     def test_nickname_appears_in_panel_label_for_obj(self, make_panel_qt):
-        """[5.8] _label_for_obj() が返すラベルにニックネームが含まれる。"""
+        """[5.9] _label_for_obj() が返すラベルにニックネームが含まれる。"""
         from models import Circle, Vec2, Scene
         scene = Scene()
         ci = Circle(Vec2(0, 0), 30)
@@ -360,7 +362,7 @@ class TestSpec5_8_Nickname:
         assert '丸山' in label, f"ラベル {label!r} にニックネームが含まれるべき"
 
     def test_nickname_serialized_and_deserialized(self):
-        """[5.8] Scene を to_dict / from_dict でシリアライズするとニックネームが保持される。"""
+        """[5.9] Scene を to_dict / from_dict でシリアライズするとニックネームが保持される。"""
         from models import Line, Vec2, Scene
         scene = Scene()
         ln = Line(Vec2(0, 0), Vec2(100, 0))
@@ -373,3 +375,251 @@ class TestSpec5_8_Nickname:
         # 復元後も同じ ID のニックネームが取れる
         name = scene2.get_nickname(ln.id)
         assert name == '永続化テスト', "シリアライズ後もニックネームが保持されるべき"
+
+
+# ─── 5.1 ホバー情報表示 ──────────────────────────────────────────
+
+class TestSpec5_1_HoverInfo:
+    """5.1 マウス座標・ホバー情報表示 — ホバー中の図形情報
+
+    仕様書より:
+        カーソルが図形の上にある（ホバー中）場合、座標の直下にその図形の
+        情報を表示する。表示形式: {ニックネーム} ({タイプ}#{id})
+        （ニックネーム未設定の場合は ({タイプ}#{id}) のみ）。
+        線分・円弧については親図形のニックネームも表示する。
+    """
+
+    def test_hover_shows_type_and_id(self, make_window_qt):
+        """[5.1] ニックネーム未設定の線分は (線分#id) と親直線を表示。"""
+        from models import Line, Segment, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        w.scene.add_line(ln)
+        w._canvas.hover_changed.emit(seg)
+        text = w._right_panel._lbl_hovered.text()
+        assert f"(線分#{seg.id})" in text
+        assert f"(直線#{ln.id})" in text   # 親図形情報
+
+    def test_hover_shows_nickname_when_set(self, make_window_qt):
+        """[5.1] ニックネーム設定済みなら名前も表示される。"""
+        from models import Line, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        w.scene.add_line(ln)
+        w.scene.set_nickname(ln.id, "国道1号")
+        w._canvas.hover_changed.emit(ln)
+        text = w._right_panel._lbl_hovered.text()
+        assert "国道1号" in text
+
+    def test_hover_none_hides_label(self, make_window_qt):
+        """[5.1] ホバー解除（None）で表示が消える。"""
+        from models import Line, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        w.scene.add_line(ln)
+        w._canvas.hover_changed.emit(ln)
+        w._canvas.hover_changed.emit(None)
+        assert w._right_panel._lbl_hovered.text() == ""
+
+    def test_mouse_move_over_figure_updates_hover(
+            self, make_window_qt, qtbot):
+        """[5.1] 実際のマウス移動で図形上に来るとホバー情報が出る。"""
+        from models import Line, Segment, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        c = w._canvas
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        w.scene.add_line(ln)
+        w.show()
+        qtbot.waitExposed(c)
+        # ワールド (50,0) = スクリーン (550,500) へ移動
+        QTest.mouseMove(c, QPoint(549, 500))
+        QTest.mouseMove(c, QPoint(550, 500))
+        qtbot.wait(50)
+        assert w._right_panel._lbl_hovered.text() != ""
+
+
+# ─── 5.2 [道なり] アイテム ───────────────────────────────────────
+
+class TestSpec5_2_RoadFollow:
+    """5.2 図形選択コンボボックス — [道なり] アイテム
+
+    仕様書より:
+        高優先候補が1件だけ（または [順] 判定の候補がちょうど1件）の
+        場合、その候補の直後に [道なり] <図形ラベル> アイテムを自動追加
+        する。選択されると以降のコンボボックスに対して連鎖的に選択を
+        進める。
+    """
+
+    @staticmethod
+    def _three_chain_scene(w):
+        """同一直線上で連続する 3 線分のシーン。
+
+        親図形が異なる場合は折れ線接続・クロソイド接点などの
+        「直接接点」がないと高優先候補に入らないため、
+        同一親の連続線分（常に高優先候補になる）でチェーンを作る。
+        """
+        from models import Line, Segment, Vec2
+        ln = Line(Vec2(0, 0), Vec2(300, 0))
+        segs = []
+        for i in range(3):
+            seg = Segment(ln, i / 3, (i + 1) / 3)
+            ln.segments.append(seg)
+            segs.append(seg)
+        w.scene.add_line(ln)
+        return segs
+
+    def test_michinari_item_appears_for_single_candidate(
+            self, make_window_qt):
+        """[5.2] 隣接候補が1件 → 2個目コンボに [道なり] が出る。"""
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        segs = self._three_chain_scene(w)
+        rp = w._right_panel
+        rp.update_selection([segs[0]], w.scene)
+        cb2 = rp._nick_combos[1]
+        items = [cb2.itemText(i) for i in range(cb2.count())]
+        assert any(t.startswith("[道なり]") for t in items)
+
+    def test_michinari_chains_to_chain_end(self, make_window_qt):
+        """[5.2] [道なり] を選ぶと後続のコンボが連鎖的に埋まる。"""
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        segs = self._three_chain_scene(w)
+        rp = w._right_panel
+        rp.update_selection([segs[0]], w.scene)
+        cb2 = rp._nick_combos[1]
+        idx = next(i for i in range(cb2.count())
+                   if cb2.itemText(i).startswith("[道なり]"))
+        cb2.setCurrentIndex(idx)
+        # 連鎖の結果、3 個目以降のコンボにも図形が選択されている
+        selected_texts = [cb.currentText() for cb in rp._nick_combos]
+        filled = [t for t in selected_texts
+                  if t and t != "(なし)"]
+        assert len(filled) >= 3
+
+
+# ─── 5.3 Copy / Paste ボタン ─────────────────────────────────────
+
+class TestSpec5_3_CopyPaste:
+    """5.3 図形のプロパティ表示・編集 — Copy / Paste ボタン
+
+    仕様書より:
+        ⧉ Copy: 現在の始点・終点ペアをクリップボードにコピー。
+        ⧈ Paste: クリップボードの始点・終点ペアを貼り付け
+        （左クリック: そのまま貼り付け）。
+    """
+
+    @staticmethod
+    def _find_btn(panel, label):
+        from PySide6.QtWidgets import QPushButton
+        return [b for b in panel.findChildren(QPushButton)
+                if label in b.text()]
+
+    def test_copy_then_paste_transfers_ref_points(self, make_window_qt):
+        """[5.3] 直線 A を Copy → 直線 B に Paste で参照点が転写される。"""
+        from models import Line, Segment, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        rp = w._right_panel
+        la = Line(Vec2(1, 2), Vec2(31, 42))
+        la.segments.append(Segment(la, 0.0, 1.0))
+        lb = Line(Vec2(0, 0), Vec2(10, 0))
+        lb.segments.append(Segment(lb, 0.0, 1.0))
+        w.scene.add_line(la)
+        w.scene.add_line(lb)
+
+        rp.update_selection([la], w.scene)
+        copy_btns = self._find_btn(rp, "Copy")
+        assert copy_btns, "Copy ボタンが表示されていない"
+        copy_btns[0].click()
+
+        rp.update_selection([lb], w.scene)
+        paste_btns = self._find_btn(rp, "Paste")
+        assert paste_btns, "Paste ボタンが表示されていない"
+        paste_btns[0].click()
+        assert (lb.ref_start.x, lb.ref_start.y) == (1, 2)
+        assert (lb.ref_end.x, lb.ref_end.y) == (31, 42)
+
+    def test_paste_is_undoable(self, make_window_qt):
+        """[5.3/4.8] Paste は Undo に記録される。"""
+        from models import Line, Segment, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        rp = w._right_panel
+        la = Line(Vec2(1, 2), Vec2(31, 42))
+        la.segments.append(Segment(la, 0.0, 1.0))
+        lb = Line(Vec2(0, 0), Vec2(10, 0))
+        lb.segments.append(Segment(lb, 0.0, 1.0))
+        w.scene.add_line(la)
+        w.scene.add_line(lb)
+        rp.update_selection([la], w.scene)
+        self._find_btn(rp, "Copy")[0].click()
+        rp.update_selection([lb], w.scene)
+        self._find_btn(rp, "Paste")[0].click()
+        w._canvas.undo()
+        restored = w.scene.lines[1]
+        assert (restored.ref_start.x, restored.ref_start.y) == (0, 0)
+
+
+# ─── 5.6 複数図形選択時の操作パネル ──────────────────────────────
+
+class TestSpec5_6_MultiSelectPanel:
+    """5.6 複数図形選択時の操作パネル
+
+    仕様書より:
+        実効的な選択図形が 2 個以上のとき、右パネルにコピー・平行移動・
+        回転・拡大縮小の操作グループが表示される。コピーは選択図形を
+        複製し、元の選択を外して複製した図形のみ選択状態にする。
+    """
+
+    @staticmethod
+    def _select_three_lines(w):
+        """専用パネル（接続・拘束）に該当しない 3 直線を選択する。
+
+        2 図形の Line+Circle はクロソイド操作パネル、
+        Line+Line+Circle は TwoLineOffsetConstraint パネルに
+        ディスパッチされるため、複数選択パネルは 3 直線で確認する。
+        """
+        from models import Line, Segment, Vec2
+        lines = []
+        for i in range(3):
+            ln = Line(Vec2(0, i * 20), Vec2(10, i * 20))
+            ln.segments.append(Segment(ln, 0.0, 1.0))
+            w.scene.add_line(ln)
+            lines.append(ln)
+        w._right_panel.update_selection(lines, w.scene)
+        return lines
+
+    def test_panel_shown_for_three_lines(self, make_window_qt):
+        """[5.6] 3 図形選択でコピー・適用ボタンが表示される。"""
+        from PySide6.QtWidgets import QPushButton
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        self._select_three_lines(w)
+        texts = [b.text() for b in
+                 w._right_panel.findChildren(QPushButton)]
+        assert any("コピー" in t for t in texts)
+        assert any("適用" in t for t in texts)
+
+    def test_copy_button_duplicates_and_selects_copies(
+            self, make_window_qt, qtbot):
+        """[5.6] コピー実行で複製のみが選択状態になる（Canvas 連動）。"""
+        from PySide6.QtWidgets import QPushButton
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        lines = self._select_three_lines(w)
+        btns = [b for b in w._right_panel.findChildren(QPushButton)
+                if "コピー" in b.text()]
+        btns[0].click()
+        assert len(w.scene.lines) == 6
+        # request_select → MainWindow → Canvas.set_selection の配線確認
+        assert all(ln not in w._canvas._selected for ln in lines)
+        assert len(w._canvas._selected) == 3

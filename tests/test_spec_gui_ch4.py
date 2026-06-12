@@ -377,3 +377,265 @@ class TestSpec4_8_Undo:
         # エラーなく実行できることを確認
         qtbot.keyClick(c, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
         assert len(w.scene.lines) == 0
+
+
+# ─── 4.5 ラバーバンド選択（Shift + 左ドラッグ） ─────────────────
+
+class TestSpec4_5_RubberBandSelect:
+    """4.5 選択モードでの図形操作 — ラバーバンド選択
+
+    仕様書より:
+        選択モードで Shift を押しながら何もない場所をドラッグすると、
+        矩形による一括選択ができる。矩形に完全に含まれる図形のみ
+        選択する。線分・円弧が選択されるとき、その親の直線・円も
+        一緒に選択される。ドラッグ中は対角線のワールド距離が右パネルに
+        表示される（簡易測距ツールを兼ねる）。Esc キーでキャンセル。
+    """
+
+    def test_shift_drag_selects_enclosed_figure_and_parent(
+            self, make_window_qt, qtbot):
+        """[4.5] Shift+ドラッグで囲んだ線分とその親直線が選択される。"""
+        w = make_window_qt()
+        c = w._canvas
+        ln, seg = _add_line(w.scene, 0, 0, 100, 0)
+        c.show()
+        # 図形から離れた点 (=ワールド(-200,200)) からドラッグ開始
+        QTest.mousePress(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ShiftModifier,
+                         QPoint(300, 300))
+        QTest.mouseMove(c, QPoint(610, 510))
+        QTest.mouseRelease(c, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.ShiftModifier,
+                           QPoint(610, 510))
+        assert seg in c._selected
+        assert ln in c._selected
+
+    def test_partially_enclosed_figure_not_selected(
+            self, make_window_qt, qtbot):
+        """[4.5] 矩形に完全に含まれない図形は選択されない。"""
+        w = make_window_qt()
+        c = w._canvas
+        _add_line(w.scene, 0, 0, 100, 0)
+        c.show()
+        # 線分の右半分だけを囲む（x=50..110 のみ）
+        QTest.mousePress(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ShiftModifier,
+                         QPoint(550, 300))
+        QTest.mouseMove(c, QPoint(610, 510))
+        QTest.mouseRelease(c, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.ShiftModifier,
+                           QPoint(610, 510))
+        assert c._selected == []
+
+    def test_measure_distance_shown_in_right_panel(
+            self, make_window_qt, qtbot):
+        """[4.5/5.1] ドラッグ中に対角距離が右パネルに表示され、
+        終了で消える。"""
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        c = w._canvas
+        rp = w._right_panel
+        c.show()
+        QTest.mousePress(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ShiftModifier,
+                         QPoint(300, 300))
+        # ワールド距離 100（(-200,200)→(-100,200)）の移動
+        QTest.mouseMove(c, QPoint(400, 300))
+        assert "100.000" in rp._lbl_measure_dist.text()
+        QTest.mouseRelease(c, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.ShiftModifier,
+                           QPoint(400, 300))
+        assert rp._lbl_measure_dist.text() == ""
+
+    def test_esc_cancels_rubber_band(self, make_window_qt, qtbot):
+        """[4.5] Esc キーでドラッグ中のラバーバンド選択をキャンセル。"""
+        w = make_window_qt()
+        c = w._canvas
+        c.show()
+        QTest.mousePress(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ShiftModifier,
+                         QPoint(300, 300))
+        QTest.mouseMove(c, QPoint(400, 400))
+        assert c._rubber_select_start is not None
+        QTest.keyClick(c, Qt.Key.Key_Escape)
+        assert c._rubber_select_start is None
+
+
+# ─── 4.5 複数図形選択時の AABB 操作 ──────────────────────────────
+
+class TestSpec4_5_AabbOperations:
+    """4.5 選択モードでの図形操作 — 複数図形選択時の AABB 操作
+
+    仕様書より:
+        実効的な選択図形が 2 個以上のとき、選択範囲を囲む AABB 枠線と
+        操作ハンドルを表示する。辺=平行移動、頂点=XY 等率拡大縮小、
+        対角線=回転。ドラッグ完了時に Undo スタックに記録される。
+    """
+
+    @staticmethod
+    def _two_figures(w):
+        from models import Circle, Vec2
+        ln, seg = _add_line(w.scene, 0, 0, 10, 0)
+        ci = Circle(Vec2(100, 0), 50.0)
+        w.scene.add_circle(ci)
+        w._canvas._selected = [ln, ci]
+        return ln, ci
+
+    def test_edge_drag_translates_all(self, make_window_qt, qtbot):
+        """[4.5] 辺ドラッグで全選択図形が平行移動する。"""
+        w = make_window_qt()
+        c = w._canvas
+        ln, ci = self._two_figures(w)
+        c.show()
+        # AABB(0,-50)-(150,50) の上辺中点 (575,450) → (575,440)
+        # = ワールド +10 上へ
+        QTest.mousePress(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier,
+                         QPoint(575, 450))
+        QTest.mouseMove(c, QPoint(575, 440))
+        QTest.mouseRelease(c, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.NoModifier,
+                           QPoint(575, 440))
+        assert ln.ref_start.y == pytest.approx(10)
+        assert ci.center.y == pytest.approx(10)
+
+    def test_aabb_drag_recorded_in_undo(self, make_window_qt, qtbot):
+        """[4.5] AABB ドラッグ後に Ctrl+Z で元の位置に戻る。"""
+        w = make_window_qt()
+        c = w._canvas
+        ln, ci = self._two_figures(w)
+        c.show()
+        QTest.mousePress(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier,
+                         QPoint(575, 450))
+        QTest.mouseMove(c, QPoint(575, 440))
+        QTest.mouseRelease(c, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.NoModifier,
+                           QPoint(575, 440))
+        QTest.keyClick(c, Qt.Key.Key_Z,
+                       Qt.KeyboardModifier.ControlModifier)
+        restored_ln = w.scene.lines[0]
+        restored_ci = w.scene.circles[0]
+        assert restored_ln.ref_start.y == pytest.approx(0)
+        assert restored_ci.center.y == pytest.approx(0)
+
+
+# ─── 4.6 / 5.10.2 TwoLineOffsetConstraint（2直線+1円） ──────────
+
+class TestSpec4_6_TwoLineOffsetPanel:
+    """4.6 2図形選択時の操作 — 2 直線 + 1 円が選択された場合
+
+    仕様書より:
+        右パネルに TwoLineOffsetConstraint パネルが表示される。
+        「オフセット拘束を設定」で拘束を登録し、直線が動くと円の中心が
+        追従する。「オフセット拘束を解除」で解除する。
+    """
+
+    @staticmethod
+    def _setup(w):
+        from models import Line, Circle, Segment, Vec2
+        la = Line(Vec2(0, 0), Vec2(10, 0))
+        la.segments.append(Segment(la, 0.0, 1.0))
+        lb = Line(Vec2(0, 0), Vec2(0, 10))
+        lb.segments.append(Segment(lb, 0.0, 1.0))
+        ci = Circle(Vec2(13, 12), 10.0)
+        w.scene.add_line(la)
+        w.scene.add_line(lb)
+        w.scene.add_circle(ci)
+        return la, lb, ci
+
+    def test_set_button_creates_constraint_and_circle_follows(
+            self, make_window_qt, qtbot):
+        """[4.6] 設定ボタン → 拘束が登録され、直線移動に円が追従。"""
+        from PySide6.QtWidgets import QPushButton
+        from models import Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        la, lb, ci = self._setup(w)
+        w._right_panel.update_selection([la, lb, ci], w.scene)
+        btns = [b for b in w._right_panel.findChildren(QPushButton)
+                if b.text() == "オフセット拘束を設定"]
+        assert btns, "設定ボタンが表示されていない"
+        btns[0].click()
+        assert len(w.scene.two_line_offset_constraints) == 1
+
+        # 直線 A を y=5 に移動 → 円中心が (13,17) に追従するはず
+        la.ref_start = Vec2(0, 5)
+        la.ref_end = Vec2(10, 5)
+        w._canvas.propagate_from_line(la)
+        assert ci.center.y == pytest.approx(17.0)
+        assert ci.center.x == pytest.approx(13.0)
+
+    def test_clear_button_removes_constraint(self, make_window_qt, qtbot):
+        """[4.6] 解除ボタン → 拘束が削除される。"""
+        from PySide6.QtWidgets import QPushButton
+        from models import TwoLineOffsetConstraint
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        la, lb, ci = self._setup(w)
+        oc = TwoLineOffsetConstraint()
+        oc.line_a, oc.line_b, oc.circle = la, lb, ci
+        oc.calc_offsets_from_current()
+        w.scene.two_line_offset_constraints.append(oc)
+        w._right_panel.update_selection([la, lb, ci], w.scene)
+        btns = [b for b in w._right_panel.findChildren(QPushButton)
+                if b.text() == "オフセット拘束を解除"]
+        assert btns, "解除ボタンが表示されていない"
+        btns[0].click()
+        assert w.scene.two_line_offset_constraints == []
+
+
+# ─── 4.8 Undo の対象操作（追加分） ───────────────────────────────
+
+class TestSpec4_8_UndoNewTargets:
+    """4.8 Undo — 全削除・マージ・オフセット拘束設定の Undo 対応
+
+    仕様書より:
+        Undo の対象操作: …全削除…追加で読み込む（マージ）…
+        オフセット拘束の設定・解除（両種類）。
+    """
+
+    def test_clear_all_is_undoable(self, make_window_qt):
+        """[4.8] 全削除 → Ctrl+Z でシーンが復元される。"""
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QMessageBox
+        w = make_window_qt()
+        _add_line(w.scene, 0, 0, 100, 0)
+        with patch.object(QMessageBox, 'question',
+                          return_value=QMessageBox.StandardButton.Yes):
+            w._clear_all()
+        assert w.scene.lines == []
+        w._canvas.undo()
+        assert len(w.scene.lines) == 1
+
+    def test_merge_is_undoable(self, make_window_qt, tmp_path):
+        """[4.8] マージ → Ctrl+Z で追加前に戻る。"""
+        import json
+        from unittest.mock import patch
+        from models import Scene, Line, Vec2
+        w = make_window_qt()
+        src = Scene()
+        src.add_line(Line(Vec2(0, 100), Vec2(100, 100)))
+        path = tmp_path / "m.rdjson"
+        path.write_text(json.dumps(src.to_dict()), encoding='utf-8')
+        with patch('PySide6.QtWidgets.QFileDialog.getOpenFileName',
+                   return_value=(str(path), '')):
+            w._merge()
+        assert len(w.scene.lines) == 1
+        w._canvas.undo()
+        assert w.scene.lines == []
+
+    def test_two_line_constraint_set_is_undoable(self, make_window_qt):
+        """[4.8] 2直線+1円拘束の設定 → Ctrl+Z で解除される。"""
+        from models import Line, Circle, Vec2
+        w = make_window_qt()
+        la = Line(Vec2(0, 0), Vec2(10, 0))
+        lb = Line(Vec2(0, 0), Vec2(0, 10))
+        ci = Circle(Vec2(13, 12), 10.0)
+        w.scene.add_line(la)
+        w.scene.add_line(lb)
+        w.scene.add_circle(ci)
+        w._do_set_two_line_offset_constraint(la, lb, ci)
+        assert len(w.scene.two_line_offset_constraints) == 1
+        w._canvas.undo()
+        assert w.scene.two_line_offset_constraints == []
