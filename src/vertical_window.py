@@ -366,6 +366,11 @@ class ProfileCanvas(QWidget):
         return dist, elev
 
     def wheelEvent(self, event):
+        """ホイールでスケールを変更する。
+
+        通常ホイールは距離方向（``_scale_x``、マウス X 位置を中心に補正）、
+        ``Shift`` + ホイールは標高方向（``_scale_y``）を 1.15 倍ずつ変更する。
+        """
         delta = event.angleDelta()
         mods = event.modifiers()
         pos = event.position()
@@ -565,6 +570,11 @@ class ProfileCanvas(QWidget):
 
     # ─── 描画 ─────────────────────────────────────────────────
     def paintEvent(self, event):
+        """縦断プロファイル全体を描画する。
+
+        描画順: グリッド → カラーバー → プロファイル（勾配直線・縦断曲線）
+        → ハンドル → ラバー線 → 軸ラベル。
+        """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor(28, 28, 32))
@@ -576,6 +586,11 @@ class ProfileCanvas(QWidget):
         self._draw_axes(painter)
 
     def _draw_grid(self, painter: QPainter):
+        """グリッド線を描画する。
+
+        距離・標高それぞれのスケールに応じて 1/2/5/10 系列から
+        間隔を自動選択する。
+        """
         pen = QPen(QColor(45, 50, 55))
         pen.setWidth(1)
         painter.setPen(pen)
@@ -874,6 +889,14 @@ class ProfileCanvas(QWidget):
             painter.drawEllipse(p, self.HANDLE_R, self.HANDLE_R)
 
     def mousePressEvent(self, event):
+        """マウスボタン押下を処理する。
+
+        中ボタン: パン開始。
+        左ボタン + 選択モード: ハンドルヒットなら `_push_undo` 後に
+        ドラッグ開始、図形ヒットなら選択変更、いずれもなければパン開始。
+        左ボタン + 勾配直線モード: スナップ吸着付きで 1 点目/2 点目を入力し、
+        2 点目で既存と重複する区間を置換して GradeLine を追加する。
+        """
         pos = event.position()
         sx, sy = pos.x(), pos.y()
         btn = event.button()
@@ -1012,6 +1035,13 @@ class ProfileCanvas(QWidget):
                 self.update()
 
     def mouseMoveEvent(self, event):
+        """マウス移動を処理する。
+
+        ハンドルドラッグ中（移動量 2px 超）は `_apply_handle_drag` を呼ぶ。
+        パン中はオフセットを更新する（選択モードの左ボタンは 4px 未満では
+        パンしない）。常に `mouse_world_pos` で座標を通知し、勾配直線モード
+        ではラバー線を再描画する。
+        """
         pos = event.position()
         sx, sy = pos.x(), pos.y()
         btns = event.buttons()
@@ -1116,6 +1146,12 @@ class ProfileCanvas(QWidget):
             vc.g2 = next_gl.gradient
 
     def mouseReleaseEvent(self, event):
+        """マウスボタンリリースを処理する。
+
+        ハンドルドラッグ終了時は全縦断曲線の g1/g2 を再確定し、
+        `selection_changed` で右パネルを更新する（push_undo は
+        ドラッグ開始時に記録済み）。パン状態もリセットする。
+        """
         if self._drag_handle is not None:
             # ドラッグ開始時（mousePressEventで記録）にpush_undoするため
             # ここでは全縦断曲線の勾配を再確定するだけ
@@ -1128,6 +1164,12 @@ class ProfileCanvas(QWidget):
         self.update()
 
     def keyPressEvent(self, event):
+        """キー押下を処理する。
+
+        ``Delete``: 選択中の GradeLine を削除する。
+        ``Escape``: 勾配直線モードの入力途中状態をリセットする。
+        モード切替や Undo/Redo は親ウィンドウの keyPressEvent が処理する。
+        """
         if event.key() == Qt.Key.Key_Delete:
             if isinstance(self._selected, GradeLine):
                 self._delete_grade_line(self._selected)
@@ -1442,6 +1484,13 @@ class VerticalAlignmentWindow(QMainWindow):
         self._btn_grade.setChecked(True)
 
     def keyPressEvent(self, event):
+        """ウィンドウ全体のキー操作を処理する。
+
+        ``Ctrl+Y`` / ``Ctrl+Shift+Z``: Redo（Undo より先に判定し、
+        ``Ctrl+Shift+Z`` が Undo に捕捉されるのを防ぐ）。
+        ``Ctrl+Z``: Undo。``S``: 選択モード。``G``: 勾配直線モード。
+        ``Escape``: 勾配直線モードの入力をリセット。
+        """
         k = event.key()
         mods = event.modifiers()
         ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)

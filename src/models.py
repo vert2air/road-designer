@@ -469,6 +469,11 @@ class Segment:
             t_start >= t_end は不正状態だが例外を投げない。
         seg_id : int, optional
             指定しない場合は `new_id()` で採番する。
+
+        Notes
+        -----
+        `clothoid_start` / `clothoid_end`（端点を拘束するクロソイドの
+        整数 ID、None = 拘束なし）も None で初期化する。
         """
         self.id = seg_id if seg_id is not None else new_id()
         self.line = line
@@ -515,6 +520,7 @@ class Segment:
         ----------
         d : dict
             {"id", "t_start", "t_end"} を含む辞書。
+            "clothoid_start" / "clothoid_end" があれば復元する。
         line : Line
             この線分が属する親直線（Line.from_dict が渡す）。
         """
@@ -665,6 +671,8 @@ class Arc:
         -----
         コンストラクタは `circle.arcs.append(self)` を行わない。
         追加は呼び出し元の責任とする。
+        `clothoid_start` / `clothoid_end`（端点を拘束するクロソイドの
+        整数 ID、None = 拘束なし）も None で初期化する。
         """
         self.id = arc_id if arc_id is not None else new_id()
         self.circle = circle
@@ -720,7 +728,10 @@ class Arc:
 
     @staticmethod
     def from_dict(d: dict, circle: Circle) -> 'Arc':
-        """辞書と親 Circle から Arc を復元する。"""
+        """辞書と親 Circle から Arc を復元する。
+
+        "clothoid_start" / "clothoid_end" があれば復元する。
+        """
         arc = Arc(circle, d["angle_start"], d["angle_end"], d["id"])
         arc.clothoid_start = d.get("clothoid_start")
         arc.clothoid_end = d.get("clothoid_end")
@@ -2041,7 +2052,8 @@ class Scene:
     offset_constraints : list[OffsetConstraint]
         直線-2円のオフセット拘束。円の変形に合わせて直線が自動追従する。
     two_line_offset_constraints : list[TwoLineOffsetConstraint]
-        2直線-1円のオフセット拘束。円の変形に合わせて2直線が自動追従する。
+        2直線-1円のオフセット拘束。直線の移動・円の半径変更に合わせて
+        円の中心が自動追従する（Line → Circle）。
     element_profiles : list[ElementProfile]
         縦断線形データ（要素単位）。
     vertical_alignments : list[VerticalAlignment]
@@ -2320,8 +2332,8 @@ class Scene:
         """シーン全体を JSON シリアライズ可能な辞書に変換する。
 
         呼び出し前に :meth:`_fix_duplicate_ids` を実行して ID 重複を修正する。
-        各図形の辞書の ``'id'`` の直後に ``'nickname'`` を挿入して返す。
-        ``offset_constraints`` も含む。
+        各図形の辞書の ``'id'`` の直後に ``'nickname'`` を挿入して返す
+        （ニックネーム未設定の図形には出力しない）。
         Undo スタックへの積み込みとファイル保存の両方で使う。
 
         Returns
@@ -2329,7 +2341,8 @@ class Scene:
         dict
             JSON にシリアライズ可能な辞書。キー:
             ``lines``, ``circles``, ``clothoids``, ``offset_constraints``,
-            ``element_profiles``, ``nicknames``。
+            ``two_line_offset_constraints``, ``element_profiles``,
+            ``vertical_alignments``。
         """
         self._fix_duplicate_ids()  # 保存前に id 重複を修正
 

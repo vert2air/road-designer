@@ -55,6 +55,10 @@ class RightPanel(QWidget, PropBuilderMixin):
         オフセット拘束設定を要求する。引数: ``(line, ci_a, ci_b)``。
     request_clear_offset : Signal(object)
         オフセット拘束解除を要求する。引数: ``line``。
+    request_set_two_line_offset : Signal(object, object, object)
+        2直線-1円オフセット拘束の設定を要求する。引数: ``(ln_a, ln_b, ci)``。
+    request_clear_two_line_offset : Signal(object, object)
+        2直線-1円オフセット拘束の解除を要求する。引数: ``(ln_a, ln_b)``。
     request_add_arcs : Signal(object, list)
         円弧追加を要求する。引数: ``(circle, [Arc, ...])``。
         Arc オブジェクトは arc_start/arc_end が設定済みで
@@ -946,7 +950,7 @@ class RightPanel(QWidget, PropBuilderMixin):
           → その ``[順]`` 候補の直後に ``[道なり]`` 版を追加。
 
         ``[道なり]`` アイテムが選ばれると :meth:`_on_combo_changed` が
-        連鎖処理（:meth:`_road_follow_from`）を呼び出す。
+        連鎖処理（:meth:`_road_follow`）を呼び出す。
 
         Parameters
         ----------

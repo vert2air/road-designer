@@ -475,7 +475,7 @@ class PropBuilderMixin:
         """単一の図形オブジェクトに対するプロパティパネルを構築する。
 
         ニックネームエディタ → 型別プロパティ → 関連図形リスト →
-        縦断設計情報 の順で ``_prop_layout`` に追加する。
+        関連オフセット拘束一覧 → 縦断設計情報 の順で ``_prop_layout`` に追加する。
 
         Parameters
         ----------
@@ -701,7 +701,9 @@ class PropBuilderMixin:
     def _build_line_props(self, ln: Line):
         """直線プロパティパネルを構築して ``_prop_layout`` に追加する。
 
-        参照始点・参照終点の X/Y スピンボックスと方向角（読み取り専用）を表示する。
+        参照始点・参照終点の X/Y スピンボックスと方向角（読み取り専用）、
+        参照点ペアの Copy / Paste ボタン行（:func:`_add_copy_paste_buttons`）
+        を表示する。
         各スピンボックスの初回変更時に ``request_push_undo`` を発行し、
         同一編集セッション中の連続変更は 1 手順として Undo に記録される。
 
@@ -807,7 +809,9 @@ class PropBuilderMixin:
     def _build_circle_props(self, ci: Circle):
         """円プロパティパネルを構築して ``_prop_layout`` に追加する。
 
-        中心 X/Y・半径のスピンボックスを表示する。
+        中心 X/Y・半径のスピンボックスを表示する。円周上に円弧のない
+        空き区間（:meth:`_calc_free_arc_intervals`）がある場合は
+        「円弧を追加」「円弧を全追加」ボタンも表示する。
         各スピンボックスの初回変更時に ``request_push_undo`` を発行し、
         同一編集セッション中の連続変更は 1 手順として Undo に記録される。
         変更後は ``Canvas._propagate_circle`` を経由してクロソイドや
@@ -1123,7 +1127,8 @@ class PropBuilderMixin:
     def _build_segment_props(self, seg: Segment):
         """線分プロパティパネルを構築して ``_prop_layout`` に追加する。
 
-        始点・終点の X/Y 座標と割合 t のスピンボックスを表示する。
+        始点・終点の X/Y 座標と割合 t のスピンボックス、および端点ペアの
+        Copy / Paste ボタン行（:func:`_add_copy_paste_buttons`）を表示する。
         X/Y 入力は直線上に束縛され ``Line.project_t`` で t 値に変換される。
         各スピンボックスの初回変更時に ``request_push_undo`` を発行する。
 
@@ -1822,7 +1827,8 @@ class PropBuilderMixin:
 
         既存の拘束がない場合（未設定）:
 
-        * ``off_a``・``off_b`` のスピンボックス（初期値 0）
+        * ``off_a``・``off_b`` のスピンボックス
+          （初期値は現在の位置関係 ``distance_to(center) - radius`` から算出）
         * 「オフセット拘束を設定」ボタン → ``request_set_offset.emit(ln, ci_a, ci_b)``
 
         Parameters
@@ -1929,7 +1935,8 @@ class PropBuilderMixin:
 
         既存の拘束がない場合（未設定）:
 
-        * ``off_a``・``off_b`` のスピンボックス（初期値 0）
+        * ``off_a``・``off_b`` のスピンボックス
+          （初期値は現在の位置関係 ``distance_to(center) - radius`` から算出）
         * 「オフセット拘束を設定」ボタン
           → ``request_set_two_line_offset.emit(ln_a, ln_b, ci)``
 

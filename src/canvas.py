@@ -103,6 +103,9 @@ class Canvas(QWidget):
         マウス移動のたびにワールド座標 (x, y) を emit する。
     hover_changed : object
         ホバー対象の図形が変わったときに emit される。None は非ホバー。
+    measure_dist_changed : float
+        ラバーバンド選択中の対角ワールド距離 [m] を emit する。
+        非測定時（終了・キャンセル時）は -1 を emit して表示を消す。
 
     Attributes
     ----------
@@ -590,8 +593,16 @@ class Canvas(QWidget):
     def _rebuild_handles(self):
         """選択図形に対応するハンドルを再構築して ``_handles`` リストを更新する。
 
-        クロソイドに吸着（snap）または分割（split）された端点はハンドルから除外する。
+        クロソイドに拘束された端点はハンドルから除外する:
+
+        - snap=True: ``seg.clothoid_start/end``・``arc.clothoid_start/end`` が
+          有効なクロソイド ID を指す端点のみ除外する
+        - snap=False: ``_split_seg_ids`` に含まれる分割線分は両端とも除外する
+          （クロソイドが自動生成した分割線分はユーザーが直接動かせない）
+
         Line の接続共有点（``LineConnection.shared_point``）は重複して追加しない。
+        複数選択時の AABB 変換ハンドルはここでは生成しない
+        （:meth:`_draw_bbox_handles` / :meth:`_hit_bbox` が直接扱う）。
         """
         self._handles.clear()
         seen_connections = set()
@@ -1037,6 +1048,17 @@ class Canvas(QWidget):
 
     # ─── 描画 ────────────────────────────────────────────────
     def paintEvent(self, event):
+        """シーン全体を描画する。
+
+        描画順: グリッド → 参照線 → 線分 → 円 → 円弧 → クロソイド →
+        ラバー線（直線/円モード）→ ラバーバンド選択矩形 →
+        AABB 変換ハンドル（複数選択時）→ ハンドル。
+
+        Parameters
+        ----------
+        event : QPaintEvent
+            PySide6 ペイントイベント。
+        """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor(30, 30, 35))
@@ -1342,17 +1364,19 @@ class Canvas(QWidget):
     def mousePressEvent(self, event):
         """マウスボタン押下イベントを処理する。
 
-        **左ボタン + 選択モード**:
+        **左ボタン + 選択モード**（判定順）:
 
-        1. :meth:`_hit_handle` でハンドルヒット判定。ヒットすれば
+        1. 複数選択中は :meth:`_hit_bbox` で AABB 変換ハンドルを最優先判定。
+           ヒットすれば :meth:`push_undo` 後に ``_bbox_drag_mode`` を設定し、
+           スナップショットと開始時 AABB を記録してドラッグ開始。
+        2. :meth:`_hit_handle` でハンドルヒット判定。ヒットすれば
            :meth:`push_undo` を呼んでからドラッグ対象として ``_drag_obj``
            に設定する（ドラッグ前の状態を Undo スタックに保存）。
-        2. ハンドルなし → :meth:`_hit_object` で図形ヒット判定。
+        3. ハンドルなし → :meth:`_hit_object` で図形ヒット判定。
            ``Shift`` なしでヒット: その図形のみ選択。
            ``Shift`` + ヒット: 選択のトグル。
-           ヒットなし: 選択解除。
-        3. :meth:`_rebuild_handles` → ``selection_changed.emit()``
-        4. パン開始のための ``_pan_start_screen``・``_pan_offset_start`` を記録。
+        4. 図形ヒットなし: ``Shift`` ありならラバーバンド選択を開始、
+           なしならパンを開始。
 
         **左ボタン + 直線モード**: :meth:`_line_click` を呼ぶ。
 
@@ -1439,9 +1463,12 @@ class Canvas(QWidget):
     def mouseMoveEvent(self, event):
         """マウス移動イベントを処理する。
 
-        パン中はオフセットを更新する。ドラッグ中は移動量が 2px を超えた時点で
-        :meth:`_do_drag` を呼ぶ。直線/円モードのラバー線を更新し、
-        ホバー対象を更新して ``hover_changed`` と ``mouse_world_pos`` を emit する。
+        処理優先順: パン → ラバーバンド選択（終点更新 +
+        ``measure_dist_changed`` で対角距離を通知）→ AABB 変換ドラッグ
+        （:meth:`_do_bbox_drag`）→ ハンドルドラッグ（移動量 2px 超で
+        :meth:`_do_drag`）→ 直線/円モードのラバー線とホバー更新。
+        ホバー変化時は ``hover_changed``、移動のたびに ``mouse_world_pos``
+        を emit する。
 
         Parameters
         ----------
@@ -1507,11 +1534,15 @@ class Canvas(QWidget):
     def mouseReleaseEvent(self, event):
         """マウスボタンリリースイベントを処理する。
 
-        **左ボタン（ドラッグ終了）**:
+        **左ボタン（AABB 変換ドラッグ完了）**:
 
-        * ``_drag_obj`` が設定されている場合、``selection_changed.emit()``
-          を発行して右パネルのプロパティを即座に更新してから
-          ``_drag_obj``・``_drag_tag`` をリセットする。
+        * ``_bbox_drag_*`` をリセットし、``scene_changed.emit()`` でコミット
+          してから ``selection_changed.emit()`` で右パネルを更新する。
+
+        **左ボタン（ラバーバンド選択完了）**:
+
+        * :meth:`_complete_rubber_select` の結果を選択に反映し、
+          ``measure_dist_changed.emit(-1.0)`` で距離表示を消す。
 
         **左ボタン（パン終了）**:
 
@@ -1522,6 +1553,12 @@ class Canvas(QWidget):
         * ``_circle_center`` が設定されていれば ``radius = (w - center).length()``
           を計算し、``radius > 1e-3`` のとき :meth:`push_undo` 後に
           :class:`Circle` を生成して Scene に追加する。
+
+        **左ボタン（ハンドルドラッグ完了）**:
+
+        * ``_drag_obj`` が設定されている場合、``selection_changed.emit()``
+          を発行して右パネルのプロパティを即座に更新してから
+          ``_drag_obj``・``_drag_tag`` をリセットする。
 
         **中ボタン**: ``_is_panning = False`` でパンを終了する。
 
@@ -1615,9 +1652,11 @@ class Canvas(QWidget):
     def keyPressEvent(self, event):
         """キー押下イベントを処理する。
 
-        * ``Escape``: 直線/円モードの描画中状態をリセットする。
+        * ``Escape``: 直線モードの連続入力とラバーバンド選択をリセットし、
+          ``measure_dist_changed.emit(-1.0)`` で距離表示を消す。
         * ``Delete``: 選択中の図形を削除する（:meth:`_delete_selected`）。
         * ``Ctrl+Z``: Undo（:meth:`undo`）。
+        * モード切替（S/L/C）はメインウィンドウ側のアクションが処理する。
 
         Parameters
         ----------
@@ -1945,6 +1984,9 @@ class Canvas(QWidget):
                         ただし Clothoid は現在の直線位置に追従させる。
                         oc.feasible が False になるため呼び出し元は
                         視覚的なフィードバックを提供できる。
+
+        末尾で :meth:`_propagate_two_line_offset_constraints` も呼び、
+        TwoLineOffsetConstraint（2直線-1円）への連鎖伝播を行う。
 
         Parameters
         ----------

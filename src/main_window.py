@@ -88,7 +88,7 @@ class MainWindow(QMainWindow):
         self._splitter.setSizes([1100, 300])
 
     def _build_menu(self):
-        """メニューバー（ファイル・表示・ウィンドウ）を構築する。"""
+        """メニューバー（ファイル・編集・表示・縦断線形・3Dビューア）を構築する。"""
         mb = self.menuBar()
 
         # ── ファイル ──────────────────────────────────────────
@@ -585,6 +585,10 @@ class MainWindow(QMainWindow):
     def _do_add_clothoid(self, ln, ci):
         """RightPanel.request_add_clothoid シグナルを受けて Clothoid を生成・追加する。
 
+        既に同じ (ln, ci) のクロソイドが 1 本ある場合は reversed_flag を
+        反転した 2 本目を生成する。snap はデフォルト off（ユーザーが
+        右パネルから個別に on にする）。
+
         Parameters
         ----------
         ln : Line
@@ -674,14 +678,15 @@ class MainWindow(QMainWindow):
         設定手順:
 
         1. 既存拘束の重複チェック（重複なら即リターン）
-        2. :meth:`Canvas.push_undo` で Undo スタックに現在状態を保存
-        3. :class:`OffsetConstraint` を生成して ``line``・``circle_a``・
+        2. :func:`models.detect_constraint_cycle` で循環依存チェック。
+           ループが生まれる場合は警告ダイアログを表示してキャンセル
+        3. :meth:`Canvas.push_undo` で Undo スタックに現在状態を保存
+        4. :class:`OffsetConstraint` を生成して ``line``・``circle_a``・
            ``circle_b`` を設定
-        4. :meth:`OffsetConstraint.calc_offsets_from_current` で
+        5. :meth:`OffsetConstraint.calc_offsets_from_current` で
            ``off_a``・``off_b``・``_eps_a``・``_eps_b`` を算出
-        5. ``scene.offset_constraints`` に追加
-        6. ``scene_changed.emit()`` → ``RightPanel.update_selection()`` で
-           右パネルを更新
+        6. ``scene.offset_constraints`` に追加
+        7. :meth:`_notify_scene_changed` で再描画と右パネル更新
 
         Parameters
         ----------
@@ -747,6 +752,9 @@ class MainWindow(QMainWindow):
         """``request_set_two_line_offset`` シグナルを受けて拘束を新規設定する。
 
         同じ ``({ln_a, ln_b}, ci)`` の組み合わせが既に存在する場合は何もしない。
+        :func:`models.detect_constraint_cycle` で循環依存をチェックし、
+        ループが生まれる場合は警告ダイアログを表示してキャンセルする。
+        設定時は ``calc_offsets_from_current`` で初期オフセットを算出する。
 
         Parameters
         ----------
