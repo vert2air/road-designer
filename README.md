@@ -69,7 +69,8 @@ road_designer/
     ├── test_main.py
     ├── test_spec_gui_ch4.py   # 仕様適合テスト 第4章（-m spec）
     ├── test_spec_gui_ch5.py   # 仕様適合テスト 第5章（-m spec）
-    └── test_spec_gui_ch6.py   # 仕様適合テスト 第6章（-m spec）
+    ├── test_spec_gui_ch6.py   # 仕様適合テスト 第6章（-m spec）
+    └── test_spec_gui_ch8.py   # 仕様適合テスト 第8章（-m spec）
 ```
 
 ## ファイル構成
@@ -168,9 +169,10 @@ uv run pytest
 
 | ファイル | 対象仕様書章 | 件数 |
 |---|---|---|
-| `test_spec_gui_ch4.py` | 第4章 平面線形編集（モード切替・直線/円・削除・Undo） | 23件 |
-| `test_spec_gui_ch5.py` | 第5章 右パネル（マウス座標・プロパティ・削除ダイアログ・ニックネーム） | 21件 |
+| `test_spec_gui_ch4.py` | 第4章 平面線形編集（モード切替・直線/円・ラバーバンド選択・AABB 操作・オフセット拘束・Undo） | 34件 |
+| `test_spec_gui_ch5.py` | 第5章 右パネル（マウス座標・ホバー情報・道なり・Copy/Paste・複数選択パネル・ニックネーム） | 31件 |
 | `test_spec_gui_ch6.py` | 第6章 縦断線形ウィンドウ（モード切替・Undo/Redo） | 20件 |
+| `test_spec_gui_ch8.py` | 第8章 メニュー・ショートカット（初期化保存・マージ・全削除・ID 振り直し・右パネル表示） | 12件 |
 
 ## CI
 
