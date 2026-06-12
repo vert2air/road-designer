@@ -272,3 +272,47 @@ class TestClothoidRefSerialization:
         seg2 = sc2.lines[0].segments[0]
         assert seg2.clothoid_start is None
         assert seg2.clothoid_end is None
+
+
+class TestMergeSkipsConstraintsWithMissingRefs:
+    """マージ元の拘束が参照する図形がマージ対象に含まれない場合、
+    その拘束は追加されない（参照を解決できないため）。"""
+
+    def test_dangling_constraint_not_merged(self):
+        d = {
+            "lines": [],
+            "circles": [],
+            "clothoids": [],
+            "offset_constraints": [
+                {"id": 1, "line_id": 100, "ca_id": 101, "cb_id": 102,
+                 "off_a": 1.0, "off_b": 2.0},
+            ],
+            "two_line_offset_constraints": [
+                {"id": 2, "la_id": 200, "lb_id": 201, "circle_id": 202,
+                 "off_a": 1.0, "off_b": 2.0},
+            ],
+        }
+        sc = Scene()
+        added = sc.merge_from_dict(d)
+        assert added == []
+        assert sc.offset_constraints == []
+        assert sc.two_line_offset_constraints == []
+
+    def test_merge_into_scene_with_existing_circle_and_arc(self):
+        """既存シーンに円・円弧があるとき、その ID も衝突回避の
+        対象になり、全 ID が一意のまま保たれる。"""
+        sc = Scene()
+        ci = Circle(Vec2(0, 0), 5.0, circle_id=3)
+        arc = Arc(ci, 0.0, 1.0, arc_id=4)
+        ci.arcs.append(arc)
+        sc.add_circle(ci)
+
+        src = Scene()
+        ci2 = Circle(Vec2(50, 50), 5.0, circle_id=3)   # 同じ ID
+        arc2 = Arc(ci2, 0.0, 1.0, arc_id=4)
+        ci2.arcs.append(arc2)
+        src.add_circle(ci2)
+        sc.merge_from_dict(src.to_dict())
+        ids = _all_ids(sc)
+        assert len(ids) == len(set(ids))
+        assert len(sc.circles) == 2

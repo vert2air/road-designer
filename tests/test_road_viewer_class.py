@@ -1214,3 +1214,63 @@ class TestPrepareViewerData:
                 for e in result["elem_graph"]
             )
             assert has_ref
+
+
+# ═══════════════════════════════════════════════════════════════
+#   _curvature_at（符号付き曲率の純粋計算）
+# ═══════════════════════════════════════════════════════════════
+
+class TestCurvatureAt:
+    """[仕様] 左曲がりを正・右曲がりを負とする符号付き曲率 [1/m]。
+
+    期待値は円弧の幾何（曲率 = 1/半径）から手計算する。
+    """
+
+    @staticmethod
+    def _circle_cl(radius=50.0, left=True, n=50, dtheta=0.04):
+        """進行方向 +x から始まる半径 radius の円弧中心線。
+
+        left=True なら反時計回り（左カーブ）。
+        x = R·sinθ, y = ±R·(1−cosθ), dist = R·θ
+        """
+        cl = []
+        for i in range(n + 1):
+            th = i * dtheta
+            x = radius * math.sin(th)
+            y = radius * (1.0 - math.cos(th))
+            if not left:
+                y = -y
+            cl.append((x, y, 0.0, radius * th))
+        return cl
+
+    def test_straight_line_curvature_zero(self):
+        from road_viewer import RoadViewer
+        cl = _cl(n=20)   # y 方向直線
+        assert RoadViewer._curvature_at(cl, 50.0) == pytest.approx(
+            0.0, abs=1e-9)
+
+    def test_left_circle_positive_inverse_radius(self):
+        from road_viewer import RoadViewer
+        cl = self._circle_cl(radius=50.0, left=True)
+        kappa = RoadViewer._curvature_at(cl, 50.0)
+        assert kappa == pytest.approx(1.0 / 50.0, rel=0.05)
+
+    def test_right_circle_negative_inverse_radius(self):
+        from road_viewer import RoadViewer
+        cl = self._circle_cl(radius=50.0, left=False)
+        kappa = RoadViewer._curvature_at(cl, 50.0)
+        assert kappa == pytest.approx(-1.0 / 50.0, rel=0.05)
+
+    def test_tighter_circle_larger_curvature(self):
+        from road_viewer import RoadViewer
+        cl_small = self._circle_cl(radius=20.0, left=True)
+        cl_large = self._circle_cl(radius=100.0, left=True)
+        k_small = RoadViewer._curvature_at(cl_small, 20.0)
+        k_large = RoadViewer._curvature_at(cl_large, 100.0)
+        assert k_small > k_large > 0
+
+    def test_too_few_points_returns_zero(self):
+        from road_viewer import RoadViewer
+        assert RoadViewer._curvature_at([], 0.0) == 0.0
+        assert RoadViewer._curvature_at(
+            [(0, 0, 0, 0), (1, 0, 0, 1)], 0.5) == 0.0

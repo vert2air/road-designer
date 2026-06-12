@@ -272,3 +272,291 @@ class TestFollowPolylineConnection:
         # A は (5,0) 平行移動: (5,0)-(15,0)
         assert (la.ref_start.x, la.ref_start.y) == (5, 0)
         assert (la.ref_end.x, la.ref_end.y) == (15, 0)
+
+
+class TestHitBbox:
+    """_hit_bbox のヒット判定（頂点 → 対角線 → 辺の優先順）。
+
+    キャンバスは scale=1, offset=(500,500)。
+    AABB はワールド (0,-50)-(150,50) → スクリーン四隅
+    TL(500,450)・TR(650,450)・BR(650,550)・BL(500,550)。
+    """
+
+    @staticmethod
+    def _setup(c, sc):
+        ln, _ = _add_line_with_segment(sc, (0, 0), (10, 0))
+        ci = Circle(Vec2(100, 0), 50.0)
+        sc.add_circle(ci)
+        c._selected = [ln, ci]
+        return ln, ci
+
+    def test_vertex_hit(self, make_canvas_qt):
+        c, sc = make_canvas_qt()
+        self._setup(c, sc)
+        assert c._hit_bbox(Vec2(500, 450)) == 'vertex_0'   # TL
+        assert c._hit_bbox(Vec2(650, 550)) == 'vertex_2'   # BR
+
+    def test_edge_hit_on_top_edge(self, make_canvas_qt):
+        c, sc = make_canvas_qt()
+        self._setup(c, sc)
+        # 上辺の中点（対角線から十分離れている）
+        assert c._hit_bbox(Vec2(575, 450)) == 'edge_0'
+
+    def test_diagonal_hit(self, make_canvas_qt):
+        c, sc = make_canvas_qt()
+        self._setup(c, sc)
+        # TL→BR 対角線上 t=0.3 の点 (545, 480)
+        assert c._hit_bbox(Vec2(545, 480)) == 'diagonal'
+
+    def test_miss_returns_none(self, make_canvas_qt):
+        c, sc = make_canvas_qt()
+        self._setup(c, sc)
+        assert c._hit_bbox(Vec2(300, 300)) is None
+
+    def test_single_selection_returns_none(self, make_canvas_qt):
+        c, sc = make_canvas_qt()
+        ln, _ = _add_line_with_segment(sc, (0, 0), (10, 0))
+        c._selected = [ln]
+        assert c._hit_bbox(Vec2(500, 500)) is None
+
+
+class TestDoBboxDrag:
+    """_do_bbox_drag のモード別フルパイプライン。
+
+    AABB はワールド (0,-50)-(150,50)、中心 (75, 0)。
+    """
+
+    @staticmethod
+    def _setup_drag(c, sc, mode, start_w):
+        ln, _ = _add_line_with_segment(sc, (0, 0), (10, 0))
+        ci = Circle(Vec2(100, 0), 50.0)
+        sc.add_circle(ci)
+        c._selected = [ln, ci]
+        c._bbox_drag_mode = mode
+        c._bbox_drag_start_w = Vec2(*start_w)
+        c._bbox_drag_snapshot = c._snapshot_selected()
+        c._bbox_drag_aabb = c._selection_aabb()
+        return ln, ci
+
+    def test_edge_mode_translates(self, make_canvas_qt):
+        c, sc = make_canvas_qt()
+        ln, ci = self._setup_drag(c, sc, 'edge_0', (0, 0))
+        c._do_bbox_drag(Vec2(3, 4))
+        assert (ln.ref_start.x, ln.ref_start.y) == (3, 4)
+        assert (ci.center.x, ci.center.y) == (103, 4)
+
+    def test_vertex_mode_scales_by_max_ratio(self, make_canvas_qt):
+        """頂点 TR(150,50) を (225,0) へ → fx=150/75=2, fy=0 →
+        factor=max=2。中心 (75,0) 基準で 2 倍。"""
+        c, sc = make_canvas_qt()
+        ln, ci = self._setup_drag(c, sc, 'vertex_1', (150, 50))
+        c._do_bbox_drag(Vec2(225, 0))
+        assert ln.ref_start.x == pytest.approx(-75)
+        assert ln.ref_end.x == pytest.approx(-55)
+        assert ci.center.x == pytest.approx(125)
+        assert ci.radius == pytest.approx(100)
+
+    def test_diagonal_mode_rotates(self, make_canvas_qt):
+        """開始点 TR(150,50) を中心周り 90° の位置 (25,75) へ →
+        全体が中心 (75,0) 基準で 90° 回転。"""
+        c, sc = make_canvas_qt()
+        ln, ci = self._setup_drag(c, sc, 'diagonal', (150, 50))
+        # (150,50)-中心(75,0) = (75,50) → 90°回転 (-50,75) → (25,75)
+        c._do_bbox_drag(Vec2(25, 75))
+        assert ln.ref_start.x == pytest.approx(75)
+        assert ln.ref_start.y == pytest.approx(-75)
+        assert ci.center.x == pytest.approx(75)
+        assert ci.center.y == pytest.approx(25)
+        assert ci.radius == pytest.approx(50)   # 回転で半径不変
+
+    def test_no_mode_is_noop(self, make_canvas_qt):
+        c, sc = make_canvas_qt()
+        ln, ci = self._setup_drag(c, sc, None, (0, 0))
+        c._bbox_drag_mode = None
+        c._do_bbox_drag(Vec2(100, 100))
+        assert (ln.ref_start.x, ln.ref_start.y) == (0, 0)
+
+
+class TestSelectionAabbVariants:
+    """_selection_aabb の図形タイプ別の寄与点。"""
+
+    def test_empty_selection_returns_none(self, make_canvas_qt):
+        c, _ = make_canvas_qt()
+        c._selected = []
+        assert c._selection_aabb() is None
+
+    def test_line_without_segments_uses_refs(self, make_canvas_qt):
+        c, sc = make_canvas_qt()
+        ln = Line(Vec2(2, 3), Vec2(12, 7))
+        sc.add_line(ln)
+        c._selected = [ln]
+        assert c._selection_aabb() == (2, 3, 12, 7)
+
+    def test_segment_direct_selection(self, make_canvas_qt):
+        c, sc = make_canvas_qt()
+        ln, seg = _add_line_with_segment(sc, (0, 0), (10, 0))
+        c._selected = [seg]
+        assert c._selection_aabb() == (0, 0, 10, 0)
+
+    def test_arc_contributes_circle_extent(self, make_canvas_qt):
+        c, sc = make_canvas_qt()
+        ci = Circle(Vec2(0, 0), 5.0)
+        arc = Arc(ci, 0.0, 1.0)
+        ci.arcs.append(arc)
+        sc.add_circle(ci)
+        c._selected = [arc]
+        assert c._selection_aabb() == (-5, -5, 5, 5)
+
+
+class TestEscapeClearsRubberSelect:
+    """Esc キーでラバーバンド選択がキャンセルされる（仕様 4.5）。"""
+
+    def test_escape_resets_and_clears_measure(
+            self, make_canvas_qt, qtbot):
+        from PySide6.QtCore import Qt
+        c, sc = make_canvas_qt()
+        c._rubber_select_start = Vec2(100, 100)
+        c._rubber_select_end = Vec2(200, 200)
+        with qtbot.waitSignal(c.measure_dist_changed,
+                              timeout=1000) as blocker:
+            qtbot.keyClick(c, Qt.Key.Key_Escape)
+        assert blocker.args[0] == -1.0
+        assert c._rubber_select_start is None
+        assert c._rubber_select_end is None
+
+
+class TestPropagateFromPublicEntries:
+    """propagate_from_line / propagate_from_circle の公開伝播。"""
+
+    @staticmethod
+    def _setup_tloc(sc):
+        from models import TwoLineOffsetConstraint
+        la = Line(Vec2(0, 0), Vec2(10, 0))
+        lb = Line(Vec2(0, 0), Vec2(0, 10))
+        ci = Circle(Vec2(13, 12), 10.0)
+        sc.add_line(la)
+        sc.add_line(lb)
+        sc.add_circle(ci)
+        oc = TwoLineOffsetConstraint()
+        oc.line_a, oc.line_b, oc.circle = la, lb, ci
+        oc.calc_offsets_from_current()
+        sc.two_line_offset_constraints.append(oc)
+        return la, lb, ci
+
+    def test_propagate_from_line_moves_circle(
+            self, make_canvas_qt, qtbot):
+        c, sc = make_canvas_qt()
+        la, _, ci = self._setup_tloc(sc)
+        la.ref_start = Vec2(0, 5)
+        la.ref_end = Vec2(10, 5)
+        with qtbot.waitSignal(c.scene_changed, timeout=1000):
+            c.propagate_from_line(la)
+        assert ci.center.y == pytest.approx(17.0)
+        assert ci.center.x == pytest.approx(13.0)
+
+    def test_propagate_from_circle_radius_change(
+            self, make_canvas_qt, qtbot):
+        """半径変更 → 円中心が縁オフセットを維持する位置へ動く。"""
+        c, sc = make_canvas_qt()
+        _, _, ci = self._setup_tloc(sc)
+        ci.radius = 5.0
+        with qtbot.waitSignal(c.scene_changed, timeout=1000):
+            c.propagate_from_circle(ci)
+        assert ci.center.x == pytest.approx(8.0)
+        assert ci.center.y == pytest.approx(7.0)
+
+
+class TestRubberSelectDragPipeline:
+    """Shift+ドラッグの press → move → release フルパイプライン。
+
+    scale=1, offset=(500,500): ワールド (x,y) = スクリーン (x+500, 500−y)。
+    """
+
+    def test_full_drag_selects_and_measures(self, make_canvas_qt, qtbot):
+        from PySide6.QtCore import Qt, QPoint
+        from PySide6.QtTest import QTest
+        c, sc = make_canvas_qt()
+        ln, seg = _add_line_with_segment(sc, (0, 0), (10, 0))
+
+        measured = []
+        c.measure_dist_changed.connect(measured.append)
+        # 図形のヒット範囲外（直線から 200 ワールド単位上）から
+        # 線分全体を囲むドラッグ: ワールド (-100,200) → (12,-2)
+        QTest.mousePress(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ShiftModifier,
+                         QPoint(400, 300))
+        assert c._rubber_select_start is not None
+        QTest.mouseMove(c, QPoint(512, 502))
+        QTest.mouseRelease(c, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.ShiftModifier,
+                           QPoint(512, 502))
+        # 選択結果: 線分とその親直線
+        assert seg in c._selected
+        assert ln in c._selected
+        # 測距: ドラッグ中に正の距離 → 終了で −1
+        assert any(d > 0 for d in measured)
+        assert measured[-1] == -1.0
+        assert c._rubber_select_start is None
+
+    def test_drag_paints_rubber_rect(self, make_canvas_qt, qtbot):
+        """ドラッグ中の再描画で _draw_rubber_select が実行される。"""
+        c, sc = make_canvas_qt()
+        c._rubber_select_start = Vec2(450, 450)
+        c._rubber_select_end = Vec2(550, 550)
+        c.repaint()   # 例外なく矩形+対角線が描画される
+        assert True
+
+
+class TestBboxDragEventPipeline:
+    """AABB ハンドルの press → move → release フルパイプライン。
+
+    AABB はワールド (0,-50)-(150,50) → スクリーン TL(500,450)。
+    """
+
+    @staticmethod
+    def _setup(c, sc):
+        ln, _ = _add_line_with_segment(sc, (0, 0), (10, 0))
+        ci = Circle(Vec2(100, 0), 50.0)
+        sc.add_circle(ci)
+        c._selected = [ln, ci]
+        return ln, ci
+
+    def test_press_on_edge_starts_drag_and_release_commits(
+            self, make_canvas_qt, qtbot):
+        from PySide6.QtCore import Qt, QPoint
+        from PySide6.QtTest import QTest
+        c, sc = make_canvas_qt()
+        ln, ci = self._setup(c, sc)
+
+        # 上辺の中点 (575,450) でプレス → AABB ドラッグ開始
+        QTest.mousePress(c, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier,
+                         QPoint(575, 450))
+        assert c._bbox_drag_mode == 'edge_0'
+        assert len(c._undo_stack) == 1   # ドラッグ開始時に push_undo
+
+        # ワールド (75,50)→(78,54) へ move = Δ(3,4)
+        QTest.mouseMove(c, QPoint(578, 446))
+        assert ln.ref_start.x == pytest.approx(3)
+        assert ln.ref_start.y == pytest.approx(4)
+        assert ci.center.x == pytest.approx(103)
+
+        emitted = []
+        c.scene_changed.connect(lambda: emitted.append(1))
+        QTest.mouseRelease(c, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.NoModifier,
+                           QPoint(578, 446))
+        assert c._bbox_drag_mode is None
+        assert emitted   # コミット通知
+        # Undo でドラッグ前に戻る
+        c.undo()
+        restored = c.scene.lines[0]
+        assert restored.ref_start.x == pytest.approx(0)
+        assert restored.ref_start.y == pytest.approx(0)
+
+    def test_paint_with_multiselect_draws_bbox(self, make_canvas_qt):
+        """複数選択時の再描画で _draw_bbox_handles が実行される。"""
+        c, sc = make_canvas_qt()
+        self._setup(c, sc)
+        c.repaint()
+        assert True
