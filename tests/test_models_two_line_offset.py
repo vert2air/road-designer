@@ -196,13 +196,6 @@ class TestSerialization:
         assert oc2.off_a == pytest.approx(2.0)
         assert oc2.off_b == pytest.approx(3.0)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="既知バグ: ロード後の初回 solve() が "
-               "calc_offsets_from_current() で保存済み off_a/off_b を"
-               "現在ジオメトリから再計算して上書きするため、"
-               "ロード後最初の直線移動に円が追従しない。"
-               "OffsetConstraint は同状況で保存値を温存しており不整合。")
     def test_roundtrip_then_solve_behaves_identically(self):
         """ロード後（_eps 未設定）でも直線移動への追従が正しい。"""
         line_a, line_b, circle, oc = _make_xy_lines_and_circle()

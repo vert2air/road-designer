@@ -149,12 +149,6 @@ class TestMergeFromDict:
         assert clo.line in sc.lines
         assert clo.circle in sc.circles
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="既知バグ: merge_from_dict は _extract_nick を "
-               "_resolve_id より先に呼ぶため、ID 衝突時にニックネームが"
-               "元 ID のまま登録され、既存の無関係な図形に付け替わる。"
-               "マージされた図形自身はニックネームを失う。")
     def test_nickname_transferred_to_new_id(self):
         d = self._source_dict()
         sc = Scene()

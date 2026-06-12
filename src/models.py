@@ -1860,6 +1860,11 @@ class TwoLineOffsetConstraint:
 
         ここで ``c = n · ref_start``（直線の切片）、``ε`` は設定時に固定した符号。
 
+        ``ε`` が未設定（0、ファイルロード直後）のときは現在の円中心の
+        ``signed_dist`` 符号から ``ε`` のみを決定する。保存済みの
+        ``off_a``・``off_b`` は上書きしない（上書きするとロード後最初の
+        直線移動に円が追従しなくなる）。
+
         2直線が平行（行列式 < 1e-9）のときは ``feasible=False`` を設定して
         ``False`` を返す（円中心は変更しない）。
 
@@ -1872,7 +1877,12 @@ class TwoLineOffsetConstraint:
             self.feasible = False
             return False
         if self._eps_a == 0 or self._eps_b == 0:
-            self.calc_offsets_from_current()
+            # ε のみ現在位置から決定する。off_a/off_b は保存値を温存する
+            c = self.circle.center
+            sa = self.line_a.signed_dist(c)
+            sb = self.line_b.signed_dist(c)
+            self._eps_a = +1 if sa >= 0 else -1
+            self._eps_b = +1 if sb >= 0 else -1
 
         d_a = self.line_a.direction
         d_b = self.line_b.direction
@@ -2491,9 +2501,11 @@ class Scene:
         id_remap: dict[int, int] = {}
 
         for ld in d.get("lines", []):
-            _extract_nick(ld)
             original_id = ld.get("id")
             _resolve_id(ld)
+            # ニックネームは ID 振り直し後に登録する
+            # （元 ID で登録すると既存の無関係な図形に付け替わる）
+            _extract_nick(ld)
             if original_id is not None and ld["id"] != original_id:
                 id_remap[original_id] = ld["id"]
             for sd in ld.get("segments", []):
@@ -2507,9 +2519,9 @@ class Scene:
             added.append(ln)
 
         for cd in d.get("circles", []):
-            _extract_nick(cd)
             original_id = cd.get("id")
             _resolve_id(cd)
+            _extract_nick(cd)
             if original_id is not None and cd["id"] != original_id:
                 id_remap[original_id] = cd["id"]
             for ad in cd.get("arcs", []):
@@ -2522,8 +2534,8 @@ class Scene:
             added.append(ci)
 
         for cd in d.get("clothoids", []):
-            _extract_nick(cd)
             _resolve_id(cd)
+            _extract_nick(cd)
             ln = lines_by_id.get(cd["line_id"])
             ci = circles_by_id.get(cd["circle_id"])
             if ln and ci:
