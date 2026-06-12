@@ -9,7 +9,6 @@ CI では -m 'not spec' により除外されるため、開発者が手動で�
 """
 import pytest
 from PySide6.QtCore import QPoint
-from PySide6.QtTest import QTest
 
 pytestmark = pytest.mark.spec
 
@@ -439,10 +438,17 @@ class TestSpec5_1_HoverInfo:
         w.scene.add_line(ln)
         w.show()
         qtbot.waitExposed(c)
-        # ワールド (50,0) = スクリーン (550,500) へ移動
-        QTest.mouseMove(c, QPoint(549, 500))
-        QTest.mouseMove(c, QPoint(550, 500))
-        qtbot.wait(50)
+        # ワールド (50,0) = スクリーン (550,500) へのマウス移動イベント。
+        # QTest.mouseMove は実カーソル位置に依存して flaky なため、
+        # QMouseEvent を直接送信する（mouseMoveEvent 経由は同じ）。
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication
+        ev = QMouseEvent(
+            QEvent.Type.MouseMove, QPointF(550, 500),
+            Qt.MouseButton.NoButton, Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier)
+        QApplication.sendEvent(c, ev)
         assert w._right_panel._lbl_hovered.text() != ""
 
 
@@ -623,3 +629,328 @@ class TestSpec5_6_MultiSelectPanel:
         # request_select → MainWindow → Canvas.set_selection の配線確認
         assert all(ln not in w._canvas._selected for ln in lines)
         assert len(w._canvas._selected) == 3
+
+
+# ─── 5.3 Paste の変換オプション（右クリックメニュー） ────────────
+
+class TestSpec5_3_PasteTransform:
+    """5.3 Copy / Paste — 右クリックの変換ペースト
+
+    仕様書より:
+        Paste の右クリックメニューでは、原点を基準とした回転
+        （90°/180°/−90°）・線対称を選んで貼り付けられる。
+    """
+
+    def test_right_click_rot90_pastes_rotated(self, make_window_qt):
+        """[5.3] 90° 回転を選ぶと (x,y)→(−y,x) で貼り付く。"""
+        from unittest.mock import patch, MagicMock
+        from PySide6.QtWidgets import QPushButton
+        from models import Line, Segment, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        rp = w._right_panel
+        la = Line(Vec2(1, 2), Vec2(31, 42))
+        la.segments.append(Segment(la, 0.0, 1.0))
+        lb = Line(Vec2(0, 0), Vec2(10, 0))
+        lb.segments.append(Segment(lb, 0.0, 1.0))
+        w.scene.add_line(la)
+        w.scene.add_line(lb)
+
+        rp.update_selection([la], w.scene)
+        [b for b in rp.findChildren(QPushButton)
+         if "Copy" in b.text()][0].click()
+
+        rp.update_selection([lb], w.scene)
+        paste_btn = [b for b in rp.findChildren(QPushButton)
+                     if "Paste" in b.text()][0]
+
+        # Qt の C++ メソッドは patch.object でフックできないため、
+        # _prop_builder が参照する QMenu クラスごと差し替えて
+        # 「最初の項目（90° 回転）を選んだ」ことにする
+        class _FakeAction:
+            def data(self):
+                return "rot90"
+
+        class _FakeMenu:
+            def addAction(self, *a):
+                return MagicMock()
+
+            def addSeparator(self):
+                pass
+
+            def exec(self, *a):
+                return _FakeAction()
+
+        with patch('_prop_builder.QMenu', _FakeMenu):
+            paste_btn.customContextMenuRequested.emit(QPoint(0, 0))
+        # (1,2)→(−2,1)、(31,42)→(−42,31)
+        assert (lb.ref_start.x, lb.ref_start.y) == (-2, 1)
+        assert (lb.ref_end.x, lb.ref_end.y) == (-42, 31)
+
+    def test_right_click_cancel_does_nothing(self, make_window_qt):
+        """[5.3] キャンセルを選ぶと貼り付けされない。"""
+        from unittest.mock import patch, MagicMock
+        from PySide6.QtWidgets import QPushButton
+        from models import Line, Segment, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        rp = w._right_panel
+        la = Line(Vec2(1, 2), Vec2(31, 42))
+        la.segments.append(Segment(la, 0.0, 1.0))
+        lb = Line(Vec2(0, 0), Vec2(10, 0))
+        lb.segments.append(Segment(lb, 0.0, 1.0))
+        w.scene.add_line(la)
+        w.scene.add_line(lb)
+        rp.update_selection([la], w.scene)
+        [b for b in rp.findChildren(QPushButton)
+         if "Copy" in b.text()][0].click()
+        rp.update_selection([lb], w.scene)
+        paste_btn = [b for b in rp.findChildren(QPushButton)
+                     if "Paste" in b.text()][0]
+
+        # 「キャンセル」（data=None のアクション）を選んだことにする
+        class _CancelAction:
+            def data(self):
+                return None
+
+        class _FakeMenu:
+            def addAction(self, *a):
+                return MagicMock()
+
+            def addSeparator(self):
+                pass
+
+            def exec(self, *a):
+                return _CancelAction()
+
+        with patch('_prop_builder.QMenu', _FakeMenu):
+            paste_btn.customContextMenuRequested.emit(QPoint(0, 0))
+        assert (lb.ref_start.x, lb.ref_start.y) == (0, 0)
+
+
+# ─── 5.9 ニックネームの GUI 編集 ─────────────────────────────────
+
+class TestSpec5_9_NicknameEditor:
+    """5.9 ニックネーム管理 — プロパティパネルからの編集
+
+    仕様書より:
+        すべての図形（直線・線分・円・円弧・クロソイド）に任意の
+        ニックネームを設定できる。
+    """
+
+    def test_typing_in_editor_sets_nickname(self, make_window_qt):
+        """[5.9] エディタに入力すると scene に即時反映される。"""
+        from PySide6.QtWidgets import QLineEdit
+        from models import Line, Segment, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        rp = w._right_panel
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        ln.segments.append(Segment(ln, 0.0, 1.0))
+        w.scene.add_line(ln)
+        rp.update_selection([ln], w.scene)
+        edits = rp._prop_widget.findChildren(QLineEdit)
+        assert edits, "ニックネームエディタが見つからない"
+        edits[0].setText("本線")
+        assert w.scene.get_nickname(ln.id) == "本線"
+
+    def test_clearing_editor_removes_nickname(self, make_window_qt):
+        """[5.9] 空文字にするとニックネームが削除される。"""
+        from PySide6.QtWidgets import QLineEdit
+        from models import Line, Segment, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        rp = w._right_panel
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        ln.segments.append(Segment(ln, 0.0, 1.0))
+        w.scene.add_line(ln)
+        w.scene.set_nickname(ln.id, "旧名")
+        rp.update_selection([ln], w.scene)
+        edits = rp._prop_widget.findChildren(QLineEdit)
+        edits[0].setText("")
+        assert w.scene.get_nickname(ln.id) is None
+
+
+# ─── 5.3 線分の t 値入力 ─────────────────────────────────────────
+
+class TestSpec5_3_SegmentTInput:
+    """5.3 図形のプロパティ表示・編集 — 線分の割合 t 入力
+
+    仕様書より:
+        線分: 始点・終点の X/Y 座標と割合 t（数値入力、直線上に束縛）。
+    """
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="既知バグ: _build_segment_props の sb_t（t 値スピン"
+               "ボックス）が生成・シグナル接続されるだけでレイアウトに"
+               "追加されておらず、GUI から t を数値入力できない"
+               "（仕様 5.3 違反。lbl_t ラベルのみ表示されている）。")
+    def test_t_spinbox_moves_endpoint(self, make_window_qt):
+        """[5.3] t スピンボックスの変更で端点が直線上を移動する。"""
+        from PySide6.QtWidgets import QDoubleSpinBox
+        from models import Line, Segment, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        rp = w._right_panel
+        ln = Line(Vec2(0, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        w.scene.add_line(ln)
+        rp.update_selection([seg], w.scene)
+        # t 入力は範囲 [0,1] のスピンボックス
+        t_boxes = [sb for sb in rp.findChildren(QDoubleSpinBox)
+                   if sb.maximum() == 1.0]
+        assert len(t_boxes) >= 2, "t スピンボックスが見つからない"
+        t_boxes[0].setValue(0.25)   # 始点側
+        assert seg.t_start == pytest.approx(0.25)
+        # 端点座標は直線上 (25, 0)
+        assert seg.start.x == pytest.approx(25.0)
+        assert seg.start.y == pytest.approx(0.0)
+
+
+# ─── 5.3 クロソイドの接合確認表示 ────────────────────────────────
+
+class TestSpec5_3_ClothoidContactMatch:
+    """5.3 クロソイドのプロパティ — 円弧端点との一致確認表示
+
+    クロソイドの円側接点と円弧端点の距離を表示する
+    （左カーブ→arc.start、右カーブ→arc.end と比較）。
+    """
+
+    @staticmethod
+    def _clothoid_with_arc(w, left=True):
+        from models import Line, Segment, Circle, Clothoid, Vec2
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ln.segments.append(Segment(ln, 0.0, 1.0))
+        w.scene.add_line(ln)
+        cy = 30.0 if left else -30.0
+        ci = Circle(Vec2(0, cy), 10.0)
+        w.scene.add_circle(ci)
+        # snap_arc=True で円弧が自動生成され、端点が接点に一致する
+        clo = Clothoid(ln, ci, snap_segment=False, snap_arc=True)
+        w.scene.add_clothoid(clo)
+        assert clo.is_valid and ci.arcs
+        return clo
+
+    def test_left_curve_shows_arc_start_match(self, make_window_qt):
+        """[5.3] 左カーブは arc.start との距離（一致）を表示する。"""
+        from PySide6.QtWidgets import QLabel
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        clo = self._clothoid_with_arc(w, left=True)
+        w._right_panel.update_selection([clo], w.scene)
+        labels = [lb.text() for lb in
+                  w._right_panel._prop_widget.findChildren(QLabel)]
+        match = [t for t in labels if "arc.start" in t]
+        assert match, "arc.start との一致確認が表示されていない"
+        assert "0.0000" in match[0]   # snap 済みなので距離ほぼ 0
+
+    def test_right_curve_shows_arc_end_match(self, make_window_qt):
+        """[5.3] 右カーブは arc.end との距離を表示する。"""
+        from PySide6.QtWidgets import QLabel
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        clo = self._clothoid_with_arc(w, left=False)
+        w._right_panel.update_selection([clo], w.scene)
+        labels = [lb.text() for lb in
+                  w._right_panel._prop_widget.findChildren(QLabel)]
+        assert any("arc.end" in t for t in labels)
+
+
+# ─── 2.3 円弧の結合 — 束縛端点の拒否 ─────────────────────────────
+
+class TestSpec2_3_ArcMergeBlocked:
+    """2.3 円弧の結合操作 — snap により束縛されている端点は結合できない
+
+    仕様書より:
+        snap により束縛されている端点は結合できない。
+    """
+
+    def test_blocked_endpoint_shows_warning_and_keeps_arcs(
+            self, make_window_qt):
+        """[2.3] 束縛端点ペアで「結合する」→ 警告して結合しない。
+
+        snap_arc=True のクロソイドが自動生成した円弧の端点（接点）は
+        束縛されている。接点同士が最近接（距離 0）の端点ペアになる
+        ように 2 本目の円弧を配置し、デフォルト選択（最近接ペア）で
+        結合を試みる。
+        """
+        import math
+        from unittest.mock import patch
+        from PySide6.QtWidgets import QPushButton
+        from models import Line, Segment, Circle, Arc, Clothoid, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ln.segments.append(Segment(ln, 0.0, 1.0))
+        w.scene.add_line(ln)
+        ci = Circle(Vec2(0, 30), 10.0)
+        w.scene.add_circle(ci)
+        clo = Clothoid(ln, ci, snap_segment=True, snap_arc=True)
+        w.scene.add_clothoid(clo)
+        assert clo.is_valid and len(ci.arcs) == 1
+        arc_a = ci.arcs[0]   # 自動生成された弧（接点端点は束縛済み）
+        # 接点角度で終わる 2 本目の弧 → 接点同士が距離 0 の最近接ペア
+        contact_ang = math.atan2(clo._circle_pt.y - ci.center.y,
+                                 clo._circle_pt.x - ci.center.x)
+        arc_b = Arc(ci, contact_ang - 0.8, contact_ang)
+        ci.arcs.append(arc_b)
+
+        w._right_panel.update_selection([arc_a, arc_b], w.scene)
+        btns = [b for b in w._right_panel.findChildren(QPushButton)
+                if b.text() == "結合する"]
+        assert btns, "結合ボタンが見つからない"
+        # ペアは（非ブロック優先・距離順）で並ぶため、束縛ペア
+        # （接点同士 = 距離 0.0）をコンボで明示的に選択する
+        from PySide6.QtWidgets import QComboBox
+        combos = [cb for cb in w._right_panel.findChildren(QComboBox)
+                  if any("d=0.0" in cb.itemText(i)
+                         for i in range(cb.count()))]
+        assert combos, "結合ペアのコンボが見つからない"
+        cb = combos[0]
+        idx = next(i for i in range(cb.count())
+                   if "d=0.0" in cb.itemText(i))
+        cb.setCurrentIndex(idx)
+        with patch('PySide6.QtWidgets.QMessageBox.warning') as mock_warn:
+            btns[0].click()
+        mock_warn.assert_called_once()
+        assert len(ci.arcs) == 2   # 結合されていない
+
+
+# ─── 5.2 クロソイド接点を介した隣接候補 ──────────────────────────
+
+class TestSpec5_2_ClothoidAdjacency:
+    """5.2 図形選択コンボボックス — クロソイド接点の隣接
+
+    仕様書より:
+        2つ目: 1つ目の両端点に隣接する全図形を先頭に表示。
+        （クロソイドの接点は直接接点として隣接扱いになる）
+    """
+
+    def test_segment_adjacent_includes_clothoid(self, make_window_qt):
+        """[5.2] 線分を選ぶと接点で繋がるクロソイドが候補に出る。"""
+        from models import Line, Segment, Circle, Clothoid, Vec2
+        w = make_window_qt()
+        w._set_right_panel_visible(True)
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        w.scene.add_line(ln)
+        ci = Circle(Vec2(0, 30), 10.0)
+        w.scene.add_circle(ci)
+        clo = Clothoid(ln, ci, snap_segment=True, snap_arc=True)
+        w.scene.add_clothoid(clo)
+        assert clo.is_valid
+
+        rp = w._right_panel
+        rp.update_selection([seg], w.scene)
+        cb2 = rp._nick_combos[1]
+        items = [cb2.itemText(i) for i in range(cb2.count())]
+        # セパレータ（空文字）より前の高優先候補にクロソイドが含まれる
+        try:
+            sep = items.index("")
+        except ValueError:
+            sep = len(items)
+        high = items[:sep]
+        assert any("クロソイド" in t for t in high), high

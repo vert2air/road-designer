@@ -316,3 +316,80 @@ class TestMergeSkipsConstraintsWithMissingRefs:
         ids = _all_ids(sc)
         assert len(ids) == len(set(ids))
         assert len(sc.circles) == 2
+
+
+class TestClothoidSplitInnerBoundary:
+    """snap=off の接点が既存の内端境界に一致するとき、境界を挟む
+    両側の図形に clothoid 整数参照が設定される（詳細設計書 1.9）。
+    """
+
+    @staticmethod
+    def _valid_geometry():
+        """有効クロソイド（d=30 > R=10）の直線と円を作る。"""
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ci = Circle(Vec2(0, 30), 10.0)
+        return ln, ci
+
+    def test_segment_boundary_marks_both_sides(self):
+        """接点 t で隣接する 2 線分の境界 → 両線分に ID が付く。"""
+        ln, ci = self._valid_geometry()
+        # 接点 t を先に求める（線分なしで生成 → 分割は起きない）
+        probe = Clothoid(ln, ci)
+        assert probe.is_valid
+        t_x = ln.project_t(probe._line_pt)
+        assert 0.0 < t_x < 1.0
+
+        # 接点ちょうどで隣接する 2 線分を作って再計算
+        seg1 = Segment(ln, 0.0, t_x)
+        seg2 = Segment(ln, t_x, 1.0)
+        ln.segments.extend([seg1, seg2])
+        probe.compute()
+        # 境界の両側に同じクロソイド ID が設定される
+        assert seg1.clothoid_end == probe.id
+        assert seg2.clothoid_start == probe.id
+        # 分割は発生しない（線分 2 本のまま）
+        assert len(ln.segments) == 2
+
+    def test_arc_boundary_marks_both_sides(self):
+        """接点角度で隣接する 2 円弧の境界 → 両円弧に ID が付く。"""
+        import math
+        ln, ci = self._valid_geometry()
+        probe = Clothoid(ln, ci)
+        assert probe.is_valid
+        ang = math.atan2(probe._circle_pt.y - ci.center.y,
+                         probe._circle_pt.x - ci.center.x)
+        arc1 = Arc(ci, ang - 0.5, ang)
+        arc2 = Arc(ci, ang, ang + 0.5)
+        ci.arcs.extend([arc1, arc2])
+        probe.compute()
+        assert arc1.clothoid_end == probe.id
+        assert arc2.clothoid_start == probe.id
+        assert len(ci.arcs) == 2   # 再分割されない
+
+    def test_split_arc_ids_follow_circle_move(self):
+        """分割管理中（_split_arc_ids 設定済み）の円弧は、円が動いた
+        とき再分割せず端点が新しい接点角度に追従する。"""
+        import math
+        ln, ci = self._valid_geometry()
+        # 接点を内部に含む 1 本の円弧 → compute で 2 本に分割される
+        probe = Clothoid(ln, ci)
+        ang = math.atan2(probe._circle_pt.y - ci.center.y,
+                         probe._circle_pt.x - ci.center.x)
+        arc = Arc(ci, ang - 0.5, ang + 0.5)
+        ci.arcs.append(arc)
+        probe.compute()
+        assert len(ci.arcs) == 2
+        assert len(probe._split_arc_ids) == 2
+
+        # 円を少し動かす → 接点角度が変わる
+        ci.center = Vec2(5, 30)
+        probe.compute()
+        new_ang = math.atan2(probe._circle_pt.y - ci.center.y,
+                             probe._circle_pt.x - ci.center.x)
+        arcs_by_id = {a.id: a for a in ci.arcs}
+        ax = arcs_by_id[probe._split_arc_ids[0]]
+        xb = arcs_by_id[probe._split_arc_ids[1]]
+        # 再分割されず（2 本のまま）、境界が新接点に追従
+        assert len(ci.arcs) == 2
+        assert ax.angle_end == pytest.approx(new_ang)
+        assert xb.angle_start == pytest.approx(new_ang)

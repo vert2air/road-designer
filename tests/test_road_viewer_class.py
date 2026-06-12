@@ -1274,3 +1274,111 @@ class TestCurvatureAt:
         assert RoadViewer._curvature_at([], 0.0) == 0.0
         assert RoadViewer._curvature_at(
             [(0, 0, 0, 0), (1, 0, 0, 1)], 0.5) == 0.0
+
+
+# ═══════════════════════════════════════════════════════════════
+#   _move_task（毎フレーム走行タスク）
+# ═══════════════════════════════════════════════════════════════
+
+class TestMoveTask:
+    """_move_task の分岐: 通常走行・一時停止・オートドライブ・周囲車両。"""
+
+    @staticmethod
+    def _patch_clock(dt=0.5):
+        import builtins
+        clock = MagicMock()
+        clock.get_dt.return_value = dt
+        return patch.object(builtins, 'globalClock', clock, create=True)
+
+    def test_manual_mode_advances_and_wraps(self):
+        """通常走行: dist += speed*dt、全長でループする。"""
+        v = _make_viewer()          # 全長 90m の直線
+        v.speed = 30.0
+        v.dist = 80.0
+        v.mouseWatcherNode.hasMouse.return_value = False
+        with self._patch_clock(dt=0.5):
+            v._move_task(MagicMock())
+        # 80 + 15 = 95 → 90 でラップして 5
+        assert v.dist == pytest.approx(5.0)
+
+    def test_paused_does_not_advance(self):
+        """一時停止中は距離もトラフィックも進まない。"""
+        v = _make_viewer()
+        v.paused = True
+        v.dist = 10.0
+        v._traffic = [{"np": MagicMock(), "cl": _cl(), "total": 90.0,
+                       "dist": 0.0, "cur_id": None, "forward": True,
+                       "speed_mul": 1.0}]
+        with self._patch_clock():
+            v._move_task(MagicMock())
+        assert v.dist == 10.0
+        assert v._traffic[0]["dist"] == 0.0
+
+    def test_auto_drive_uses_ad_step(self):
+        """オートドライブ時は _ad_step 経由で _ad_dist が進む。"""
+        graph = [_elem(eid=1)]
+        v = _make_viewer(elem_graph=graph,
+                         start_info={"id": 1, "forward": True})
+        v.speed = 10.0
+        with self._patch_clock(dt=0.5):
+            v._move_task(MagicMock())
+        assert v._ad_dist == pytest.approx(5.0)
+
+    def test_traffic_advances_with_speed_multiplier(self):
+        """周囲車両は speed_mul を掛けた速度で進む。"""
+        v = _make_viewer()
+        v.speed = 10.0
+        car = {"np": MagicMock(), "cl": _cl(), "total": 90.0,
+               "dist": 0.0, "cur_id": None, "forward": True,
+               "speed_mul": 2.0}
+        v._traffic = [car]
+        with self._patch_clock(dt=0.5):
+            v._move_task(MagicMock())
+        assert car["dist"] == pytest.approx(10.0)   # 10 * 2.0 * 0.5
+
+
+# ═══════════════════════════════════════════════════════════════
+#   _add_one_traffic（最前列のさらに前へ追加）
+# ═══════════════════════════════════════════════════════════════
+
+class TestAddOneTrafficForwardScan:
+    """既存車両がいるとき、最前列の TRAFFIC_GAP 前に追加する。"""
+
+    def test_added_ahead_of_frontmost_car(self):
+        graph = [_elem(eid=1)]
+        v = _make_viewer(elem_graph=graph,
+                         start_info={"id": 1, "forward": True})
+        v._ad_dist = 0.0
+        # 既存車両: 自車前方 30m
+        car = {"np": MagicMock(), "cl": v._ad_cl, "total": v._ad_total,
+               "dist": 30.0, "cur_id": 1, "forward": True,
+               "speed_mul": 1.0}
+        v._traffic = [car]
+        before = len(v._traffic)
+        v._add_one_traffic()
+        assert len(v._traffic) == before + 1
+        # 新車両は最前列(30m) + TRAFFIC_GAP より前方に配置
+        new_car = v._traffic[-1]
+        assert new_car["dist"] >= 30.0 + v.TRAFFIC_GAP - 1e-6
+
+
+# ═══════════════════════════════════════════════════════════════
+#   _ad_advance のフォールバック距離探索
+# ═══════════════════════════════════════════════════════════════
+
+class TestAdAdvanceDistanceFallback:
+    """接点参照（end_clo_ref）が解決できないとき、座標距離での
+    フォールバック探索で次の要素に遷移する。"""
+
+    def test_falls_back_to_distance_scan(self):
+        # elem1 の end_clo_ref は存在しないクロソイドを指す
+        e1 = _elem(eid=1, start=(0.0, 0.0), end=(0.0, 100.0),
+                   end_clo={"clothoid_id": 99, "side": "circle"})
+        e2 = _elem(eid=2, start=(0.0, 100.0), end=(0.0, 200.0))
+        # 走行中心線の終端を e1 の終端 (0,100) に一致させる
+        v = _make_viewer(cl=_cl(n=11), elem_graph=[e1, e2],
+                         start_info={"id": 1, "forward": True})
+        v._ad_dist = v._ad_total
+        v._ad_advance(overflow=0.0)
+        assert v._ad_cur_id == 2
+        assert v._ad_forward is True

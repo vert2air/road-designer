@@ -329,3 +329,114 @@ class TestSpec6_7_UndoRedo:
             canvas._push_undo()
 
         assert len(canvas._undo_stack) == 50, "50 を超えた分は古い方から破棄されるべき"
+
+
+# ─── 6.5 カラーバー（要素種別ごとの表示） ────────────────────────
+
+class TestSpec6_5_ColorbarKinds:
+    """6.5 平面線形との連携とカラーバー
+
+    仕様書より:
+        チェーン順に並べた要素が縦断キャンバス上部のカラーバーとして
+        表示される。線分=青、クロソイド=緑、円弧=紫。
+    """
+
+    @staticmethod
+    def _vw_with_mixed_elements(qtbot):
+        """線分・円弧・クロソイドを含むチェーンでウィンドウを作る。"""
+        from models import (
+            Scene, Line, Segment, Circle, Arc, Clothoid, Vec2,
+            ElementProfile, plan_length_of,
+        )
+        from vertical_window import VerticalAlignmentWindow
+        scene = Scene()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        seg = Segment(ln, 0.0, 1.0)
+        ln.segments.append(seg)
+        scene.add_line(ln)
+        ci = Circle(Vec2(0, 30), 10.0)
+        arc = Arc(ci, 0.0, 1.0)
+        ci.arcs.append(arc)
+        scene.add_circle(ci)
+        clo = Clothoid(ln, ci)
+        scene.add_clothoid(clo)
+        assert clo.is_valid
+
+        elements = [seg, clo, arc]
+        eps = []
+        for e in elements:
+            ep = ElementProfile()
+            ep.element_id = e.id
+            ep.element_type = type(e).__name__.lower()
+            ep.plan_length = max(plan_length_of(e), 1.0)
+            eps.append(ep)
+        vw = VerticalAlignmentWindow(scene, eps, elements,
+                                     [False] * len(elements))
+        qtbot.addWidget(vw)
+        vw.show()
+        return vw
+
+    def test_colorbar_renders_all_element_kinds(self, qtbot):
+        """[6.5] 線分・クロソイド・円弧の混在チェーンでカラーバーが
+        例外なく描画され、3 要素分の色が現れる。"""
+        vw = self._vw_with_mixed_elements(qtbot)
+        canvas = vw._canvas
+        qtbot.waitExposed(canvas)
+        img = canvas.grab().toImage()
+        # カラーバー帯（上端付近）を走査して出現色を収集
+        colors = set()
+        y = 8
+        for x in range(0, canvas.width(), 4):
+            c = img.pixelColor(x, y)
+            colors.add((c.red() > 100, c.green() > 100, c.blue() > 100))
+        # 青系（線分）・緑系（クロソイド）・紫系（円弧）が揃う
+        assert (False, False, True) in colors or \
+            (True, False, True) in colors, "青/紫系がない"
+        assert (False, True, False) in colors or \
+            (False, True, True) in colors, "緑系がない"
+
+
+# ─── 6.3 勾配直線プロパティの数値入力 ────────────────────────────
+
+class TestSpec6_3_GradePropsInput:
+    """6.3 勾配直線の入力・編集 — 右パネルからの数値入力
+
+    仕様書より:
+        隣接スナップは勾配直線の追加・ハンドルドラッグ・数値入力の
+        いずれの後も実行し、隣接する勾配直線の端点の距離・標高を
+        強制一致させる。
+    """
+
+    def test_dist_spinbox_updates_grade_line(self, qtbot):
+        """[6.3] 始点距離のスピンボックス変更が GradeLine に反映される。"""
+        from PySide6.QtWidgets import QDoubleSpinBox
+        vw, canvas = _make_vw(qtbot, n_grade_lines=1)
+        gl = canvas._grade_lines[0]
+        canvas._selected = gl
+        vw._refresh_props()
+        sbs = vw.findChildren(QDoubleSpinBox)
+        assert sbs, "スピンボックスが見つからない"
+        # 始点距離（現在値 0.0）のスピンボックスを特定して変更
+        sb = [s for s in sbs if abs(s.value() - gl.dist_start) < 1e-9][0]
+        sb.setValue(5.0)
+        assert gl.dist_start == pytest.approx(5.0)
+
+    def test_elev_spinbox_snaps_neighbors(self, qtbot):
+        """[6.3] 終点標高の変更後、隣接 GL の始点標高が追従する。"""
+        from PySide6.QtWidgets import QDoubleSpinBox
+        from models import GradeLine
+        vw, canvas = _make_vw(qtbot)
+        gl1 = GradeLine(dist_start=0.0, elev_start=10.0,
+                        dist_end=50.0, elev_end=12.0)
+        gl2 = GradeLine(dist_start=50.0, elev_start=12.0,
+                        dist_end=100.0, elev_end=15.0)
+        canvas._grade_lines.extend([gl1, gl2])
+        canvas._selected = gl1
+        vw._refresh_props()
+        sbs = vw.findChildren(QDoubleSpinBox)
+        # 終点標高（現在値 12.0）のスピンを変更
+        sb = [s for s in sbs if abs(s.value() - 12.0) < 1e-9][0]
+        sb.setValue(13.5)
+        assert gl1.elev_end == pytest.approx(13.5)
+        # 隣接スナップで gl2 の始点標高も追従
+        assert gl2.elev_start == pytest.approx(13.5)

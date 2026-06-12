@@ -448,3 +448,46 @@ class TestRelatedConstraintsPanel:
         groups = [g for g in p.findChildren(QGroupBox)
                   if g.title() == "オフセット拘束"]
         assert groups == []
+
+
+class TestSelectionBboxCenter:
+    """_selection_bbox_center の図形タイプ別の寄与点。"""
+
+    def test_line_without_segments_uses_refs(self, make_panel_qt):
+        sc = Scene()
+        ln = Line(Vec2(2, 4), Vec2(12, 8))   # 線分なし
+        sc.add_line(ln)
+        p, _ = make_panel_qt(sc)
+        center = p._selection_bbox_center([ln])
+        assert (center.x, center.y) == (7, 6)
+
+    def test_circle_uses_extent(self, make_panel_qt):
+        sc = Scene()
+        ci = Circle(Vec2(10, 20), 5.0)
+        sc.add_circle(ci)
+        p, _ = make_panel_qt(sc)
+        center = p._selection_bbox_center([ci])
+        assert (center.x, center.y) == (10, 20)
+
+    def test_clothoid_uses_points(self, make_panel_qt):
+        from models import Clothoid
+        sc = Scene()
+        ln = Line(Vec2(-100, 0), Vec2(100, 0))
+        ln.segments.append(Segment(ln, 0.0, 1.0))
+        sc.add_line(ln)
+        ci = Circle(Vec2(0, 30), 10.0)
+        sc.add_circle(ci)
+        clo = Clothoid(ln, ci)
+        assert clo.is_valid
+        p, _ = make_panel_qt(sc)
+        center = p._selection_bbox_center([clo])
+        # クロソイド点列の AABB 中心は線（y=0）と円（y≦30）の間
+        xs = [pt.x for pt in clo.points]
+        ys = [pt.y for pt in clo.points]
+        assert center.x == pytest.approx((min(xs) + max(xs)) / 2)
+        assert center.y == pytest.approx((min(ys) + max(ys)) / 2)
+
+    def test_empty_returns_origin(self, make_panel_qt):
+        p, _ = make_panel_qt(Scene())
+        center = p._selection_bbox_center([])
+        assert (center.x, center.y) == (0, 0)

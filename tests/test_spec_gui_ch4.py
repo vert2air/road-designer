@@ -639,3 +639,75 @@ class TestSpec4_8_UndoNewTargets:
         assert len(w.scene.two_line_offset_constraints) == 1
         w._canvas.undo()
         assert w.scene.two_line_offset_constraints == []
+
+
+# ─── 4.5 / 4.7 AABB・ラバーバンドの描画 ──────────────────────────
+
+class TestSpec4_7_MultiSelectRendering:
+    """4.7 図形の色分け — AABB 枠線・ラバーバンド矩形の描画
+
+    仕様書より:
+        AABB 枠線・対角線（複数選択時）: 青色（半透明）。
+        AABB 頂点ハンドル: 青色。
+        （4.5）ドラッグ中は矩形が青系の破線枠 + 半透明塗りで表示される。
+
+    実際に描画した画像のピクセル色で検証する。
+    """
+
+    @staticmethod
+    def _grab(c):
+        return c.grab().toImage()
+
+    def test_aabb_vertex_handle_painted_blue(self, make_window_qt, qtbot):
+        """[4.7] 複数選択時、AABB 頂点位置に青系ハンドルが描かれる。"""
+        from models import Circle, Vec2
+        w = make_window_qt()
+        c = w._canvas
+        ln, _ = _add_line(w.scene, 0, 0, 10, 0)
+        ci = Circle(Vec2(100, 0), 50.0)
+        w.scene.add_circle(ci)
+        c._selected = [ln, ci]
+        w.show()
+        qtbot.waitExposed(c)
+        img = self._grab(c)
+        # AABB TL 頂点 = スクリーン (500, 450)
+        px = img.pixelColor(500, 450)
+        assert px.blue() > px.red(), f"頂点が青系でない: {px.name()}"
+        # AABB 中心 (575, 500) 付近に十字（背景色ではない）
+        center_px = img.pixelColor(575, 500)
+        bg = img.pixelColor(50, 50)
+        assert center_px != bg
+
+    def test_single_selection_has_no_aabb(self, make_window_qt, qtbot):
+        """[4.7] 単一選択では AABB ハンドルは描かれない。"""
+        from models import Circle, Vec2
+        w = make_window_qt()
+        c = w._canvas
+        ci = Circle(Vec2(100, 0), 50.0)
+        w.scene.add_circle(ci)
+        c._selected = [ci]
+        w.show()
+        qtbot.waitExposed(c)
+        img = self._grab(c)
+        # 単一選択の AABB 相当位置（円の左上外側）は背景色のまま
+        px = img.pixelColor(545, 445)
+        bg = img.pixelColor(50, 50)
+        assert px == bg
+
+    def test_rubber_band_rect_painted(self, make_window_qt, qtbot):
+        """[4.5] ラバーバンド矩形が半透明塗り＋対角線で描かれる。"""
+        from models import Vec2
+        w = make_window_qt()
+        c = w._canvas
+        w.show()
+        qtbot.waitExposed(c)
+        c._rubber_select_start = Vec2(400, 400)
+        c._rubber_select_end = Vec2(600, 600)
+        c.repaint()
+        img = self._grab(c)
+        inside = img.pixelColor(500, 480)    # 矩形内（対角線を避ける）
+        outside = img.pixelColor(200, 200)   # 矩形外
+        assert inside != outside, "半透明塗りが描かれていない"
+        # 対角線（始点→終点、y=x 上）の中点付近
+        diag = img.pixelColor(500, 500)
+        assert diag.blue() > diag.red(), f"対角線が青系でない: {diag.name()}"
