@@ -13,9 +13,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
     QDoubleSpinBox, QGroupBox, QFrame, QLineEdit,
     QCheckBox, QComboBox, QSizePolicy, QMenu, QApplication,
+    QRadioButton, QButtonGroup,
 )
 
-from models import (Vec2, Line, Segment, Circle, Arc, Clothoid)
+from models import (Vec2, Line, Segment, Circle, Arc, Clothoid,
+                    effective_set)
 
 
 # ── クリップボード: 始点/終点ペア ─────────────────────────────────────────
@@ -246,8 +248,28 @@ def _add_copy_paste_buttons(lay, get_start, get_end,
     lay.addLayout(row)
 
 
-class _FlexSpinBox(QDoubleSpinBox):
-    """パネル幅に追従する QDoubleSpinBox。
+class FocusSpinBox(QDoubleSpinBox):
+    """クリックでフォーカスを当てた後だけホイール操作を受け付ける基底クラス。
+
+    デフォルトの WheelFocus ポリシーはホイール操作だけでフォーカスを
+    付与するため、StrongFocus に変更して hover 中の誤操作を防ぐ。
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from PySide6.QtCore import Qt
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):
+        """フォーカス時のみホイールで値を変更する。"""
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class _FlexSpinBox(FocusSpinBox):
+    """パネル幅に追従する FocusSpinBox。
 
     デフォルト実装の minimumSizeHint が約 120px を主張するため、
     右パネルで水平スクロールが発生する問題を防ぐためにオーバーライドする。
@@ -341,6 +363,78 @@ class PropBuilderMixin:
     ``self._block``・``self.request_*`` シグナル等を RightPanel 側から受け取る。
     """
 
+    # ─── 数値入力行 共通ヘルパー ────────────────────────────────
+    def _make_prop_row(self, label: str, value: float,
+                       setter, undo_pushed: list,
+                       **spinbox_kwargs) -> 'QHBoxLayout':
+        """ラベル + スピンボックス 1 行を生成して接続する。
+
+        Undo ガード（``_block`` チェック + 初回 push）を内包するため、
+        呼び出し元は単純な setter だけを渡せばよい。
+
+        Parameters
+        ----------
+        label : str
+            行ラベル（例: "中心X:"）。
+        value : float
+            スピンボックスの初期値。
+        setter : callable
+            float を受け取ってモデルを更新する関数。
+        undo_pushed : list[bool]
+            [False] で初期化された 1 要素リスト。複数行で共有することで
+            同一操作グループの Undo を 1 回にまとめる。
+        **spinbox_kwargs
+            _make_spinbox に渡すキーワード引数（lo, hi, step, decimals 等）。
+
+        Returns
+        -------
+        QHBoxLayout
+            生成した行レイアウト。
+        """
+        sb = _make_spinbox(value, **spinbox_kwargs)
+
+        def on_value(v):
+            if self._block:
+                return
+            if not undo_pushed[0]:
+                self.request_push_undo.emit()
+                undo_pushed[0] = True
+            setter(v)
+            self.scene_changed.emit()
+
+        sb.valueChanged.connect(on_value)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label))
+        row.addWidget(sb)
+        return row
+
+    def _add_vec2_rows(self, lay, label: str,
+                       get_fn, set_fn) -> None:
+        """Vec2 フィールド用の X/Y 行 2 本を lay に追加する。
+
+        Parameters
+        ----------
+        lay : QVBoxLayout
+            追加先のレイアウト。
+        label : str
+            グループラベル（例: "参照始点"）。
+        get_fn : callable
+            現在値を Vec2 で返すゲッター。
+        set_fn : callable
+            Vec2 を受け取るセッター。
+        """
+        from models import Vec2 as _Vec2
+        lay.addWidget(QLabel(label))
+        undo_pushed = [False]
+        lay.addLayout(self._make_prop_row(
+            "X:", get_fn().x,
+            lambda v: set_fn(_Vec2(v, get_fn().y)),
+            undo_pushed))
+        lay.addLayout(self._make_prop_row(
+            "Y:", get_fn().y,
+            lambda v: set_fn(_Vec2(get_fn().x, v)),
+            undo_pushed))
+
     # ─── snap チェックボックス共通ヘルパー ───────────────────
     def _build_snap_checkboxes(self, clo, lay) -> None:
         """クロソイドの snap 設定チェックボックス 2 つを lay に追加する。
@@ -381,7 +475,7 @@ class PropBuilderMixin:
         """単一の図形オブジェクトに対するプロパティパネルを構築する。
 
         ニックネームエディタ → 型別プロパティ → 関連図形リスト →
-        縦断設計情報 の順で ``_prop_layout`` に追加する。
+        関連オフセット拘束一覧 → 縦断設計情報 の順で ``_prop_layout`` に追加する。
 
         Parameters
         ----------
@@ -405,8 +499,88 @@ class PropBuilderMixin:
         # 関連図形
         self._add_related_objects(obj)
 
+        # 関連オフセット拘束
+        self._add_related_constraints(obj)
+
         # 縦断設計情報
         self._add_vertical_profile_info(obj)
+
+    def _add_related_constraints(self, obj):
+        """obj に関連するオフセット拘束一覧を右パネルに追加する。
+
+        OffsetConstraint（1直線 + 2円）と TwoLineOffsetConstraint
+        （2直線 + 1円）を対象に、obj に関係する拘束を列挙する。
+        各拘束行の「選択」ボタンを押すと、その拘束に含まれる全図形が
+        キャンバスで選択され、拘束のプロパティパネルに切り替わる。
+
+        Parameters
+        ----------
+        obj : Line or Circle or Segment or Arc
+            関連拘束を検索する起点のオブジェクト。
+        """
+        # Segment/Arc は親オブジェクトで検索
+        base = obj
+        if isinstance(obj, Segment):
+            base = obj.line
+        elif isinstance(obj, Arc):
+            base = obj.circle
+
+        def _nick(o):
+            """表示用の短いニックネームを返す。"""
+            oid = getattr(o, 'id', None)
+            if oid is None:
+                return '?'
+            custom = self.scene.nicknames.get(oid)
+            if custom:
+                return custom
+            if isinstance(o, Line):
+                return f'直線#{oid}'
+            if isinstance(o, Circle):
+                return f'円#{oid}'
+            return f'#{oid}'
+
+        rows = []   # (label_str, [objs_to_select])
+
+        # OffsetConstraint（直線 ← 2円）
+        for oc in self.scene.offset_constraints:
+            if (oc.line is base
+                    or oc.circle_a is base
+                    or oc.circle_b is base):
+                label = (f"{_nick(oc.line)} ← "
+                         f"{_nick(oc.circle_a)} · "
+                         f"{_nick(oc.circle_b)}")
+                rows.append(
+                    (label, [oc.line, oc.circle_a, oc.circle_b]))
+
+        # TwoLineOffsetConstraint（円 ← 2直線）
+        for oc in self.scene.two_line_offset_constraints:
+            if (oc.line_a is base
+                    or oc.line_b is base
+                    or oc.circle is base):
+                label = (f"{_nick(oc.circle)} ← "
+                         f"{_nick(oc.line_a)} · "
+                         f"{_nick(oc.line_b)}")
+                rows.append(
+                    (label, [oc.line_a, oc.line_b, oc.circle]))
+
+        if not rows:
+            return
+
+        grp = QGroupBox("オフセット拘束")
+        lay = QVBoxLayout(grp)
+        for label, sel_objs in rows:
+            row_lay = QHBoxLayout()
+            lbl = QLabel(label)
+            lbl.setWordWrap(True)
+            row_lay.addWidget(lbl, stretch=1)
+            btn = QPushButton("選択")
+            btn.setFixedWidth(44)
+            btn.clicked.connect(
+                lambda _, os=sel_objs:
+                self.request_select.emit(os))
+            row_lay.addWidget(btn)
+            lay.addLayout(row_lay)
+        self._prop_layout.addWidget(grp)
 
     def _add_vertical_profile_info(self, obj):
         """対応する ElementProfile が存在すれば縦断情報を右パネルに追加する。
@@ -502,9 +676,10 @@ class PropBuilderMixin:
         lay = QVBoxLayout(grp)
         for rel in related:
             rid = getattr(rel, 'id', None)
-            prefix = ("line" if isinstance(rel, Line) else
-                      "circle" if isinstance(rel, Circle) else "clothoid")
-            name = self.scene.get_nickname(rid, prefix) if rid else str(rel)
+            type_label = ("直線" if isinstance(rel, Line) else
+                          "円" if isinstance(rel, Circle) else "クロソイド")
+            name = (self.scene.display_name(rid, type_label)
+                    if rid else str(rel))
             # ニックネームを上段、ボタンを下段にして幅を節約
             lay.addWidget(QLabel(name))
             btn_row = QHBoxLayout()
@@ -526,7 +701,9 @@ class PropBuilderMixin:
     def _build_line_props(self, ln: Line):
         """直線プロパティパネルを構築して ``_prop_layout`` に追加する。
 
-        参照始点・参照終点の X/Y スピンボックスと方向角（読み取り専用）を表示する。
+        参照始点・参照終点の X/Y スピンボックスと方向角（読み取り専用）、
+        参照点ペアの Copy / Paste ボタン行（:func:`_add_copy_paste_buttons`）
+        を表示する。
         各スピンボックスの初回変更時に ``request_push_undo`` を発行し、
         同一編集セッション中の連続変更は 1 手順として Undo に記録される。
 
@@ -538,57 +715,12 @@ class PropBuilderMixin:
         grp = QGroupBox("直線プロパティ")
         lay = QVBoxLayout(grp)
 
-        def add_vec2(label, get_fn, set_fn):
-            """Vec2 入力フォーム（X/Y スピンボックス）を _prop_layout に追加する。
-
-            Parameters
-            ----------
-            label : str
-                グループラベル（例: "参照始点"）。
-            get_fn : callable
-                現在値を Vec2 で返すゲッター関数。
-            set_fn : callable
-                Vec2 を受け取るセッター関数。
-            """
-            lay.addWidget(QLabel(label))
-            sbx = _make_spinbox(get_fn().x)
-            sby = _make_spinbox(get_fn().y)
-            _undo_pushed = [False]
-
-            def on_x(v):
-                if self._block:
-                    return
-                if not _undo_pushed[0]:
-                    self.request_push_undo.emit()
-                    _undo_pushed[0] = True
-                old = get_fn()
-                set_fn(Vec2(v, old.y))
-                self.scene_changed.emit()
-
-            def on_y(v):
-                if self._block:
-                    return
-                if not _undo_pushed[0]:
-                    self.request_push_undo.emit()
-                    _undo_pushed[0] = True
-                old = get_fn()
-                set_fn(Vec2(old.x, v))
-                self.scene_changed.emit()
-            sbx.valueChanged.connect(on_x)
-            sby.valueChanged.connect(on_y)
-            row_x = QHBoxLayout()
-            row_x.addWidget(QLabel("X:"))
-            row_x.addWidget(sbx)
-            row_y = QHBoxLayout()
-            row_y.addWidget(QLabel("Y:"))
-            row_y.addWidget(sby)
-            lay.addLayout(row_x)
-            lay.addLayout(row_y)
-
-        add_vec2("参照始点", lambda: ln.ref_start,
-                 lambda v: setattr(ln, 'ref_start', v))
-        add_vec2("参照終点", lambda: ln.ref_end,
-                 lambda v: setattr(ln, 'ref_end', v))
+        self._add_vec2_rows(lay, "参照始点",
+                            lambda: ln.ref_start,
+                            lambda v: setattr(ln, 'ref_start', v))
+        self._add_vec2_rows(lay, "参照終点",
+                            lambda: ln.ref_end,
+                            lambda v: setattr(ln, 'ref_end', v))
 
         # ── Copy / Paste ボタン ────────────────────────────────────
         _add_copy_paste_buttons(
@@ -628,7 +760,7 @@ class PropBuilderMixin:
         for seg in segs:
             start = seg.start
             end = seg.end
-            nick = self.scene.get_nickname(seg.id, 'seg')
+            nick = self.scene.display_name(seg.id, '線分')
 
             # 外側: ボタンを右端に固定、ラベルは残り幅を使う
             row = QHBoxLayout()
@@ -677,7 +809,9 @@ class PropBuilderMixin:
     def _build_circle_props(self, ci: Circle):
         """円プロパティパネルを構築して ``_prop_layout`` に追加する。
 
-        中心 X/Y・半径のスピンボックスを表示する。
+        中心 X/Y・半径のスピンボックスを表示する。円周上に円弧のない
+        空き区間（:meth:`_calc_free_arc_intervals`）がある場合は
+        「円弧を追加」「円弧を全追加」ボタンも表示する。
         各スピンボックスの初回変更時に ``request_push_undo`` を発行し、
         同一編集セッション中の連続変更は 1 手順として Undo に記録される。
         変更後は ``Canvas._propagate_circle`` を経由してクロソイドや
@@ -691,54 +825,19 @@ class PropBuilderMixin:
         grp = QGroupBox("円プロパティ")
         lay = QVBoxLayout(grp)
 
-        row_cx = QHBoxLayout()
-        sb_cx = _make_spinbox(ci.center.x)
-        sb_cy = _make_spinbox(ci.center.y)
-        sb_r = _make_spinbox(ci.radius, 0.001, 1e6, 0.5)
-
-        _undo_pushed = [False]
-
-        def on_cx(v):
-            if self._block:
-                return
-            if not _undo_pushed[0]:
-                self.request_push_undo.emit()
-                _undo_pushed[0] = True
-            ci.center = Vec2(v, ci.center.y)
-            self.scene_changed.emit()
-
-        def on_cy(v):
-            if self._block:
-                return
-            if not _undo_pushed[0]:
-                self.request_push_undo.emit()
-                _undo_pushed[0] = True
-            ci.center = Vec2(ci.center.x, v)
-            self.scene_changed.emit()
-
-        def on_r(v):
-            if self._block:
-                return
-            if not _undo_pushed[0]:
-                self.request_push_undo.emit()
-                _undo_pushed[0] = True
-            ci.radius = max(0.001, v)
-            self.scene_changed.emit()
-
-        sb_cx.valueChanged.connect(on_cx)
-        sb_cy.valueChanged.connect(on_cy)
-        sb_r.valueChanged.connect(on_r)
-
-        row_cx.addWidget(QLabel("中心X:"))
-        row_cx.addWidget(sb_cx)
-        row_cy = QHBoxLayout()
-        row_cy.addWidget(QLabel("中心Y:"))
-        row_cy.addWidget(sb_cy)
-        lay.addLayout(row_cx)
-        lay.addLayout(row_cy)
-        row_r = QHBoxLayout()
-        row_r.addWidget(QLabel("半径:"))
-        row_r.addWidget(sb_r)
+        undo_pushed = [False]
+        lay.addLayout(self._make_prop_row(
+            "中心X:", ci.center.x,
+            lambda v: setattr(ci, 'center', Vec2(v, ci.center.y)),
+            undo_pushed))
+        lay.addLayout(self._make_prop_row(
+            "中心Y:", ci.center.y,
+            lambda v: setattr(ci, 'center', Vec2(ci.center.x, v)),
+            undo_pushed))
+        row_r = self._make_prop_row(
+            "半径:", ci.radius,
+            lambda v: setattr(ci, 'radius', max(0.001, v)),
+            undo_pushed, lo=0.001, hi=1e6, step=0.5)
         lay.addLayout(row_r)
 
         # ── 円弧追加ボタン ────────────────────────────────────────
@@ -895,7 +994,7 @@ class PropBuilderMixin:
         lay = QVBoxLayout(grp)
         lay.setSpacing(4)
         for arc in arcs:
-            nick = self.scene.get_nickname(arc.id, 'arc')
+            nick = self.scene.display_name(arc.id, '円弧')
             ang_s = math.degrees(arc.angle_start)
             ang_e = math.degrees(arc.angle_end)
             arc_len = arc.arc_length()
@@ -1028,7 +1127,8 @@ class PropBuilderMixin:
     def _build_segment_props(self, seg: Segment):
         """線分プロパティパネルを構築して ``_prop_layout`` に追加する。
 
-        始点・終点の X/Y 座標と割合 t のスピンボックスを表示する。
+        始点・終点の X/Y 座標と割合 t のスピンボックス、および端点ペアの
+        Copy / Paste ボタン行（:func:`_add_copy_paste_buttons`）を表示する。
         X/Y 入力は直線上に束縛され ``Line.project_t`` で t 値に変換される。
         各スピンボックスの初回変更時に ``request_push_undo`` を発行する。
 
@@ -1042,7 +1142,7 @@ class PropBuilderMixin:
         ln = seg.line
 
         # 親の直線情報（読み取り専用）
-        ln_nick = self.scene.get_nickname(ln.id, 'line')
+        ln_nick = self.scene.display_name(ln.id, '直線')
         lbl_ln = QLabel(f"親直線: {ln_nick}  (ID:{ln.id})")
         lbl_ln.setWordWrap(True)
         btn_sel_ln = QPushButton("直線を選択")
@@ -1130,8 +1230,12 @@ class PropBuilderMixin:
             row_x.addWidget(sb_x)
             row_y.addWidget(QLabel("Y:"))
             row_y.addWidget(sb_y)
+            row_t = QHBoxLayout()
+            row_t.addWidget(QLabel("t:"))
+            row_t.addWidget(sb_t)
             lay.addLayout(row_x)
             lay.addLayout(row_y)
+            lay.addLayout(row_t)
             lay.addWidget(lbl_t)
 
         def set_t_start(v): seg.t_start = v
@@ -1198,7 +1302,7 @@ class PropBuilderMixin:
         ci = arc.circle
 
         # 親の円情報（読み取り専用）
-        ci_nick = self.scene.get_nickname(ci.id, 'circle')
+        ci_nick = self.scene.display_name(ci.id, '円')
         lbl_ci = QLabel(f"親円: {ci_nick}  (ID:{ci.id})")
         lbl_ci.setWordWrap(True)
         btn_sel_ci = QPushButton("円を選択")
@@ -1358,8 +1462,8 @@ class PropBuilderMixin:
         """
         grp = QGroupBox("線分の結合")
         lay = QVBoxLayout(grp)
-        la_nick = self.scene.get_nickname(seg_a.line.id, 'line')
-        lb_nick = self.scene.get_nickname(seg_b.line.id, 'line')
+        la_nick = self.scene.display_name(seg_a.line.id, '直線')
+        lb_nick = self.scene.display_name(seg_b.line.id, '直線')
         lay.addWidget(QLabel(f"線分#{seg_a.id} (直線:{la_nick})"))
         lay.addWidget(QLabel(f"線分#{seg_b.id} (直線:{lb_nick})"))
         lay.addWidget(_separator())
@@ -1540,8 +1644,8 @@ class PropBuilderMixin:
         """
         grp = QGroupBox("円弧の結合")
         lay = QVBoxLayout(grp)
-        ca_nick = self.scene.get_nickname(arc_a.circle.id, 'circle')
-        cb_nick = self.scene.get_nickname(arc_b.circle.id, 'circle')
+        ca_nick = self.scene.display_name(arc_a.circle.id, '円')
+        cb_nick = self.scene.display_name(arc_b.circle.id, '円')
         lay.addWidget(QLabel(f"円弧#{arc_a.id} (円:{ca_nick})"))
         lay.addWidget(QLabel(f"円弧#{arc_b.id} (円:{cb_nick})"))
         lay.addWidget(_separator())
@@ -1727,7 +1831,8 @@ class PropBuilderMixin:
 
         既存の拘束がない場合（未設定）:
 
-        * ``off_a``・``off_b`` のスピンボックス（初期値 0）
+        * ``off_a``・``off_b`` のスピンボックス
+          （初期値は現在の位置関係 ``distance_to(center) - radius`` から算出）
         * 「オフセット拘束を設定」ボタン → ``request_set_offset.emit(ln, ci_a, ci_b)``
 
         Parameters
@@ -1759,15 +1864,20 @@ class PropBuilderMixin:
         grp = QGroupBox("オフセット拘束")
         form = QFormLayout(grp)
 
-        nick_ln = self.scene.get_nickname(ln.id, "line")
-        nick_a = self.scene.get_nickname(ci_a.id, "circle")
-        nick_b = self.scene.get_nickname(ci_b.id, "circle")
+        nick_ln = self.scene.display_name(ln.id, "直線")
+        nick_a = self.scene.display_name(ci_a.id, "円")
+        nick_b = self.scene.display_name(ci_b.id, "円")
         form.addRow("直線:", QLabel(nick_ln))
         form.addRow("円 A:", QLabel(nick_a))
         form.addRow("円 B:", QLabel(nick_b))
 
-        off_a_init = existing.off_a if existing else 0.0
-        off_b_init = existing.off_b if existing else 0.0
+        if existing is not None:
+            off_a_init = existing.off_a
+            off_b_init = existing.off_b
+        else:
+            # 未設定時は現在の距離から自動計算（0 のままだと設定時に図形が動く）
+            off_a_init = ln.distance_to(ci_a.center) - ci_a.radius
+            off_b_init = ln.distance_to(ci_b.center) - ci_b.radius
         sb_a = _make_spinbox(off_a_init, lo=-1000,
                              hi=1000, step=0.1, decimals=3)
         sb_b = _make_spinbox(off_b_init, lo=-1000,
@@ -1782,8 +1892,16 @@ class PropBuilderMixin:
                 existing.off_a = sb_a.value()
                 existing.off_b = sb_b.value()
                 existing.solve()
+                # 直線に付属するクロソイドを再計算
+                for clo in self.scene.clothoids:
+                    if clo.line is existing.line:
+                        clo.compute()
                 self._block = False
+                # 連鎖伝播 + 即時再描画
+                if self._canvas_ref is not None:
+                    self._canvas_ref.propagate_from_line(existing.line)
                 self.scene_changed.emit()
+                self._canvas_update()
 
         sb_a.valueChanged.connect(on_off_changed)
         sb_b.valueChanged.connect(on_off_changed)
@@ -1807,6 +1925,109 @@ class PropBuilderMixin:
             self._prop_layout.addWidget(
                 QLabel(f"現在距離 B: {db:.3f} m  "
                        f"(R+off={ci_b.radius + existing.off_b:.3f})"))
+
+    def _build_two_line_offset_constraint(self,
+                                          ln_a: 'Line', ln_b: 'Line',
+                                          ci: 'Circle'):
+        """2直線 + 1円が選択されたときの TwoLineOffsetConstraint パネルを構築する。
+
+        既存の ``TwoLineOffsetConstraint`` がある場合（設定済み）:
+
+        * ``off_a``・``off_b`` のスピンボックス（``valueChanged`` でリアルタイム反映）
+        * 各直線と円の現在距離と期待値（``R + off``）の情報ラベル
+        * 「オフセット拘束を解除」ボタン → ``request_clear_two_line_offset.emit(ln_a, ln_b)``
+
+        既存の拘束がない場合（未設定）:
+
+        * ``off_a``・``off_b`` のスピンボックス
+          （初期値は現在の位置関係 ``distance_to(center) - radius`` から算出）
+        * 「オフセット拘束を設定」ボタン
+          → ``request_set_two_line_offset.emit(ln_a, ln_b, ci)``
+
+        Parameters
+        ----------
+        ln_a : Line
+            直線 A。
+        ln_b : Line
+            直線 B。
+        ci : Circle
+            拘束の基準となる円 C。
+        """
+        self._prop_layout.addWidget(QLabel("─ オフセット拘束（2直線-1円）─"))
+
+        # 既存の拘束を検索
+        existing = next(
+            (oc for oc in self.scene.two_line_offset_constraints
+             if {oc.line_a, oc.line_b} == {ln_a, ln_b}
+             and oc.circle is ci),
+            None
+        )
+
+        grp = QGroupBox("オフセット拘束（2直線-1円）")
+        form = QFormLayout(grp)
+
+        nick_a = self.scene.display_name(ln_a.id, "直線")
+        nick_b = self.scene.display_name(ln_b.id, "直線")
+        nick_c = self.scene.display_name(ci.id, "円")
+        form.addRow("直線 A:", QLabel(nick_a))
+        form.addRow("直線 B:", QLabel(nick_b))
+        form.addRow("円 C:", QLabel(nick_c))
+
+        if existing is not None:
+            off_a_init = existing.off_a
+            off_b_init = existing.off_b
+        else:
+            # 未設定時は現在の距離から自動計算して表示する（0 のままだと設定時に図形が動く）
+            off_a_init = ln_a.distance_to(ci.center) - ci.radius
+            off_b_init = ln_b.distance_to(ci.center) - ci.radius
+        sb_a = _make_spinbox(off_a_init, lo=-1000,
+                             hi=1000, step=0.1, decimals=3)
+        sb_b = _make_spinbox(off_b_init, lo=-1000,
+                             hi=1000, step=0.1, decimals=3)
+        form.addRow("off_a [m]:", sb_a)
+        form.addRow("off_b [m]:", sb_b)
+        self._prop_layout.addWidget(grp)
+
+        def on_off_changed():
+            if existing is not None and not self._block:
+                self._block = True
+                existing.off_a = sb_a.value()
+                existing.off_b = sb_b.value()
+                existing.solve()   # ci.center を更新
+                # 円に付属するクロソイドを再計算
+                for clo in self.scene.clothoids:
+                    if clo.circle is existing.circle:
+                        clo.compute()
+                self._block = False
+                # 連鎖伝播 + 即時再描画
+                # 連鎖伝播 + 即時再描画
+                if self._canvas_ref is not None:
+                    self._canvas_ref.propagate_from_circle(existing.circle)
+                self.scene_changed.emit()
+                self._canvas_update()
+
+        sb_a.valueChanged.connect(on_off_changed)
+        sb_b.valueChanged.connect(on_off_changed)
+
+        if existing is None:
+            btn_set = QPushButton("オフセット拘束を設定")
+            btn_set.clicked.connect(
+                lambda: self.request_set_two_line_offset.emit(ln_a, ln_b, ci))
+            self._prop_layout.addWidget(btn_set)
+        else:
+            btn_clr = QPushButton("オフセット拘束を解除")
+            btn_clr.clicked.connect(
+                lambda: self.request_clear_two_line_offset.emit(ln_a, ln_b))
+            self._prop_layout.addWidget(btn_clr)
+
+            da = ln_a.distance_to(ci.center)
+            db = ln_b.distance_to(ci.center)
+            self._prop_layout.addWidget(
+                QLabel(f"現在距離 A: {da:.3f} m  "
+                       f"(R+off={ci.radius + existing.off_a:.3f})"))
+            self._prop_layout.addWidget(
+                QLabel(f"現在距離 B: {db:.3f} m  "
+                       f"(R+off={ci.radius + existing.off_b:.3f})"))
 
     def _build_two_lines(self, a: Line, b: Line):
         """2直線の接続操作パネルを構築して ``_prop_layout`` に追加する。
@@ -1972,3 +2193,122 @@ class PropBuilderMixin:
         self._build_line_props(ln)
         self._add_nickname_editor(ci)
         self._build_circle_props(ci)
+
+    # ─── 複数選択操作パネル ──────────────────────────────────
+    def _build_multi_select(self, sel: list):
+        """複数選択時の操作パネルを構築して ``_prop_layout`` に追加する。
+
+        選択図形の概要を表示したあと、コピー・平行移動・回転・
+        拡大縮小の各グループを追加する。各操作は ``RightPanel``
+        の ``_do_*`` メソッドに委譲する。
+
+        Parameters
+        ----------
+        sel : list
+            現在の選択図形リスト（Segment/Arc と親 Line/Circle が混在可）。
+        """
+        from models import Line, Circle, Clothoid
+
+        # ── サマリ ──────────────────────────────────────────
+        effective = effective_set(sel)
+        n_lines = sum(1 for o in effective if isinstance(o, Line))
+        n_circles = sum(1 for o in effective if isinstance(o, Circle))
+        n_clothoids = sum(1 for o in effective if isinstance(o, Clothoid))
+
+        grp_sum = QGroupBox("選択中")
+        lay_sum = QVBoxLayout(grp_sum)
+        parts = []
+        if n_lines:
+            parts.append(f"直線 {n_lines} 本")
+        if n_circles:
+            parts.append(f"円 {n_circles} 個")
+        if n_clothoids:
+            parts.append(f"クロソイド {n_clothoids} 本")
+        lay_sum.addWidget(QLabel("、".join(parts) if parts else "（なし）"))
+        self._prop_layout.addWidget(grp_sum)
+
+        # ── コピー ──────────────────────────────────────────
+        grp_copy = QGroupBox("コピー")
+        lay_copy = QVBoxLayout(grp_copy)
+        lay_copy.addWidget(QLabel(
+            "選択図形を複製し、元の選択を外して\n複製した図形だけを選択状態にする。"))
+        btn_copy = QPushButton("コピー")
+        btn_copy.clicked.connect(lambda: self._do_copy())
+        lay_copy.addWidget(btn_copy)
+        self._prop_layout.addWidget(grp_copy)
+
+        # ── 平行移動 ─────────────────────────────────────────
+        grp_tr = QGroupBox("平行移動")
+        lay_tr = QVBoxLayout(grp_tr)
+        row_dx = QHBoxLayout()
+        row_dx.addWidget(QLabel("ΔX:"))
+        sb_dx = _make_spinbox(0.0, lo=-1e6, hi=1e6, step=1.0, decimals=3)
+        row_dx.addWidget(sb_dx)
+        lay_tr.addLayout(row_dx)
+        row_dy = QHBoxLayout()
+        row_dy.addWidget(QLabel("ΔY:"))
+        sb_dy = _make_spinbox(0.0, lo=-1e6, hi=1e6, step=1.0, decimals=3)
+        row_dy.addWidget(sb_dy)
+        lay_tr.addLayout(row_dy)
+        btn_tr = QPushButton("適用")
+        btn_tr.clicked.connect(
+            lambda: self._do_translate(sb_dx.value(), sb_dy.value()))
+        lay_tr.addWidget(btn_tr)
+        self._prop_layout.addWidget(grp_tr)
+
+        # ── 回転 ────────────────────────────────────────────
+        grp_rot = QGroupBox("回転")
+        lay_rot = QVBoxLayout(grp_rot)
+        row_ang = QHBoxLayout()
+        row_ang.addWidget(QLabel("角度(°):"))
+        sb_ang = _make_spinbox(0.0, lo=-360.0, hi=360.0,
+                               step=1.0, decimals=3)
+        row_ang.addWidget(sb_ang)
+        lay_rot.addLayout(row_ang)
+
+        rb_bbox_rot = QRadioButton("AABB中心")
+        rb_orig_rot = QRadioButton("原点")
+        rb_bbox_rot.setChecked(True)
+        bg_rot = QButtonGroup(grp_rot)
+        bg_rot.addButton(rb_bbox_rot)
+        bg_rot.addButton(rb_orig_rot)
+        row_rb_rot = QHBoxLayout()
+        row_rb_rot.addWidget(rb_bbox_rot)
+        row_rb_rot.addWidget(rb_orig_rot)
+        lay_rot.addLayout(row_rb_rot)
+
+        btn_rot = QPushButton("適用")
+        btn_rot.clicked.connect(
+            lambda: self._do_rotate(sb_ang.value(),
+                                    rb_bbox_rot.isChecked()))
+        lay_rot.addWidget(btn_rot)
+        self._prop_layout.addWidget(grp_rot)
+
+        # ── 拡大縮小 ─────────────────────────────────────────
+        grp_sc = QGroupBox("拡大縮小（XY同率）")
+        lay_sc = QVBoxLayout(grp_sc)
+        lay_sc.addWidget(QLabel("Clothoid保持のためXY同率のみ対応"))
+        row_fac = QHBoxLayout()
+        row_fac.addWidget(QLabel("倍率:"))
+        sb_fac = _make_spinbox(1.0, lo=0.001, hi=1000.0,
+                               step=0.1, decimals=4)
+        row_fac.addWidget(sb_fac)
+        lay_sc.addLayout(row_fac)
+
+        rb_bbox_sc = QRadioButton("AABB中心")
+        rb_orig_sc = QRadioButton("原点")
+        rb_bbox_sc.setChecked(True)
+        bg_sc = QButtonGroup(grp_sc)
+        bg_sc.addButton(rb_bbox_sc)
+        bg_sc.addButton(rb_orig_sc)
+        row_rb_sc = QHBoxLayout()
+        row_rb_sc.addWidget(rb_bbox_sc)
+        row_rb_sc.addWidget(rb_orig_sc)
+        lay_sc.addLayout(row_rb_sc)
+
+        btn_sc = QPushButton("適用")
+        btn_sc.clicked.connect(
+            lambda: self._do_scale(sb_fac.value(),
+                                   rb_bbox_sc.isChecked()))
+        lay_sc.addWidget(btn_sc)
+        self._prop_layout.addWidget(grp_sc)

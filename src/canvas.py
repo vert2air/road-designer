@@ -18,7 +18,7 @@ from PySide6.QtGui import (QPainter, QPen, QBrush, QColor,
                            QPolygonF, QPainterPath)
 
 from models import (Vec2, Line, Segment, Circle, Arc, Clothoid, Scene,
-                    LineConnection)
+                    LineConnection, effective_set)
 
 # ─── 色定数 ────────────────────────────────────────────────────
 C_LINE_REF = QColor(160, 160, 160)
@@ -33,8 +33,13 @@ C_HANDLE_REF = QColor(130, 130, 130)
 C_HANDLE_END = QColor(220, 50, 50)
 C_HANDLE_RAD = QColor(40, 180, 80)
 C_HANDLE_INT = QColor(220, 140, 20)
+C_BBOX = QColor(80, 160, 255, 180)     # AABB 枠線
+C_BBOX_VERTEX = QColor(80, 160, 255)   # 頂点ハンドル
+C_BBOX_DIAG = QColor(255, 160, 40)     # 対角線
 
 HANDLE_RADIUS = 7  # px
+BBOX_VERTEX_R = 6   # px  AABB 頂点ハンドル半径
+BBOX_EDGE_W = 10    # px  辺のヒット幅（片側）
 
 # ─── ヒットテスト閾値 ───────────────────────────────────────────
 HIT_DIST = 8  # px
@@ -98,6 +103,9 @@ class Canvas(QWidget):
         マウス移動のたびにワールド座標 (x, y) を emit する。
     hover_changed : object
         ホバー対象の図形が変わったときに emit される。None は非ホバー。
+    measure_dist_changed : float
+        ラバーバンド選択中の対角ワールド距離 [m] を emit する。
+        非測定時（終了・キャンセル時）は -1 を emit して表示を消す。
 
     Attributes
     ----------
@@ -116,6 +124,7 @@ class Canvas(QWidget):
     scene_changed = Signal()       # シーン変更
     mouse_world_pos = Signal(float, float)  # マウスのワールド座標
     hover_changed = Signal(object)         # ホバー中の図形（None のとき非ホバー）
+    measure_dist_changed = Signal(float)   # ラバーバンド対角距離（非測定時 -1）
 
     MODE_SELECT = "select"
     MODE_LINE = "line"
@@ -162,8 +171,19 @@ class Canvas(QWidget):
         self._circle_center: Optional[Vec2] = None
         self._rubber_radius: float = 0.0
 
+        # ラバーバンド選択（Shift+ドラッグ）
+        self._rubber_select_start: Optional[Vec2] = None  # スクリーン座標
+        self._rubber_select_end: Optional[Vec2] = None    # スクリーン座標
+
         # ハンドルキャッシュ
         self._handles: list[Handle] = []
+
+        # 複数選択時の AABB 変換ドラッグ
+        # mode: None | 'translate' | 'scale' | 'rotate'
+        self._bbox_drag_mode: Optional[str] = None
+        self._bbox_drag_start_w: Optional[Vec2] = None   # ドラッグ開始ワールド座標
+        self._bbox_drag_snapshot: Optional[dict] = None  # ドラッグ開始時のスナップショット
+        self._bbox_drag_aabb = None  # ドラッグ開始時の AABB（固定値）
 
         # undo スタック (最大 500)
         self._undo_stack: deque[dict] = deque(maxlen=500)
@@ -309,50 +329,314 @@ class Canvas(QWidget):
         self.selection_changed.emit(self._selected)
         self.update()
 
+    # ─── AABB 変換ドラッグ（複数選択時）────────────────────────
+
+    def _is_multi_select(self) -> bool:
+        """複数の独立した図形が選択されているか判定する。"""
+        return len(effective_set(self._selected)) >= 2
+
+    def _selection_aabb(self):
+        """選択図形の AABB を (min_x, min_y, max_x, max_y) で返す。
+
+        有効点が無ければ None を返す。
+        """
+        pts = []
+        for obj in self._selected:
+            if isinstance(obj, Line):
+                for seg in obj.segments:
+                    pts += [(seg.start.x, seg.start.y),
+                            (seg.end.x, seg.end.y)]
+                if not obj.segments:
+                    pts += [(obj.ref_start.x, obj.ref_start.y),
+                            (obj.ref_end.x, obj.ref_end.y)]
+            elif isinstance(obj, Circle):
+                r = obj.radius
+                pts += [(obj.center.x - r, obj.center.y),
+                        (obj.center.x + r, obj.center.y),
+                        (obj.center.x, obj.center.y - r),
+                        (obj.center.x, obj.center.y + r)]
+            elif isinstance(obj, Clothoid) and obj.points:
+                pts += [(p.x, p.y) for p in obj.points]
+            elif isinstance(obj, Segment):
+                pts += [(obj.start.x, obj.start.y),
+                        (obj.end.x, obj.end.y)]
+            elif isinstance(obj, Arc):
+                ci = obj.circle
+                if ci:
+                    r = ci.radius
+                    pts += [(ci.center.x - r, ci.center.y),
+                            (ci.center.x + r, ci.center.y),
+                            (ci.center.x, ci.center.y - r),
+                            (ci.center.x, ci.center.y + r)]
+        if not pts:
+            return None
+        xs, ys = zip(*pts)
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def _bbox_corners_s(self, aabb):
+        """AABB の 4 頂点をスクリーン座標で返す（TL, TR, BR, BL 順）。
+
+        aabb は (min_x, min_y, max_x, max_y) のタプル。
+        """
+        mn_x, mn_y, mx_x, mx_y = aabb
+        return [
+            self.w2s(Vec2(mn_x, mx_y)),  # TL（ワールドy上 → スクリーン上）
+            self.w2s(Vec2(mx_x, mx_y)),  # TR
+            self.w2s(Vec2(mx_x, mn_y)),  # BR
+            self.w2s(Vec2(mn_x, mn_y)),  # BL
+        ]
+
+    def _hit_bbox(self, sw: Vec2):
+        """スクリーン座標 sw が AABB ハンドルに当たるか判定する。
+
+        Returns
+        -------
+        str or None
+            'vertex_0'..'vertex_3' / 'edge_0'..'edge_3' / 'diagonal' / None
+            頂点優先、対角線次、辺の順で判定する。
+        """
+        if not self._is_multi_select():
+            return None
+        aabb = self._selection_aabb()
+        if aabb is None:
+            return None
+        corners = self._bbox_corners_s(aabb)
+
+        # 頂点ヒット（最優先）
+        for i, c in enumerate(corners):
+            if math.hypot(sw.x - c.x(), sw.y - c.y()) <= BBOX_VERTEX_R + 4:
+                return f'vertex_{i}'
+
+        # 対角線ヒット（線分との距離）
+        mn_x, mn_y, mx_x, mx_y = aabb
+
+        def dist_to_seg_s(ax, ay, bx, by, px, py):
+            dx, dy = bx - ax, by - ay
+            t = ((px - ax) * dx + (py - ay) * dy) / (
+                dx * dx + dy * dy + 1e-12)
+            t = max(0.0, min(1.0, t))
+            return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+        for i in range(2):
+            a, b = corners[i], corners[i + 2]
+            d = dist_to_seg_s(a.x(), a.y(), b.x(), b.y(), sw.x, sw.y)
+            if d <= 8:
+                return 'diagonal'
+
+        # 辺ヒット（辺の中点付近）
+        for i in range(4):
+            a, b = corners[i], corners[(i + 1) % 4]
+            d = dist_to_seg_s(a.x(), a.y(), b.x(), b.y(), sw.x, sw.y)
+            if d <= BBOX_EDGE_W:
+                return f'edge_{i}'
+
+        return None
+
+    def _snapshot_selected(self) -> dict:
+        """選択図形の現在ジオメトリをスナップショットとして返す。
+
+        ドラッグ中に「開始時の状態」から変換を計算するために使う。
+        """
+        snap = {}
+        effective = effective_set(self._selected)
+        for obj in effective:
+            if isinstance(obj, Line):
+                snap[id(obj)] = {
+                    'ref_start': Vec2(obj.ref_start.x, obj.ref_start.y),
+                    'ref_end': Vec2(obj.ref_end.x, obj.ref_end.y),
+                }
+            elif isinstance(obj, Circle):
+                snap[id(obj)] = {
+                    'center': Vec2(obj.center.x, obj.center.y),
+                    'radius': obj.radius,
+                    'arc_angles': [(a.angle_start, a.angle_end)
+                                   for a in obj.arcs],
+                }
+        return snap
+
+    def _apply_snapshot(self, snap: dict):
+        """スナップショットを選択図形に復元する（ドラッグ中の再適用用）。"""
+        effective = effective_set(self._selected)
+        for obj in effective:
+            s = snap.get(id(obj))
+            if s is None:
+                continue
+            if isinstance(obj, Line):
+                obj.ref_start = Vec2(s['ref_start'].x, s['ref_start'].y)
+                obj.ref_end = Vec2(s['ref_end'].x, s['ref_end'].y)
+            elif isinstance(obj, Circle):
+                obj.center = Vec2(s['center'].x, s['center'].y)
+                obj.radius = s['radius']
+                for arc, (as_, ae) in zip(obj.arcs, s['arc_angles']):
+                    arc.angle_start = as_
+                    arc.angle_end = ae
+
+    def _bbox_apply_translate(self, dx: float, dy: float):
+        """スナップショットから復元し dx/dy 平行移動を適用する。"""
+        self._apply_snapshot(self._bbox_drag_snapshot)
+        effective = effective_set(self._selected)
+        moved_ids: set = set()
+        for obj in effective:
+            if isinstance(obj, Line):
+                obj.ref_start = Vec2(obj.ref_start.x + dx,
+                                     obj.ref_start.y + dy)
+                obj.ref_end = Vec2(obj.ref_end.x + dx, obj.ref_end.y + dy)
+                moved_ids.add(id(obj))
+            elif isinstance(obj, Circle):
+                obj.center = Vec2(obj.center.x + dx, obj.center.y + dy)
+                moved_ids.add(id(obj))
+        self._recompute_after_bbox(moved_ids)
+
+    def _bbox_apply_scale(self, factor: float, center: Vec2):
+        """スナップショットから復元し center 基準で factor 倍拡縮する。"""
+        if abs(factor) < 1e-6:
+            return
+        self._apply_snapshot(self._bbox_drag_snapshot)
+        effective = effective_set(self._selected)
+        cx, cy = center.x, center.y
+
+        def sc(v: Vec2) -> Vec2:
+            return Vec2(cx + (v.x - cx) * factor,
+                        cy + (v.y - cy) * factor)
+
+        moved_ids: set = set()
+        for obj in effective:
+            if isinstance(obj, Line):
+                obj.ref_start = sc(obj.ref_start)
+                obj.ref_end = sc(obj.ref_end)
+                moved_ids.add(id(obj))
+            elif isinstance(obj, Circle):
+                obj.center = sc(obj.center)
+                obj.radius = obj.radius * abs(factor)
+                moved_ids.add(id(obj))
+        self._recompute_after_bbox(moved_ids)
+
+    def _bbox_apply_rotate(self, angle_rad: float, center: Vec2):
+        """スナップショットから復元し center 基準で angle_rad 回転する。"""
+        self._apply_snapshot(self._bbox_drag_snapshot)
+        effective = effective_set(self._selected)
+        cx, cy = center.x, center.y
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+
+        def rot(v: Vec2) -> Vec2:
+            dx_r = v.x - cx
+            dy_r = v.y - cy
+            return Vec2(cx + dx_r * cos_a - dy_r * sin_a,
+                        cy + dx_r * sin_a + dy_r * cos_a)
+
+        moved_ids: set = set()
+        for obj in effective:
+            if isinstance(obj, Line):
+                obj.ref_start = rot(obj.ref_start)
+                obj.ref_end = rot(obj.ref_end)
+                moved_ids.add(id(obj))
+            elif isinstance(obj, Circle):
+                obj.center = rot(obj.center)
+                for arc in obj.arcs:
+                    arc.angle_start += angle_rad
+                    arc.angle_end += angle_rad
+                moved_ids.add(id(obj))
+        self._recompute_after_bbox(moved_ids)
+
+    def _recompute_after_bbox(self, moved_ids: set):
+        """AABB 変換後にクロソイドを再計算して画面を更新する。"""
+        for clo in self.scene.clothoids:
+            if id(clo.line) in moved_ids or id(clo.circle) in moved_ids:
+                clo.compute()
+        self._rebuild_handles()
+        self.update()
+
+    def _draw_bbox_handles(self, painter: QPainter):
+        """複数選択時の AABB 変換ハンドルを描画する。
+
+        頂点（塗り潰し円）・辺（矩形の線）・対角線（破線）・中心点を描く。
+        """
+        if not self._is_multi_select():
+            return
+        aabb = self._selection_aabb()
+        if aabb is None:
+            return
+        mn_x, mn_y, mx_x, mx_y = aabb
+        corners = self._bbox_corners_s(aabb)
+
+        # 矩形枠（辺）
+        pen = QPen(C_BBOX, 1.5, Qt.PenStyle.SolidLine)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        poly = QPolygonF([c for c in corners])
+        painter.drawPolygon(poly)
+
+        # 対角線（1点鎖線）
+        pen_diag = QPen(C_BBOX_DIAG, 1.5, Qt.PenStyle.DashDotLine)
+        painter.setPen(pen_diag)
+        painter.drawLine(corners[0], corners[2])
+        painter.drawLine(corners[1], corners[3])
+
+        # AABB 中心（小さい十字）
+        cx_s = self.w2s(Vec2((mn_x + mx_x) / 2, (mn_y + mx_y) / 2))
+        painter.setPen(QPen(C_BBOX_DIAG, 1.5))
+        r = 5
+        painter.drawLine(
+            QPointF(cx_s.x() - r, cx_s.y()),
+            QPointF(cx_s.x() + r, cx_s.y()))
+        painter.drawLine(
+            QPointF(cx_s.x(), cx_s.y() - r),
+            QPointF(cx_s.x(), cx_s.y() + r))
+
+        # 頂点ハンドル
+        painter.setPen(QPen(C_BBOX_VERTEX, 1.5))
+        painter.setBrush(QBrush(C_BBOX_VERTEX))
+        for c in corners:
+            painter.drawEllipse(c, BBOX_VERTEX_R, BBOX_VERTEX_R)
+
     def _rebuild_handles(self):
         """選択図形に対応するハンドルを再構築して ``_handles`` リストを更新する。
 
-        クロソイドに吸着（snap）または分割（split）された端点はハンドルから除外する。
+        クロソイドに拘束された端点はハンドルから除外する:
+
+        - snap=True: ``seg.clothoid_start/end``・``arc.clothoid_start/end`` が
+          有効なクロソイド ID を指す端点のみ除外する
+        - snap=False: ``_split_seg_ids`` に含まれる分割線分は両端とも除外する
+          （クロソイドが自動生成した分割線分はユーザーが直接動かせない）
+
         Line の接続共有点（``LineConnection.shared_point``）は重複して追加しない。
+        複数選択時の AABB 変換ハンドルはここでは生成しない
+        （:meth:`_draw_bbox_handles` / :meth:`_hit_bbox` が直接扱う）。
         """
         self._handles.clear()
         seen_connections = set()
 
-        # クロソイドにsnapされている端点を収集（ハンドルを出さない）
+        # クロソイドにsnapされている���点を収集（ハンドルを出さない）
         snapped_seg_ends: set[tuple] = set()   # (seg_id, 'start'|'end')
         snapped_arc_ends: set[tuple] = set()   # (arc_id, 'start'|'end')
-        for clo in self.scene.clothoids:
-            if not clo.is_valid:
-                continue
-            if clo.snap_segment and clo._line_pt is not None:
-                # snap=on: 線側接点に吸着している端点
-                t_x = clo.line.project_t(clo._line_pt)
-                for seg in clo.line.segments:
-                    if abs(seg.t_end - t_x) < 1e-4:
-                        snapped_seg_ends.add((seg.id, 'end'))
-                    if abs(seg.t_start - t_x) < 1e-4:
+        clothoid_ids = {clo.id for clo in self.scene.clothoids
+                        if clo.is_valid}
+        for obj in self._selected:
+            if isinstance(obj, Line):
+                # snap=False で分割された線分: 両端ともハンドル不要
+                # (クロソイドが自動生成した分割線分はユーザーが直接動かせない)
+                split_ids: set[int] = set()
+                for clo in self.scene.clothoids:
+                    if (clo.is_valid and not clo.snap_segment
+                            and clo.line is obj):
+                        split_ids.update(clo._split_seg_ids)
+                for seg in obj.segments:
+                    if seg.id in split_ids:
                         snapped_seg_ends.add((seg.id, 'start'))
-            if not clo.snap_segment and clo._split_seg_ids:
-                # split=on: 分割端点（接点）はハンドル不要
-                segs_by_id = {s.id: s for s in clo.line.segments}
-                for sid in clo._split_seg_ids:
-                    seg = segs_by_id.get(sid)
-                    if seg:
-                        # AX の end と XB の start が接点 → どちらも非表示
-                        snapped_seg_ends.add((sid, 'end'))
-                        snapped_seg_ends.add((sid, 'start'))
-            if clo.snap_arc and clo._circle_pt is not None:
-                ang = math.atan2(clo._circle_pt.y - clo.circle.center.y,
-                                 clo._circle_pt.x - clo.circle.center.x)
-                for arc in clo.circle.arcs:
-                    if abs(arc.angle_start - ang) < 1e-4:
+                        snapped_seg_ends.add((seg.id, 'end'))
+                    else:
+                        # snap=True: clothoid_end/start の付���た端点のみ除外
+                        if seg.clothoid_end in clothoid_ids:
+                            snapped_seg_ends.add((seg.id, 'end'))
+                        if seg.clothoid_start in clothoid_ids:
+                            snapped_seg_ends.add((seg.id, 'start'))
+            elif isinstance(obj, Circle):
+                for arc in obj.arcs:
+                    if arc.clothoid_start in clothoid_ids:
                         snapped_arc_ends.add((arc.id, 'start'))
-                    if abs(arc.angle_end - ang) < 1e-4:
+                    if arc.clothoid_end in clothoid_ids:
                         snapped_arc_ends.add((arc.id, 'end'))
-            if not clo.snap_arc and clo._split_arc_ids:
-                for aid in clo._split_arc_ids:
-                    snapped_arc_ends.add((aid, 'end'))
-                    snapped_arc_ends.add((aid, 'start'))
 
         for obj in self._selected:
             if isinstance(obj, Line):
@@ -597,6 +881,132 @@ class Canvas(QWidget):
         proj = a + ab * t
         return (p - proj).length()
 
+    # ─── ラバーバンド選択 ────────────────────────────────────
+    def _arc_in_rect(self, ci: Circle, arc: Arc,
+                     wx0: float, wy0: float,
+                     wx1: float, wy1: float) -> bool:
+        """Arc が矩形 [wx0,wx1]×[wy0,wy1] に完全に含まれるか判定する。
+
+        始点・終点と弧上のサンプル点（約 10° 刻み）が全て矩形内に
+        収まるかどうかで判定する。
+
+        Parameters
+        ----------
+        ci : Circle
+            arc が属する円。
+        arc : Arc
+            判定する円弧。
+        wx0, wy0, wx1, wy1 : float
+            ワールド座標の矩形（wx0 < wx1、wy0 < wy1）。
+
+        Returns
+        -------
+        bool
+        """
+        def in_r(x, y):
+            return wx0 <= x <= wx1 and wy0 <= y <= wy1
+
+        if not in_r(arc.start.x, arc.start.y):
+            return False
+        if not in_r(arc.end.x, arc.end.y):
+            return False
+        cx, cy, r = ci.center.x, ci.center.y, ci.radius
+        span = arc.arc_angle()
+        n = max(8, int(abs(span) / math.radians(10)))
+        for i in range(1, n):
+            ang = arc.angle_start + span * i / n
+            if not in_r(cx + r * math.cos(ang), cy + r * math.sin(ang)):
+                return False
+        return True
+
+    def _objects_in_world_rect(self, wx0: float, wy0: float,
+                               wx1: float, wy1: float) -> list:
+        """ワールド矩形 [wx0,wx1]×[wy0,wy1] に含まれる図形リストを返す。
+
+        選択ルール:
+        - Clothoid: 全点が矩形内 → Clothoid を追加
+        - Arc: 全サンプル点が矩形内 → Arc と親 Circle を追加
+        - Circle（弧なし）: バウンディングボックスが矩形内 → Circle を追加
+        - Segment: 両端点が矩形内 → Segment と親 Line を追加
+
+        重複は id() で排除し、追加順を保持して返す。
+
+        Parameters
+        ----------
+        wx0, wy0, wx1, wy1 : float
+            ワールド座標の矩形（wx0 < wx1、wy0 < wy1）。
+
+        Returns
+        -------
+        list
+            含まれる図形オブジェクトのリスト（重複なし）。
+        """
+        def in_r(x, y):
+            return wx0 <= x <= wx1 and wy0 <= y <= wy1
+
+        seen: set[int] = set()
+        result: list = []
+
+        def add(obj):
+            oid = id(obj)
+            if oid not in seen:
+                seen.add(oid)
+                result.append(obj)
+
+        # Clothoid: 全点が矩形内
+        for clo in self.scene.clothoids:
+            if clo.points and all(in_r(p.x, p.y) for p in clo.points):
+                add(clo)
+
+        # 円弧あり → 含まれる Arc と親 Circle を追加
+        # 円弧なし → バウンディングボックスで判定
+        for ci in self.scene.circles:
+            if ci.arcs:
+                for arc in ci.arcs:
+                    if self._arc_in_rect(ci, arc, wx0, wy0, wx1, wy1):
+                        add(arc)
+                        add(ci)
+            else:
+                cx, cy, rad = ci.center.x, ci.center.y, ci.radius
+                if (in_r(cx - rad, cy) and in_r(cx + rad, cy)
+                        and in_r(cx, cy - rad) and in_r(cx, cy + rad)):
+                    add(ci)
+
+        # Segment: 両端点が矩形内 → Segment と親 Line を追加
+        for ln in self.scene.lines:
+            for seg in ln.segments:
+                if (in_r(seg.start.x, seg.start.y)
+                        and in_r(seg.end.x, seg.end.y)):
+                    add(seg)
+                    add(ln)
+
+        return result
+
+    def _complete_rubber_select(self) -> list:
+        """ラバーバンド矩形に含まれる図形リストを返す。
+
+        スクリーン座標の矩形をワールド座標に変換し、
+        :meth:`_objects_in_world_rect` を呼び出す。
+        矩形サイズが 4px 未満のときは空リストを返す（クリック扱い）。
+
+        Returns
+        -------
+        list
+            選択された図形オブジェクトのリスト。
+        """
+        s, e = self._rubber_select_start, self._rubber_select_end
+        if s is None or e is None:
+            return []
+        if abs(e.x - s.x) < 4 and abs(e.y - s.y) < 4:
+            return []
+        sx0, sy0 = min(s.x, e.x), min(s.y, e.y)
+        sx1, sy1 = max(s.x, e.x), max(s.y, e.y)
+        # スクリーン y 下向き → ワールド y 上向き
+        # 画面上端(sy0) → ワールド y 最大、画面下端(sy1) → ワールド y 最小
+        w_tl = self.s2w(sx0, sy0)
+        w_br = self.s2w(sx1, sy1)
+        return self._objects_in_world_rect(w_tl.x, w_br.y, w_br.x, w_tl.y)
+
     # ─── 全体表示 ────────────────────────────────────────────
     def fit_all(self):
         """全図形の AABB を計算し、10% マージンで画面全体に収まるよう表示を調整する。
@@ -638,6 +1048,17 @@ class Canvas(QWidget):
 
     # ─── 描画 ────────────────────────────────────────────────
     def paintEvent(self, event):
+        """シーン全体を描画する。
+
+        描画順: グリッド → 参照線 → 線分 → 円 → 円弧 → クロソイド →
+        ラバー線（直線/円モード）→ ラバーバンド選択矩形 →
+        AABB 変換ハンドル（複数選択時）→ ハンドル。
+
+        Parameters
+        ----------
+        event : QPaintEvent
+            PySide6 ペイントイベント。
+        """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor(30, 30, 35))
@@ -661,8 +1082,12 @@ class Canvas(QWidget):
         # クロソイド
         for clo in self.scene.clothoids:
             self._draw_clothoid(painter, clo)
-        # ラバー線
+        # ラバー線（描画モード）
         self._draw_rubber(painter)
+        # ラバーバンド選択矩形（Shift+ドラッグ）
+        self._draw_rubber_select(painter)
+        # AABB 変換ハンドル（複数選択時）
+        self._draw_bbox_handles(painter)
         # ハンドル
         self._draw_handles(painter)
 
@@ -896,6 +1321,31 @@ class Canvas(QWidget):
             r = self.scale_w2s(self._rubber_radius)
             painter.drawEllipse(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r))
 
+    def _draw_rubber_select(self, painter: QPainter):
+        """ラバーバンド選択矩形を半透明で描画する。
+
+        Shift+ドラッグ中のみ描画する。青系の破線枠と半透明塗りで表示する。
+
+        Parameters
+        ----------
+        painter : QPainter
+            描画先のペインター。
+        """
+        if (self._rubber_select_start is None
+                or self._rubber_select_end is None):
+            return
+        s, e = self._rubber_select_start, self._rubber_select_end
+        x0, y0 = min(s.x, e.x), min(s.y, e.y)
+        x1, y1 = max(s.x, e.x), max(s.y, e.y)
+        rect = QRectF(x0, y0, x1 - x0, y1 - y0)
+        painter.setPen(QPen(QColor(80, 200, 255), 1, Qt.PenStyle.DashLine))
+        painter.setBrush(QBrush(QColor(80, 200, 255, 30)))
+        painter.drawRect(rect)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        # 対角線（始点 → 終点）を実線で描画
+        painter.setPen(QPen(QColor(80, 200, 255), 1, Qt.PenStyle.SolidLine))
+        painter.drawLine(QPointF(s.x, s.y), QPointF(e.x, e.y))
+
     def _draw_handles(self, painter: QPainter):
         """選択中の図形のハンドルを円として描画する。
 
@@ -914,17 +1364,19 @@ class Canvas(QWidget):
     def mousePressEvent(self, event):
         """マウスボタン押下イベントを処理する。
 
-        **左ボタン + 選択モード**:
+        **左ボタン + 選択モード**（判定順）:
 
-        1. :meth:`_hit_handle` でハンドルヒット判定。ヒットすれば
+        1. 複数選択中は :meth:`_hit_bbox` で AABB 変換ハンドルを最優先判定。
+           ヒットすれば :meth:`push_undo` 後に ``_bbox_drag_mode`` を設定し、
+           スナップショットと開始時 AABB を記録してドラッグ開始。
+        2. :meth:`_hit_handle` でハンドルヒット判定。ヒットすれば
            :meth:`push_undo` を呼んでからドラッグ対象として ``_drag_obj``
            に設定する（ドラッグ前の状態を Undo スタックに保存）。
-        2. ハンドルなし → :meth:`_hit_object` で図形ヒット判定。
+        3. ハンドルなし → :meth:`_hit_object` で図形ヒット判定。
            ``Shift`` なしでヒット: その図形のみ選択。
            ``Shift`` + ヒット: 選択のトグル。
-           ヒットなし: 選択解除。
-        3. :meth:`_rebuild_handles` → ``selection_changed.emit()``
-        4. パン開始のための ``_pan_start_screen``・``_pan_offset_start`` を記録。
+        4. 図形ヒットなし: ``Shift`` ありならラバーバンド選択を開始、
+           なしならパンを開始。
 
         **左ボタン + 直線モード**: :meth:`_line_click` を呼ぶ。
 
@@ -956,6 +1408,17 @@ class Canvas(QWidget):
             self._mouse_moved_px = 0
 
             if self.mode == self.MODE_SELECT:
+                # AABB 変換ハンドルヒット?（複数選択時、通常ハンドルより優先）
+                bbox_hit = self._hit_bbox(sw)
+                if bbox_hit is not None:
+                    self.push_undo()
+                    self._bbox_drag_mode = bbox_hit
+                    self._bbox_drag_start_w = w
+                    self._bbox_drag_snapshot = self._snapshot_selected()
+                    # ドラッグ開始時の AABB を固定（毎フレーム再計算すると発散）
+                    self._bbox_drag_aabb = self._selection_aabb()
+                    return
+
                 # ハンドルヒット?
                 h = self._hit_handle(sw)
                 if h:
@@ -978,11 +1441,17 @@ class Canvas(QWidget):
                     self.selection_changed.emit(self._selected)
                     self.update()
                 else:
-                    self._pan_start_screen = sw
-                    self._pan_offset_start = Vec2(
-                        self._offset.x, self._offset.y)
-                    self._is_panning = True
-                    self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    mods = event.modifiers()
+                    if mods & Qt.KeyboardModifier.ShiftModifier:
+                        # Shift+空白ドラッグ → ラバーバンド選択開始
+                        self._rubber_select_start = sw
+                        self._rubber_select_end = sw
+                    else:
+                        self._pan_start_screen = sw
+                        self._pan_offset_start = Vec2(
+                            self._offset.x, self._offset.y)
+                        self._is_panning = True
+                        self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
             elif self.mode == self.MODE_LINE:
                 self._line_click(w)
@@ -994,9 +1463,12 @@ class Canvas(QWidget):
     def mouseMoveEvent(self, event):
         """マウス移動イベントを処理する。
 
-        パン中はオフセットを更新する。ドラッグ中は移動量が 2px を超えた時点で
-        :meth:`_do_drag` を呼ぶ。直線/円モードのラバー線を更新し、
-        ホバー対象を更新して ``hover_changed`` と ``mouse_world_pos`` を emit する。
+        処理優先順: パン → ラバーバンド選択（終点更新 +
+        ``measure_dist_changed`` で対角距離を通知）→ AABB 変換ドラッグ
+        （:meth:`_do_bbox_drag`）→ ハンドルドラッグ（移動量 2px 超で
+        :meth:`_do_drag`）→ 直線/円モードのラバー線とホバー更新。
+        ホバー変化時は ``hover_changed``、移動のたびに ``mouse_world_pos``
+        を emit する。
 
         Parameters
         ----------
@@ -1014,6 +1486,22 @@ class Canvas(QWidget):
             self._offset = Vec2(self._pan_offset_start.x + dx,
                                 self._pan_offset_start.y + dy)
             self.update()
+            return
+
+        # ラバーバンド選択中: 終点を更新して再描画・距離を emit
+        if self._rubber_select_start is not None:
+            self._rubber_select_end = sw
+            self.mouse_world_pos.emit(w.x, w.y)
+            ws = self.s2w(self._rubber_select_start.x,
+                          self._rubber_select_start.y)
+            dist = math.hypot(w.x - ws.x, w.y - ws.y)
+            self.measure_dist_changed.emit(dist)
+            self.update()
+            return
+
+        # AABB 変換ドラッグ中
+        if self._bbox_drag_mode is not None and self._bbox_drag_start_w:
+            self._do_bbox_drag(w)
             return
 
         if self._drag_start_screen:
@@ -1046,11 +1534,15 @@ class Canvas(QWidget):
     def mouseReleaseEvent(self, event):
         """マウスボタンリリースイベントを処理する。
 
-        **左ボタン（ドラッグ終了）**:
+        **左ボタン（AABB 変換ドラッグ完了）**:
 
-        * ``_drag_obj`` が設定されている場合、``selection_changed.emit()``
-          を発行して右パネルのプロパティを即座に更新してから
-          ``_drag_obj``・``_drag_tag`` をリセットする。
+        * ``_bbox_drag_*`` をリセットし、``scene_changed.emit()`` でコミット
+          してから ``selection_changed.emit()`` で右パネルを更新する。
+
+        **左ボタン（ラバーバンド選択完了）**:
+
+        * :meth:`_complete_rubber_select` の結果を選択に反映し、
+          ``measure_dist_changed.emit(-1.0)`` で距離表示を消す。
 
         **左ボタン（パン終了）**:
 
@@ -1061,6 +1553,12 @@ class Canvas(QWidget):
         * ``_circle_center`` が設定されていれば ``radius = (w - center).length()``
           を計算し、``radius > 1e-3`` のとき :meth:`push_undo` 後に
           :class:`Circle` を生成して Scene に追加する。
+
+        **左ボタン（ハンドルドラッグ完了）**:
+
+        * ``_drag_obj`` が設定されている場合、``selection_changed.emit()``
+          を発行して右パネルのプロパティを即座に更新してから
+          ``_drag_obj``・``_drag_tag`` をリセットする。
 
         **中ボタン**: ``_is_panning = False`` でパンを終了する。
 
@@ -1082,6 +1580,28 @@ class Canvas(QWidget):
             return
 
         if btn == Qt.MouseButton.LeftButton:
+            # AABB 変換ドラッグ完了
+            if self._bbox_drag_mode is not None:
+                self._bbox_drag_mode = None
+                self._bbox_drag_start_w = None
+                self._bbox_drag_snapshot = None
+                self._bbox_drag_aabb = None
+                self.scene_changed.emit()
+                self.selection_changed.emit(self._selected)
+                return
+
+            # ラバーバンド選択完了
+            if self._rubber_select_start is not None:
+                sel = self._complete_rubber_select()
+                self._selected = sel
+                self._rebuild_handles()
+                self.selection_changed.emit(self._selected)
+                self._rubber_select_start = None
+                self._rubber_select_end = None
+                self.measure_dist_changed.emit(-1.0)
+                self.update()
+                return
+
             if self._is_panning:
                 self._is_panning = False
                 self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -1132,9 +1652,11 @@ class Canvas(QWidget):
     def keyPressEvent(self, event):
         """キー押下イベントを処理する。
 
-        * ``Escape``: 直線/円モードの描画中状態をリセットする。
+        * ``Escape``: 直線モードの連続入力とラバーバンド選択をリセットし、
+          ``measure_dist_changed.emit(-1.0)`` で距離表示を消す。
         * ``Delete``: 選択中の図形を削除する（:meth:`_delete_selected`）。
         * ``Ctrl+Z``: Undo（:meth:`undo`）。
+        * モード切替（S/L/C）はメインウィンドウ側のアクションが処理する。
 
         Parameters
         ----------
@@ -1146,6 +1668,9 @@ class Canvas(QWidget):
             self._line_first_pt = None
             self._last_line = None
             self._rubber_end = None
+            self._rubber_select_start = None
+            self._rubber_select_end = None
+            self.measure_dist_changed.emit(-1.0)
             self.update()
         elif k == Qt.Key.Key_Delete:
             self._delete_selected()
@@ -1245,13 +1770,67 @@ class Canvas(QWidget):
         a.connection = conn
         b.connection = conn
 
+    # ─── AABB 変換ドラッグ処理 ───────────────────────────────────
+    def _do_bbox_drag(self, w: Vec2):
+        """AABB 変換ドラッグの各フレーム処理。
+
+        _bbox_drag_mode に応じて平行移動・拡大縮小・回転を適用する。
+        スナップショットから毎フレーム再計算するため累積誤差が出ない。
+
+        Parameters
+        ----------
+        w : Vec2
+            現在のマウスワールド座標。
+        """
+        mode = self._bbox_drag_mode
+        start = self._bbox_drag_start_w
+        if mode is None or start is None:
+            return
+
+        # ドラッグ開始時に固定した AABB を使う（毎フレーム再計算すると発散）
+        aabb = self._bbox_drag_aabb
+        if aabb is None:
+            return
+        mn_x, mn_y, mx_x, mx_y = aabb
+        cx = (mn_x + mx_x) / 2
+        cy = (mn_y + mx_y) / 2
+        center = Vec2(cx, cy)
+
+        if mode.startswith('edge_'):
+            # 平行移動: ドラッグ差分をそのまま適用
+            dx = w.x - start.x
+            dy = w.y - start.y
+            self._bbox_apply_translate(dx, dy)
+
+        elif mode.startswith('vertex_'):
+            # 拡大縮小: X/Y それぞれの倍率を求め大きい方を採用（XY同率）
+            idx = int(mode[-1])
+            corners_w = [
+                Vec2(mn_x, mx_y), Vec2(mx_x, mx_y),
+                Vec2(mx_x, mn_y), Vec2(mn_x, mn_y),
+            ]
+            orig_corner = corners_w[idx]
+            orig_dx = abs(orig_corner.x - cx)
+            orig_dy = abs(orig_corner.y - cy)
+            cur_dx = abs(w.x - cx)
+            cur_dy = abs(w.y - cy)
+            fx = cur_dx / orig_dx if orig_dx > 1e-6 else 1.0
+            fy = cur_dy / orig_dy if orig_dy > 1e-6 else 1.0
+            factor = max(fx, fy)
+            self._bbox_apply_scale(factor, center)
+
+        elif mode == 'diagonal':
+            # 回転: ドラッグ開始点→中心の角度と現在点→中心の角度の差
+            start_ang = math.atan2(start.y - cy, start.x - cx)
+            cur_ang = math.atan2(w.y - cy, w.x - cx)
+            angle_rad = cur_ang - start_ang
+            self._bbox_apply_rotate(angle_rad, center)
+
     # ─── ドラッグ処理 ─────────────────────────────────────────
     def _do_drag(self, w: Vec2):
         """ハンドルドラッグの各フレーム処理。
 
-        ``_drag_obj`` と ``_drag_tag`` の組み合わせでドラッグ対象を識別し、
-        ワールド座標 w に向けて図形を更新する。更新後は関連する Clothoid や
-        スムーズ接続の円にも変更を伝播し、``scene_changed`` を emit する。
+        型ごとのサブメソッドにディスパッチし、最後に伝播・再描画を行う。
 
         Parameters
         ----------
@@ -1262,77 +1841,90 @@ class Canvas(QWidget):
         tag = self._drag_tag
 
         if isinstance(obj, Line):
-            if tag == "line_ref_start":
-                obj.ref_start = w
-                self._propagate_line(obj)
-            elif tag == "line_ref_end":
-                obj.ref_end = w
-                self._propagate_line(obj)
-
+            self._drag_line(obj, tag, w)
         elif isinstance(obj, Segment):
-            ln = obj.line
-            if tag == "seg_start":
-                t = ln.project_t(w)
-                obj.t_start = t
-            elif tag == "seg_end":
-                t = ln.project_t(w)
-                obj.t_end = t
-
+            self._drag_segment(obj, tag, w)
         elif isinstance(obj, Circle):
-            if tag == "circle_center":
-                if obj.bisector_origin and obj.bisector_dir:
-                    # 二等分線上に束縛
-                    bd = obj.bisector_dir
-                    diff = w - obj.bisector_origin
-                    t = diff.dot(bd)
-                    obj.center = obj.bisector_origin + bd * t
-                else:
-                    obj.center = w
-                self._propagate_circle(obj)
-            elif tag == "circle_radius":
-                r = (w - obj.center).length()
-                if r > 1e-3:
-                    obj.radius = r
-                    self._propagate_circle(obj)
-
+            self._drag_circle(obj, tag, w)
         elif isinstance(obj, Arc):
-            ci = obj.circle
-            if tag == "arc_start":
-                ang = math.atan2(w.y - ci.center.y, w.x - ci.center.x)
-                obj.angle_start = ang
-            elif tag == "arc_end":
-                ang = math.atan2(w.y - ci.center.y, w.x - ci.center.x)
-                obj.angle_end = ang
-
+            self._drag_arc(obj, tag, w)
         elif isinstance(obj, LineConnection):
-            if tag == "shared_pt":
-                la, lb = obj.line_a, obj.line_b
-                # 記録済みの「どちら側が共有点か」に従って参照点を更新
-                if obj.a_end_is_shared:
-                    la.ref_end = w
-                else:
-                    la.ref_start = w
-                if obj.b_start_is_shared:
-                    lb.ref_start = w
-                else:
-                    lb.ref_end = w
-                obj.shared_point = w
-                # 両直線のクロソイド・smooth円を伝播
-                self._propagate_line(la)
-                self._propagate_line(lb)
-                if obj.kind == "smooth" and obj.circle is not None:
-                    self._update_smooth_circle(obj)
+            self._drag_connection(obj, tag, w)
 
         self._rebuild_handles()
         self.scene_changed.emit()
         self.update()
 
+    def _drag_line(self, obj: Line, tag: str, w: Vec2):
+        """Line ハンドルのドラッグ処理。"""
+        if tag == "line_ref_start":
+            obj.ref_start = w
+        elif tag == "line_ref_end":
+            obj.ref_end = w
+        self._propagate_line(obj)
+
+    def _drag_segment(self, obj: Segment, tag: str, w: Vec2):
+        """Segment ハンドルのドラッグ処理（t 値更新）。"""
+        ln = obj.line
+        if tag == "seg_start":
+            obj.t_start = ln.project_t(w)
+        elif tag == "seg_end":
+            obj.t_end = ln.project_t(w)
+
+    def _drag_circle(self, obj: Circle, tag: str, w: Vec2):
+        """Circle ハンドルのドラッグ処理。"""
+        if tag == "circle_center":
+            if obj.bisector_origin and obj.bisector_dir:
+                # 二等分線上に束縛
+                bd = obj.bisector_dir
+                t = (w - obj.bisector_origin).dot(bd)
+                obj.center = obj.bisector_origin + bd * t
+            else:
+                obj.center = w
+            self._propagate_circle(obj)
+        elif tag == "circle_radius":
+            r = (w - obj.center).length()
+            if r > 1e-3:
+                obj.radius = r
+                self._propagate_circle(obj)
+
+    def _drag_arc(self, obj: Arc, tag: str, w: Vec2):
+        """Arc ハンドルのドラッグ処理（角度更新）。"""
+        ci = obj.circle
+        ang = math.atan2(w.y - ci.center.y, w.x - ci.center.x)
+        if tag == "arc_start":
+            obj.angle_start = ang
+        elif tag == "arc_end":
+            obj.angle_end = ang
+
+    def _drag_connection(self, obj: LineConnection, tag: str, w: Vec2):
+        """LineConnection 共有点のドラッグ処理。"""
+        if tag != "shared_pt":
+            return
+        la, lb = obj.line_a, obj.line_b
+        if obj.a_end_is_shared:
+            la.ref_end = w
+        else:
+            la.ref_start = w
+        if obj.b_start_is_shared:
+            lb.ref_start = w
+        else:
+            lb.ref_end = w
+        obj.shared_point = w
+        self._propagate_line(la)
+        self._propagate_line(lb)
+        if obj.kind == "smooth" and obj.circle is not None:
+            self._update_smooth_circle(obj)
+
     def _propagate_line(self, ln: Line, _updating_smooth: bool = False):
-        """直線 ln の変更をクロソイドとスムーズ接続の円に伝播する。
+        """直線 ln の変更をクロソイドと接続先に伝播する。
 
         ``ln`` を参照する全クロソイドの ``compute()`` を呼び出す。
-        ``_updating_smooth=False`` のとき、スムーズ接続の円も
-        :meth:`_update_smooth_circle` で更新する（無限再帰を防ぐフラグ）。
+        ``_updating_smooth=False`` のとき:
+
+        - スムーズ接続の円を :meth:`_update_smooth_circle` で更新する。
+        - 折れ線接続の相手直線を :meth:`_follow_polyline_connection`
+          で平行移動して共有端点を追従させる。
 
         Parameters
         ----------
@@ -1346,8 +1938,13 @@ class Canvas(QWidget):
                 clo.compute()
         if not _updating_smooth:
             conn = ln.connection
-            if conn and conn.kind == "smooth" and conn.circle is not None:
-                self._update_smooth_circle(conn)
+            if conn is not None:
+                if conn.kind == "smooth" and conn.circle is not None:
+                    self._update_smooth_circle(conn)
+                elif conn.kind == "polyline":
+                    self._follow_polyline_connection(conn, ln)
+        # TwoLineOffsetConstraint: 直線が動いたら円中心を追従させる
+        self._propagate_two_line_oc_for_line(ln)
 
     def _propagate_circle(self, ci: Circle):
         """円 ``ci`` の変形をクロソイド・オフセット拘束に伝播する。
@@ -1358,7 +1955,10 @@ class Canvas(QWidget):
         伝播の順序:
 
         1. ``ci`` を参照する全クロソイドに :meth:`Clothoid.compute` を呼ぶ
-        2. :meth:`_propagate_offset_constraints` でオフセット拘束追従
+        2. :meth:`_propagate_two_line_offset_constraints` で
+           TwoLineOffsetConstraint を先に解いて ``ci.center`` を確定させる。
+           （半径変化時に 2直線からの距離を維持するため先行させる）
+        3. :meth:`_propagate_offset_constraints` でオフセット拘束追従
 
         Parameters
         ----------
@@ -1368,7 +1968,9 @@ class Canvas(QWidget):
         for clo in self.scene.clothoids:
             if clo.circle is ci:
                 clo.compute()
-        # OffsetConstraint の追従
+        # TwoLineOC を先に解いて ci.center を確定させる（半径変化への対応）
+        self._propagate_two_line_offset_constraints(ci)
+        # 確定した ci.center を使って OffsetConstraint を解く
         self._propagate_offset_constraints(ci)
 
     def _propagate_offset_constraints(self, ci: 'Circle'):
@@ -1383,6 +1985,9 @@ class Canvas(QWidget):
                         oc.feasible が False になるため呼び出し元は
                         視覚的なフィードバックを提供できる。
 
+        末尾で :meth:`_propagate_two_line_offset_constraints` も呼び、
+        TwoLineOffsetConstraint（2直線-1円）への連鎖伝播を行う。
+
         Parameters
         ----------
         ci : Circle
@@ -1395,6 +2000,127 @@ class Canvas(QWidget):
                 self._propagate_line(oc.line)
                 self.scene_changed.emit()
                 self.update()
+        # TwoLineOffsetConstraint（2直線-1円）の追従
+        self._propagate_two_line_offset_constraints(ci)
+
+    def _propagate_two_line_offset_constraints(self, ci: 'Circle'):
+        """円 ci の半径変化を TwoLineOffsetConstraint に伝播する。
+
+        ci が circle として含まれる TwoLineOffsetConstraint に対して
+        solve() を呼び出し、円中心を再計算する（2直線は動かさない）。
+        solve() 後に ci に付属するクロソイドを再計算する。
+
+        Parameters
+        ----------
+        ci : Circle
+            半径または位置が変化した円。
+        """
+        for oc in self.scene.two_line_offset_constraints:
+            if oc.circle is ci:
+                oc.solve()   # ci.center を更新（直線は動かさない）
+                # ci.center が変わったのでクロソイドを再計算
+                for clo in self.scene.clothoids:
+                    if clo.circle is ci:
+                        clo.compute()
+                self.scene_changed.emit()
+                self.update()
+
+    def _propagate_two_line_oc_for_line(self, ln: 'Line'):
+        """直線 ln の移動を TwoLineOffsetConstraint に伝播する。
+
+        ln が line_a または line_b として含まれる TwoLineOffsetConstraint に
+        対して solve() を呼び出し、円中心を再計算する。
+
+        円中心の更新後に :meth:`_propagate_offset_constraints` を呼ぶことで、
+        その円を参照する OffsetConstraint への連鎖伝播も行う。
+
+        Parameters
+        ----------
+        ln : Line
+            移動した直線。
+        """
+        for oc in self.scene.two_line_offset_constraints:
+            if oc.line_a is ln or oc.line_b is ln:
+                oc.solve()   # oc.circle.center を更新
+                # 円に付属するクロソイドを再計算
+                for clo in self.scene.clothoids:
+                    if clo.circle is oc.circle:
+                        clo.compute()
+                # 連鎖: 更新された円を参照する OffsetConstraint にも伝播
+                # （TwoLineOC の solve は冪等なので無限ループにはならない）
+                self._propagate_offset_constraints(oc.circle)
+                self.scene_changed.emit()
+                self.update()
+
+    # ─── 外部公開・伝播ヘルパー ──────────────────────────────────
+    def propagate_from_circle(self, ci: 'Circle'):
+        """外部（プロパティパネル等）から円 ci の変化をチェーン伝播させる。
+
+        TwoLineOC の solve 済み ci.center を使って OffsetConstraint を解き、
+        さらに下流の TwoLineOC まで連鎖させる。
+        伝播完了後に repaint() で即時再描画する（update() の遅延を避ける）。
+        """
+        self._propagate_offset_constraints(ci)
+        self._rebuild_handles()   # ハンドルのキャッシュを最新ジオメトリで更新
+        self.scene_changed.emit()
+        self.update()
+
+    def propagate_from_line(self, ln: 'Line'):
+        """外部（プロパティパネル等）から直線 ln の変化をチェーン伝播させる。
+
+        :meth:`_propagate_line` を呼ぶことで、クロソイド再計算・
+        スムーズ接続の円の再配置・折れ線接続の追従・TwoLineOC 連鎖を
+        まとめて実行する。
+        """
+        self._propagate_line(ln)
+        self._rebuild_handles()   # ハンドルのキャッシュを最新ジオメトリで更新
+        self.scene_changed.emit()
+        self.update()
+
+    def _follow_polyline_connection(
+            self, conn: 'LineConnection', moved: Line):
+        """折れ線接続で moved が動いたとき、接続先の直線を平行移動して追従させる。
+
+        moved の共有端点が ``conn.shared_point`` から移動していた場合、
+        差分ベクトル ``delta`` で接続先直線を丸ごと平行移動し
+        ``conn.shared_point`` を更新する。その後 :meth:`_propagate_line`
+        を再帰的に呼んで接続先直線のクロソイド等も更新する。
+
+        再帰防止: ``conn.shared_point`` を先に更新するため、接続先直線の
+        :meth:`_propagate_line` が再び本メソッドを呼んでも
+        ``delta.length() < 1e-9`` の判定で即座に返る。
+
+        Parameters
+        ----------
+        conn : LineConnection
+            2直線間の折れ線接続オブジェクト。
+        moved : Line
+            今回移動した直線。
+        """
+        la, lb = conn.line_a, conn.line_b
+        if moved is la:
+            new_pt = (la.ref_end if conn.a_end_is_shared
+                      else la.ref_start)
+            other = lb
+        elif moved is lb:
+            new_pt = (lb.ref_start if conn.b_start_is_shared
+                      else lb.ref_end)
+            other = la
+        else:
+            return
+
+        delta = new_pt - conn.shared_point
+        if delta.length() < 1e-9:
+            return   # 変化なし → 再帰終端
+
+        conn.shared_point = new_pt   # 先に更新して再帰を止める
+
+        # 接続先直線を平行移動（方向を変えずに端点を追従させる）
+        other.ref_start = other.ref_start + delta
+        other.ref_end = other.ref_end + delta
+
+        # 接続先に伝播（クロソイド再計算・TwoLineOC 追従 etc.）
+        self._propagate_line(other)
 
     def _update_smooth_circle(self, conn: 'LineConnection'):
         """
@@ -1583,8 +2309,6 @@ class Canvas(QWidget):
             conn.circle = ci
             conn.bisector_dir = bisect
 
-        self.scene_changed.emit()
-        self.update()
         return True
 
     def disconnect_lines(self, line_a: Line, line_b: Line):
@@ -1595,5 +2319,3 @@ class Canvas(QWidget):
         self.push_undo()
         line_a.connection = None
         line_b.connection = None
-        self.scene_changed.emit()
-        self.update()

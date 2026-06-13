@@ -1,6 +1,6 @@
 [project]
 name = "road-designer"
-version = "1.0.0"
+version = "1.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,7 +24,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--tb=short --cov --cov-report=term-missing -m 'not spec'"
+addopts = "--tb=short --cov --cov-report=term-missing --cov-report=html -m 'not spec'"
 markers = [
     "spec: 要求仕様書との適合確認テスト（CI 除外）。手動実行: uv run pytest -m spec",
 ]
@@ -43,4 +43,7 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "raise NotImplementedError",
 ]
+
+[tool.coverage.html]
+directory = "htmlcov"
 

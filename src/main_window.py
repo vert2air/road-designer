@@ -88,7 +88,7 @@ class MainWindow(QMainWindow):
         self._splitter.setSizes([1100, 300])
 
     def _build_menu(self):
-        """メニューバー（ファイル・表示・ウィンドウ）を構築する。"""
+        """メニューバー（ファイル・編集・表示・縦断線形・3Dビューア）を構築する。"""
         mb = self.menuBar()
 
         # ── ファイル ──────────────────────────────────────────
@@ -114,6 +114,11 @@ class MainWindow(QMainWindow):
         act_open.triggered.connect(self._open)
         file_menu.addAction(act_open)
 
+        act_merge = QAction("追加で読み込む(&M)...", self)
+        act_merge.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        act_merge.triggered.connect(self._merge)
+        file_menu.addAction(act_merge)
+
         file_menu.addSeparator()
 
         act_clear = QAction("全削除", self)
@@ -132,6 +137,11 @@ class MainWindow(QMainWindow):
         act_fit.setShortcut(QKeySequence("Ctrl+0"))
         act_fit.triggered.connect(self._canvas.fit_all)
         edit_menu.addAction(act_fit)
+
+        edit_menu.addSeparator()
+        act_renum = QAction("ID を振り直す(&R)...", self)
+        act_renum.triggered.connect(self._renumber_ids)
+        edit_menu.addAction(act_renum)
 
         # ── 表示 ──────────────────────────────────────────────
         view_menu = mb.addMenu("表示(&V)")
@@ -239,6 +249,8 @@ class MainWindow(QMainWindow):
         self._canvas.mouse_world_pos.connect(
             self._right_panel.update_mouse_pos)
         self._canvas.hover_changed.connect(self._right_panel.update_hovered)
+        self._canvas.measure_dist_changed.connect(
+            self._right_panel.update_measure_dist)
 
         rp = self._right_panel
         rp.request_smooth_connect.connect(self._do_smooth_connect)
@@ -250,10 +262,16 @@ class MainWindow(QMainWindow):
         rp.request_flip_clothoid.connect(self._do_flip_clothoid)
         rp.request_set_offset.connect(self._do_set_offset_constraint)
         rp.request_clear_offset.connect(self._do_clear_offset_constraint)
+        rp.request_set_two_line_offset.connect(
+            self._do_set_two_line_offset_constraint)
+        rp.request_clear_two_line_offset.connect(
+            self._do_clear_two_line_offset_constraint)
         rp.request_push_undo.connect(self._canvas.push_undo)
         rp.request_select.connect(self._canvas.set_selection)
         rp.request_delete.connect(self._do_delete_objects)
         rp.scene_changed.connect(self._on_scene_changed)
+        # キャンバス参照を右パネルに渡す（直接 repaint() 呼び出し用）
+        rp.set_canvas(self._canvas)
 
     # ─── イベントハンドラ ─────────────────────────────────────
     def _on_selection_changed(self, selected: list):
@@ -284,6 +302,43 @@ class MainWindow(QMainWindow):
         # ニックネームコンボボックスの選択肢を常に最新に保つ
         self._right_panel.scene = self.scene
         self._right_panel._refresh_nick_combos()
+
+    def _notify_scene_changed(self, selection=None):
+        """scene_changed・selection_changed の emit と右パネル更新を一括実行する。
+
+        多くのハンドラが「scene_changed.emit → update_selection」の
+        3点セットを繰り返すのを防ぐための共通メソッド。
+
+        Parameters
+        ----------
+        selection : list or None
+            選択リスト。None のとき現在の ``_canvas._selected`` を使う。
+            空リスト ``[]`` を渡すと選択解除として扱われる。
+        """
+        if selection is None:
+            selection = self._canvas._selected
+        self._canvas.scene_changed.emit()
+        self._canvas.selection_changed.emit(selection)
+        self._right_panel.update_selection(selection, self.scene)
+
+    def _renumber_ids(self):
+        """「ID を振り直す」メニュー操作のハンドラ。
+
+        確認ダイアログを表示してから Scene.renumber_ids() を実行する。
+        振り直し後はコンボボックスと右パネルを再構築して表示を更新する。
+        """
+        from PySide6.QtWidgets import QMessageBox
+        ret = QMessageBox.question(
+            self, "ID を振り直す",
+            "全図形の ID を 1 から連番に振り直します。\n"
+            "この操作は元に戻せません。続けますか？",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        )
+        if ret != QMessageBox.StandardButton.Ok:
+            return
+        self.scene.renumber_ids()
+        self._on_scene_changed()
+        self._canvas.update()
 
     # ─── ツールバー/メニュー操作 ─────────────────────────────
     def _toggle_right_panel(self):
@@ -421,6 +476,33 @@ class MainWindow(QMainWindow):
         if path:
             self._open_file(path)
 
+    def _merge(self):
+        """ファイルを選択して現在の Scene に追加（マージ）する。
+
+        - 既存の選択をすべて解除する。
+        - 追加した図形（Line / Circle / Clothoid）のみを選択状態にする。
+        - Undo に記録してから追加する。
+        """
+        path, _ = QFileDialog.getOpenFileName(
+            self, "追加で読み込む", "",
+            "Road Design JSON (*.rdjson);;JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "読み込みエラー", str(e))
+            return
+
+        self._canvas.push_undo()
+        added = self.scene.merge_from_dict(data)
+
+        # 追加した図形のみ選択・ハンドル再構築
+        self._canvas._selected = list(added)
+        self._canvas._rebuild_handles()
+        self._notify_scene_changed()
+
     def _open_file(self, path: str) -> bool:
         """指定パスのファイルを読み込んで Scene を更新する。
 
@@ -442,8 +524,7 @@ class MainWindow(QMainWindow):
             self._canvas.scene = Scene.from_dict(data)
             self._canvas._selected.clear()
             self._canvas._handles.clear()
-            self._canvas.scene_changed.emit()
-            self._canvas.selection_changed.emit([])
+            self._notify_scene_changed([])
             self._filepath = path
             self.setWindowTitle(f"道路設計アプリ - {os.path.basename(path)}")
             self._canvas.fit_all()
@@ -462,29 +543,26 @@ class MainWindow(QMainWindow):
             self._canvas.scene = Scene()
             self._canvas._selected.clear()
             self._canvas._handles.clear()
-            self._canvas.scene_changed.emit()
-            self._canvas.selection_changed.emit([])
+            self._notify_scene_changed([])
 
     # ─── クロソイド操作 ──────────────────────────────────────
     def _do_smooth_connect(self, a, b):
         """RightPanel.request_smooth_connect シグナルを受けて
         Canvas.smooth_connect を呼ぶ。"""
         self._canvas.smooth_connect(a, b)
-        self._right_panel.update_selection(self._canvas._selected, self.scene)
+        self._notify_scene_changed()
 
     def _do_polyline_connect(self, a, b):
         """RightPanel.request_polyline_connect シグナルを受けて折れ線接続を実行する。"""
         self._canvas.push_undo()
         self._canvas._connect_polyline(a, b)
-        self._canvas.scene_changed.emit()
-        self._canvas.update()
-        self._right_panel.update_selection(self._canvas._selected, self.scene)
+        self._notify_scene_changed()
 
     def _do_disconnect(self, a, b):
         """RightPanel.request_disconnect シグナルを受けて
         Canvas.disconnect_lines を呼ぶ。"""
         self._canvas.disconnect_lines(a, b)
-        self._right_panel.update_selection(self._canvas._selected, self.scene)
+        self._notify_scene_changed()
 
     def _do_add_arcs(self, ci: 'Circle', arcs: list):
         """``request_add_arcs`` シグナルを受けて Arc を円に追加する。
@@ -502,12 +580,14 @@ class MainWindow(QMainWindow):
         """
         for arc in arcs:
             ci.arcs.append(arc)
-        self._canvas.scene_changed.emit()
-        self._canvas.update()
-        self._right_panel.update_selection(self._canvas._selected, self.scene)
+        self._notify_scene_changed()
 
     def _do_add_clothoid(self, ln, ci):
         """RightPanel.request_add_clothoid シグナルを受けて Clothoid を生成・追加する。
+
+        既に同じ (ln, ci) のクロソイドが 1 本ある場合は reversed_flag を
+        反転した 2 本目を生成する。snap はデフォルト off（ユーザーが
+        右パネルから個別に on にする）。
 
         Parameters
         ----------
@@ -523,17 +603,13 @@ class MainWindow(QMainWindow):
         clo = Clothoid(ln, ci, reversed_flag=rev,
                        snap_segment=False, snap_arc=False)
         self.scene.add_clothoid(clo)
-        self._canvas.scene_changed.emit()
-        self._canvas.update()
-        self._right_panel.update_selection(self._canvas._selected, self.scene)
+        self._notify_scene_changed()
 
     def _do_delete_clothoid(self, clo):
         """RightPanel.request_delete_clothoid シグナルを受けて Clothoid を削除する。"""
         self._canvas.push_undo()
         self.scene.remove_clothoid(clo)
-        self._canvas.scene_changed.emit()
-        self._canvas.update()
-        self._right_panel.update_selection(self._canvas._selected, self.scene)
+        self._notify_scene_changed()
 
     def _do_delete_objects(self, objs: list):
         """右パネルの request_delete シグナルを受けて図形を削除する。
@@ -583,18 +659,14 @@ class MainWindow(QMainWindow):
         # 削除した図形が選択中だったら選択解除
         remaining = [o for o in self._canvas._selected if o not in objs]
         self._canvas._selected = remaining
-        self._canvas.scene_changed.emit()
-        self._canvas.update()
-        self._right_panel.update_selection(remaining, self.scene)
+        self._notify_scene_changed(remaining)
 
     def _do_flip_clothoid(self, clo):
         """RightPanel.request_flip_clothoid シグナルを受けて reversed_flag を切り替える。"""
         self._canvas.push_undo()
         clo.reversed_flag = not clo.reversed_flag
         clo.compute()
-        self._canvas.scene_changed.emit()
-        self._canvas.update()
-        self._right_panel.update_selection(self._canvas._selected, self.scene)
+        self._notify_scene_changed()
 
     def _do_set_offset_constraint(self, ln: 'Line',
                                   ci_a: 'Circle', ci_b: 'Circle'):
@@ -606,14 +678,15 @@ class MainWindow(QMainWindow):
         設定手順:
 
         1. 既存拘束の重複チェック（重複なら即リターン）
-        2. :meth:`Canvas.push_undo` で Undo スタックに現在状態を保存
-        3. :class:`OffsetConstraint` を生成して ``line``・``circle_a``・
+        2. :func:`models.detect_constraint_cycle` で循環依存チェック。
+           ループが生まれる場合は警告ダイアログを表示してキャンセル
+        3. :meth:`Canvas.push_undo` で Undo スタックに現在状態を保存
+        4. :class:`OffsetConstraint` を生成して ``line``・``circle_a``・
            ``circle_b`` を設定
-        4. :meth:`OffsetConstraint.calc_offsets_from_current` で
+        5. :meth:`OffsetConstraint.calc_offsets_from_current` で
            ``off_a``・``off_b``・``_eps_a``・``_eps_b`` を算出
-        5. ``scene.offset_constraints`` に追加
-        6. ``scene_changed.emit()`` → ``RightPanel.update_selection()`` で
-           右パネルを更新
+        6. ``scene.offset_constraints`` に追加
+        7. :meth:`_notify_scene_changed` で再描画と右パネル更新
 
         Parameters
         ----------
@@ -624,7 +697,7 @@ class MainWindow(QMainWindow):
         ci_b : Circle
             円 B。
         """
-        from models import OffsetConstraint
+        from models import OffsetConstraint, detect_constraint_cycle
         # 既存の拘束が同じ組み合わせであれば上書きしない
         existing = next(
             (oc for oc in self.scene.offset_constraints
@@ -633,6 +706,19 @@ class MainWindow(QMainWindow):
         )
         if existing is not None:
             return
+        # 循環依存チェック
+        if detect_constraint_cycle(
+                self.scene,
+                inputs={ci_a, ci_b},
+                outputs={ln}):
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "オフセット拘束 – 循環検出",
+                "この拘束を追加すると拘束のループが生まれます。\n"
+                "設定をキャンセルしました。"
+            )
+            return
         self._canvas.push_undo()
         oc = OffsetConstraint()
         oc.line = ln
@@ -640,8 +726,7 @@ class MainWindow(QMainWindow):
         oc.circle_b = ci_b
         oc.calc_offsets_from_current()
         self.scene.offset_constraints.append(oc)
-        self._canvas.scene_changed.emit()
-        self._right_panel.update_selection(self._canvas._selected, self.scene)
+        self._notify_scene_changed()
 
     def _do_clear_offset_constraint(self, ln: 'Line'):
         """``request_clear_offset`` シグナルを受けて直線 ``ln`` のオフセット拘束を解除する。
@@ -659,8 +744,76 @@ class MainWindow(QMainWindow):
         self.scene.offset_constraints = [
             oc for oc in self.scene.offset_constraints if oc.line is not ln
         ]
-        self._canvas.scene_changed.emit()
-        self._right_panel.update_selection(self._canvas._selected, self.scene)
+        self._notify_scene_changed()
+
+    def _do_set_two_line_offset_constraint(self,
+                                           ln_a: 'Line', ln_b: 'Line',
+                                           ci: 'Circle'):
+        """``request_set_two_line_offset`` シグナルを受けて拘束を新規設定する。
+
+        同じ ``({ln_a, ln_b}, ci)`` の組み合わせが既に存在する場合は何もしない。
+        :func:`models.detect_constraint_cycle` で循環依存をチェックし、
+        ループが生まれる場合は警告ダイアログを表示してキャンセルする。
+        設定時は ``calc_offsets_from_current`` で初期オフセットを算出する。
+
+        Parameters
+        ----------
+        ln_a : Line
+            拘束される直線 A。
+        ln_b : Line
+            拘束される直線 B。
+        ci : Circle
+            拘束の基準となる円 C。
+        """
+        from models import TwoLineOffsetConstraint, detect_constraint_cycle
+        existing = next(
+            (oc for oc in self.scene.two_line_offset_constraints
+             if {oc.line_a, oc.line_b} == {ln_a, ln_b} and oc.circle is ci),
+            None
+        )
+        if existing is not None:
+            return
+        # 循環依存チェック
+        if detect_constraint_cycle(
+                self.scene,
+                inputs={ln_a, ln_b},
+                outputs={ci}):
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "オフセット拘束（2直線-1円）– 循環検出",
+                "この拘束を追加すると拘束のループが生まれます。\n"
+                "設定をキャンセルしました。"
+            )
+            return
+        self._canvas.push_undo()
+        oc = TwoLineOffsetConstraint()
+        oc.line_a = ln_a
+        oc.line_b = ln_b
+        oc.circle = ci
+        oc.calc_offsets_from_current()
+        self.scene.two_line_offset_constraints.append(oc)
+        self._notify_scene_changed()
+
+    def _do_clear_two_line_offset_constraint(self,
+                                             ln_a: 'Line', ln_b: 'Line'):
+        """``request_clear_two_line_offset`` シグナルを受けて拘束を解除する。
+
+        ``{oc.line_a, oc.line_b} == {ln_a, ln_b}`` を満たす全拘束を削除する。
+
+        Parameters
+        ----------
+        ln_a : Line
+            拘束を解除する直線 A。
+        ln_b : Line
+            拘束を解除する直線 B。
+        """
+        self._canvas.push_undo()
+        self.scene.two_line_offset_constraints = [
+            oc for oc in self.scene.two_line_offset_constraints
+            if {oc.line_a, oc.line_b} != {ln_a, ln_b}
+        ]
+        self._notify_scene_changed()
 
     # ─── 縦断線形 ────────────────────────────────────────────
     def _get_or_create_ep(self, obj, rev: bool):

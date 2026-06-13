@@ -18,7 +18,7 @@
 
 ## 1. models.py — データモデルとユーティリティ
 
-アプリ全体の「Single Source of Truth」となるデータ定義ファイル。平面線形クラス（`Line`・`Segment`・`Circle`・`Arc`・`Clothoid`・`OffsetConstraint`・`Scene`）と、ファイル管理・接続・ユーティリティ関数を担う。
+アプリ全体の「Single Source of Truth」となるデータ定義ファイル。平面線形クラス（`Line`・`Segment`・`Circle`・`Arc`・`Clothoid`・`OffsetConstraint`・`TwoLineOffsetConstraint`・`Scene`）と、ファイル管理・接続・ユーティリティ関数を担う。
 
 縦断線形クラス（`ElementProfile`・`GradeLine`・`VerticalCurve` 等）は `vertical_profile.py` に定義されているが、既存コードの互換性のため `from vertical_profile import ...` で本モジュールから再エクスポートしている（2章参照）。
 
@@ -175,6 +175,7 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 #### `__init__(line, t_start=0.0, t_end=1.0, seg_id=None)`
 
 - `t_start`, `t_end` の範囲: 論理的には `[0, 1]` だが強制はしない（直線の外への延長も可能）
+- `clothoid_start` / `clothoid_end`: この端点を拘束しているクロソイドの整数 ID（`None` = 拘束なし）。`Scene.renumber_ids()` で ID マッピングの更新対象になる
 - **エッジケース**: `t_start >= t_end` は不正状態だが例外は投げない
 
 #### `start` プロパティ
@@ -248,6 +249,7 @@ CCW 90° 回転したベクトル `Vec2(-self.y, self.x)` を返す。`direction
 - `angle_start`: 弧の開始角度（ラジアン、x 軸正方向 = 0、CCW が正）
 - `angle_end`: 弧の終了角度（ラジアン）
 - `arc_id`: `None` のとき `new_id()` で採番
+- `clothoid_start` / `clothoid_end`: この端点を拘束しているクロソイドの整数 ID（`None` = 拘束なし）。`Scene.renumber_ids()` で ID マッピングの更新対象になる
 - コンストラクタは `circle.arcs.append(self)` を行わない。追加は呼び出し元が責任を持つ
 
 #### `arc_angle() -> float`
@@ -557,14 +559,19 @@ Undo 機能は `Canvas.push_undo()` が `scene.to_dict()` で Scene 全体を JS
 | `lines` | `list[Line]` | 全直線 |
 | `circles` | `list[Circle]` | 全円 |
 | `clothoids` | `list[Clothoid]` | 全クロソイド |
-| `offset_constraints` | `list[OffsetConstraint]` | オフセット拘束 |
+| `offset_constraints` | `list[OffsetConstraint]` | オフセット拘束（円2個+直線1本） |
+| `two_line_offset_constraints` | `list[TwoLineOffsetConstraint]` | 2直線+1円オフセット拘束 |
 | `element_profiles` | `list[ElementProfile]` | 縦断線形データ（要素単位） |
 | `vertical_alignments` | `list[VerticalAlignment]` | 旧フォーマット互換用（`from_dict` 時のみ読み込む、新規作成では常に空） |
 | `nicknames` | `dict[int, str]` | ID → ニックネーム |
 
-#### `get_nickname(obj_id, prefix="") -> str`
+#### `get_nickname(obj_id) -> Optional[str]`
 
-`nicknames[obj_id]` を返す。未設定のとき `f"nickname_{prefix}_{obj_id}"` を返す。
+`nicknames[obj_id]` を返す。未設定のとき `None` を返す（旧実装のようなフォールバック文字列を生成しない）。
+
+#### `display_name(obj_id, type_label) -> str`
+
+表示用の名称を返す。`get_nickname(obj_id)` が非 `None` ならそれを返し、`None` なら `f"({type_label}#{obj_id})"` の形式で返す。UI 上のニックネーム表示とコンボボックスのラベル生成で広く使われる。
 
 #### `set_nickname(obj_id, name)`
 
@@ -572,15 +579,15 @@ Undo 機能は `Canvas.push_undo()` が `scene.to_dict()` で Scene 全体を JS
 
 #### `add_line / add_circle / add_clothoid`
 
-図形をリストに追加し、デフォルトニックネームを設定する（既存ニックネームは上書きしない）。
+図形をリストに追加する。ニックネームのデフォルト設定は行わない（`get_nickname` が `None` を返す設計に変更済み）。
 
 #### `remove_line(line)`
 
-関連クロソイド（`c.line is line`）を先に削除してから `lines` から除去する。
+関連クロソイド（`c.line is line`）を `remove_clothoid()` 経由で先に削除（分割済み線分・円弧の復元を確実に実行）してから `lines` から除去する。オフセット拘束は自動削除されない（解除は `MainWindow._do_clear_*_constraint` の責務）。
 
 #### `remove_circle(circle)`
 
-関連クロソイド（`c.circle is circle`）を先に削除してから `circles` から除去する。
+関連クロソイド（`c.circle is circle`）を `remove_clothoid()` 経由で先に削除してから `circles` から除去する。オフセット拘束は自動削除されない。
 
 #### `remove_clothoid(clothoid)`
 
@@ -600,25 +607,57 @@ Undo 機能は `Canvas.push_undo()` が `scene.to_dict()` で Scene 全体を JS
 | `Circle` | 参照するクロソイド |
 | `Clothoid` | 参照する直線と円 |
 
+#### `renumber_ids()`
+
+Scene 内の全図形 ID を 1 から連番で振り直す。手順:
+
+1. `lines`（各 `segments` を含む）→ `circles`（各 `arcs` を含む）→ `clothoids` → `offset_constraints` → `two_line_offset_constraints` の順に全オブジェクトを列挙し、`old_id → new_id` のマッピングを作成する
+2. 各オブジェクトの `.id` を更新する（クロソイド・拘束はオブジェクト直接参照を保持しているため参照の更新は不要）
+3. `Segment.clothoid_start/clothoid_end`・`Arc.clothoid_start/clothoid_end`（クロソイド ID による整数参照）をマッピングで更新する
+4. `nicknames` 辞書のキーを新 ID に転記する（マッピングに無いキーは破棄）
+5. `_reset_id_counter_after(新最大 ID)` でカウンタを再設定する
+
+- **用途**: 複数ファイルのマージ後など ID が大きく飛んだとき、メニュー「ID を振り直す」から呼ばれる
+- **エッジケース**: 空の Scene → 何もしない（マッピングが空のままカウンタが 0 で再設定される）
+
+#### `merge_from_dict(d) -> list`
+
+`to_dict()` 形式の辞書 `d` を現在の Scene に追加（マージ）する。`Ctrl+Shift+O`（追加で読み込む）機能の実体。
+
+**アルゴリズム**:
+1. 既存 Scene の全 ID を `seen_ids` セットに収集する
+2. 読み込む各図形の ID を `_resolve_id()` でチェックし、衝突または `None` のとき `new_id()` で振り直す。振り直した場合は `id_remap`（旧 ID → 新 ID）に記録する
+3. `lines`（segments 含む）→ `circles`（arcs 含む）の順に復元・追記する。振り直し前の ID でも参照できるよう `lines_by_id`/`circles_by_id` にフォールバックエントリを残す
+4. `clothoids` を参照解決して追記する。保存済みの `split_seg_ids`/`split_arc_ids` を設定**してから** `compute()` を再実行することで、追従更新モード（再分割なし）で動作させ、余分な線分の生成を防ぐ
+5. `offset_constraints`・`two_line_offset_constraints` を、参照する図形が今回のマージに含まれるもののみ追記する
+6. `nicknames` を `id_remap` を考慮して転記する
+7. `_reset_id_counter_after(max(seen_ids))` でカウンタを更新する
+
+- **戻り値**: 追加された `Line`・`Circle`・`Clothoid` のリスト（呼び出し元が選択状態にする）
+- **対象外**: `element_profiles`・`vertical_alignments`・旧フォーマット互換は処理しない（`from_dict` の担当）
+
 #### `_fix_duplicate_ids()`
 
 `to_dict()` の呼び出し前に実行され、Scene 内の ID 重複を検出して自動修正する。全図形（`Line`→`Segment`→`Circle`→`Arc`→`Clothoid`→`OffsetConstraint`）を順に走査し、`seen` セットで衝突を検出したら `new_id()` で振り直す。
+
+走査順: `Line`→`Segment`→`Circle`→`Arc`→`Clothoid`→`OffsetConstraint`→`TwoLineOffsetConstraint`
 
 - **目的**: 保存ファイルに ID 重複が混入することを防ぎ、次回 open 時にクロソイドが消える問題を根本防止する
 - **エッジケース**: 通常の操作では ID 重複は発生しないが、古いファイルのロード後やバグによる不整合が蓄積した場合に機能する
 
 #### `to_dict() / from_dict(d)`
 
-**to_dict**: `_fix_duplicate_ids()` を呼び ID 重複を修正してから全図形を JSON シリアライズ可能な dict に変換する。各図形の `id` の直後に `nickname` を挿入する。`offset_constraints` も含む。
+**to_dict**: `_fix_duplicate_ids()` を呼び ID 重複を修正してから全図形を JSON シリアライズ可能な dict に変換する。各図形の `id` の直後に `nickname` を挿入する。`offset_constraints` および `two_line_offset_constraints` も含む。
 
 **from_dict**: 以下の順序で復元する:
 1. `lines`（`segments` を含む）→ `lines_by_id` に格納。**元の id（振り直し前）でもフォールバック参照を保持**する
 2. `circles`（`arcs` を含む）→ `circles_by_id` に格納。**同様にフォールバック参照を保持**する
 3. `clothoids`（`line_id`, `circle_id` で参照解決）
 4. `offset_constraints`（`line_id`, `ca_id`, `cb_id` で参照解決）
-5. `element_profiles`, `vertical_alignments`
-6. 旧フォーマット互換（トップレベルの `grade_lines`/`vertical_curves`）
-7. 全 ID の最大値 + 1 でカウンタを再設定
+5. `two_line_offset_constraints`（`la_id`, `lb_id`, `circle_id` で参照解決）
+6. `element_profiles`, `vertical_alignments`
+7. 旧フォーマット互換（トップレベルの `grade_lines`/`vertical_curves`）
+8. 全 ID の最大値 + 1 でカウンタを再設定
 
 **ID 衝突検出（`_resolve_id`）**: `seen_ids` セットで衝突を検出し、衝突した ID は `new_id()` で振り直す。振り直し後も `lines_by_id[original_id] = ln` / `circles_by_id[original_id] = ci` のフォールバックエントリを追加することで、clothoid の `line_id` / `circle_id` が振り直し前の値でも参照を解決できる。これにより ID 重複を持つファイル（`Line#6` と `Segment#6` が同じ id を持つ等）を開いたときもクロソイドが消えない。
 
@@ -701,7 +740,102 @@ n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
 
 ---
 
+### 1.14c `TwoLineOffsetConstraint` データクラス
+
+2 本の直線 A・B に対して円 C の中心位置を拘束するデータクラス。`@dataclass` で実装する。直線の移動が円の中心を追従させる（`OffsetConstraint` とは伝播方向が逆）。
+
+#### フィールド
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `id` | `int` | グローバルユニーク ID（`new_id()` で採番） |
+| `line_a` | `object` | 直線 A（循環参照回避のため `object` 型） |
+| `line_b` | `object` | 直線 B |
+| `circle` | `object` | 拘束される円 C |
+| `off_a` | `float` | 直線 A と円 C の縁のオフセット量 [m]（`距離 - 半径`、常に符号は `_eps_a` が管理） |
+| `off_b` | `float` | 直線 B と円 C の縁のオフセット量 [m] |
+| `feasible` | `bool` | 最後の `solve()` が成功したとき `True`（デフォルト `True`） |
+
+内部フィールド（`__post_init__` で 0 に初期化、`to_dict` に含まれない）:
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `_eps_a` | `int` | 円中心が直線 A のどちら側にあるかの符号（`+1`=左 / `-1`=右 / `0`=未設定） |
+| `_eps_b` | `int` | 直線 B 側の符号 |
+
+#### `calc_offsets_from_current()`
+
+現在の直線 2 本と円の位置関係から `off_a`・`off_b`・`_eps_a`・`_eps_b` を算出して設定する。
+
+- `off_a = line_a.distance_to(circle.center) - circle.radius`（円の縁までの距離）
+- `off_b = line_b.distance_to(circle.center) - circle.radius`
+- `_eps_a = sign(line_a.signed_dist(circle.center))`（円中心が左側なら `+1`）
+- `_eps_b = sign(line_b.signed_dist(circle.center))`
+
+#### `solve() -> bool`
+
+2 直線の現在位置から円 C の中心を再計算する（直線は動かさない）。`_eps_a`/`_eps_b` が未設定（0、ファイルロード直後）のときは現在の円中心の `signed_dist` 符号から ε のみを決定する。保存済みの `off_a`/`off_b` は上書きしない（上書きするとロード後最初の直線移動に円が追従しなくなるため）。
+
+**数式**: 各直線の左法線 `n = (-d.y, d.x)` と切片 `c = n · ref_start` を使い、次の 2×2 連立方程式を解く:
+
+```
+n_a · P = c_a + ε_a · (radius + off_a)
+n_b · P = c_b + ε_b · (radius + off_b)
+```
+
+右辺に `radius` が含まれるため、**円の半径を変えても 2 直線の縁からの距離 `off_a`/`off_b` が維持される**（半径変更に中心が追従する）。
+
+**アルゴリズム**:
+1. 行列式 `det = n_ax·n_by - n_ay·n_bx` を計算。`|det| < 1e-9`（2直線が平行）なら `feasible=False` で `False` を返す（円中心は変更しない）
+2. クラメルの公式で `P = (px, py)` を解き `circle.center` を更新
+3. `feasible = True` を設定して `True` を返す
+
+#### `to_dict() / from_dict(d, lines_by_id, circles_by_id)`
+
+**to_dict**: `{"id", "la_id", "lb_id", "circle_id", "off_a", "off_b"}` 形式の辞書を返す。`_eps_a`・`_eps_b`・`feasible` は含まれない（ロード後の初回 `solve()` で再計算）。
+
+**from_dict**: 辞書から `TwoLineOffsetConstraint` を復元する。`lines_by_id`・`circles_by_id` で参照を解決する。
+
+---
+
+### 1.14d `detect_constraint_cycle(scene, inputs, outputs) -> bool`（モジュールレベル関数）
+
+新しいオフセット拘束を追加すると拘束グラフにループが生まれるかを BFS で検査する。`MainWindow._do_set_offset_constraint` / `_do_set_two_line_offset_constraint` が拘束追加**前**に呼び、`True` のとき警告ダイアログを出して追加をキャンセルする。
+
+**拘束の伝播方向**（グラフのエッジ）:
+
+- `Circle → Line`: `OffsetConstraint`（円が動けば直線が動く）
+- `Line → Circle`: `TwoLineOffsetConstraint`（直線が動けば円が動く）
+
+**アルゴリズム**: 新しい拘束の出力ノード群 `outputs` から既存拘束のグラフを BFS で辿り、入力ノード群 `inputs` のいずれかに到達できれば循環確定（`True`）。
+
+| 新拘束の型 | `inputs` | `outputs` |
+|---|---|---|
+| `OffsetConstraint` | `{circle_a, circle_b}` | `{line}` |
+| `TwoLineOffsetConstraint` | `{line_a, line_b}` | `{circle}` |
+
+- **エッジケース**: 既存拘束がゼロ → BFS が即終了して `False`
+- **エッジケース**: 自己ループ（例: 同じ円を入力と出力に持つ組み合わせ）も同じ BFS で検出される
+
+---
+
 ### 1.15 ユーティリティ関数（モジュールレベル）
+
+#### `effective_set(selected: list) -> list`
+
+選択リスト `selected` から「有効な操作対象」のセットを返す。
+
+- `Segment` → 親 `Line` に昇格
+- `Arc` → 親 `Circle` に昇格
+- `id()` で重複を排除
+
+マルチ選択操作（コピー、移動、回転、スケール）において「線分や円弧が直接選択されていても、その親図形全体を操作対象にする」ために使用する。モジュールレベル関数として `models.py` に定義されており、`Canvas` および `RightPanel` の両方から利用する。
+
+**例**:
+- `[seg_a, seg_b]`（同一 Line の線分 2 本）→ `[line]`（親 Line が重複排除されて 1 個）
+- `[arc, line]` → `[circle, line]`（Arc が親 Circle に昇格）
+
+---
 
 #### `_elem_endpoints(obj) -> tuple[Optional[Vec2], Optional[Vec2]]`
 
@@ -823,6 +957,16 @@ n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
 
 ### 3.3 `Canvas` クラス
 
+**シグナル一覧**:
+
+| シグナル | 型 | 用途 |
+|---|---|---|
+| `selection_changed` | `list` | 選択図形リストが変わったとき |
+| `scene_changed` | `()` | シーン内容が変わったとき（undo/ドラッグ完了など） |
+| `mouse_world_pos` | `(float, float)` | マウス移動のたびにワールド座標を通知 |
+| `hover_changed` | `object` | ホバー対象の図形が変わったとき（`None` = 非ホバー）。右パネルのホバー情報表示に使う |
+| `measure_dist_changed` | `float` | ラバーバンド選択の対角ワールド距離 [m]。非測定時は `-1` を emit して表示を消す |
+
 #### `__init__(scene, parent=None)`
 
 初期状態:
@@ -830,19 +974,24 @@ n · (cb.center - ca.center) = ε_b · rb + ε_a · ra
 | フィールド | 初期値 | 説明 |
 |---|---|---|
 | `_scale` | `1.0` | ズーム倍率（px/m） |
-| `_offset` | `Vec2(w/2, h/2)` | パンオフセット（px） |
+| `_offset` | `Vec2(400, 300)` | パンオフセット（px） |
 | `mode` | `MODE_SELECT` | 現在の描画モード |
 | `_selected` | `[]` | 選択中の図形リスト |
-| `_handles` | `[]` | 現在表示中のハンドルリスト |
-| `_hover_obj` | `None` | ホバー中の図形（ハイライト用） |
-| `_drag_handle` | `None` | ドラッグ中のハンドル |
+| `_handles` | `[]` | 現在表示中のハンドルリスト（キャッシュ） |
+| `_hovered` | `None` | ホバー中の図形（ハイライト用） |
+| `_drag_obj` / `_drag_tag` | `None` / `""` | ドラッグ中のハンドルの所有図形と種別タグ |
+| `_drag_start_screen` / `_drag_start_world` | `None` | ドラッグ開始座標 |
 | `_line_first_pt` | `None` | 直線モードの1点目座標 |
 | `_last_line` | `None` | 直線モードで直前に追加した Line |
 | `_rubber_end` | `None` | ラバー線の現在終点（マウス位置） |
-| `_circle_center` | `None` | 円モードで記憶した中心点 |
-| `_pan_start` | `None` | パン開始時のスクリーン座標 |
-| `_pan_offset_start` | `None` | パン開始時の `_offset` 値 |
-| `_mouse_moved_px` | `0.0` | マウスダウンからの累積移動量（px）|
+| `_circle_center` / `_rubber_radius` | `None` / `0.0` | 円モードで記憶した中心点とラバー半径 |
+| `_rubber_select_start` / `_rubber_select_end` | `None` | ラバーバンド選択（Shift+ドラッグ）の矩形（スクリーン座標） |
+| `_pan_start_screen` / `_pan_offset_start` / `_is_panning` | `None` / `None` / `False` | パン状態 |
+| `_mouse_moved_px` | `0` | マウスダウンからの移動量（px）|
+| `_bbox_drag_mode` | `None` | AABB 変換ドラッグの種別（`'vertex_0'..'vertex_3'` / `'edge_0'..'edge_3'` / `'diagonal'`） |
+| `_bbox_drag_start_w` | `None` | AABB ドラッグ開始時のワールド座標 |
+| `_bbox_drag_snapshot` | `None` | ドラッグ開始時の選択図形ジオメトリのスナップショット |
+| `_bbox_drag_aabb` | `None` | ドラッグ開始時の AABB（毎フレーム再計算すると発散するため固定） |
 | `_undo_stack` | `deque(maxlen=500)` | Undo スタック（最大 500、古い履歴は自動破棄） |
 
 `setMouseTracking(True)` でマウスボタンを押さなくてもホバーイベントを受け取る。`setFocusPolicy(Qt.FocusPolicy.StrongFocus)` でキーイベントを受け取る。
@@ -909,6 +1058,64 @@ screen_y = -p.y * scale + offset.y   # y 反転
 - `"radius"`: 半径ハンドル（緑色、右端 `center + (radius, 0)`）
 - `"arc_start"`, `"arc_end"`: 円弧端点ハンドル（赤色）。snap 済みの端点はスキップ
 
+### 3.3b 複数選択時の AABB 変換ドラッグ
+
+複数の独立図形が選択されているとき（`_is_multi_select()` が `True`）、選択全体を囲む AABB（境界ボックス）が描画され、その頂点・辺・対角線をドラッグして一括変換できる。
+
+#### `_is_multi_select() -> bool`
+
+`len(effective_set(_selected)) >= 2` を返す。線分2本でも親 Line が同じなら 1 図形扱いになる。
+
+#### `_selection_aabb() -> Optional[tuple]`
+
+選択図形の AABB を `(min_x, min_y, max_x, max_y)` で返す。図形ごとの寄与点: `Line` は全線分の端点（線分がなければ参照点）、`Circle`/`Arc` は円の上下左右 4 点、`Clothoid` は全描画点、`Segment` は両端点。有効点がなければ `None`。
+
+#### `_bbox_corners_s(aabb) -> list[QPointF]`
+
+AABB の 4 頂点をスクリーン座標で TL→TR→BR→BL の順に返す。
+
+#### `_hit_bbox(sw: Vec2) -> Optional[str]`
+
+スクリーン座標 `sw` の AABB ハンドルヒット判定。優先順位は**頂点 → 対角線 → 辺**。
+
+| 戻り値 | 判定 | ドラッグ操作 |
+|---|---|---|
+| `'vertex_0'`〜`'vertex_3'` | 頂点円（半径 `BBOX_VERTEX_R + 4`px 以内） | AABB 中心を固定点とした XY 等倍拡縮 |
+| `'diagonal'` | 2 本の対角線分との距離 8px 以内 | AABB 中心を固定点とした回転 |
+| `'edge_0'`〜`'edge_3'` | 辺との距離 `BBOX_EDGE_W`px 以内 | 平行移動 |
+
+非複数選択時・AABB なしのときは `None`。
+
+#### `_snapshot_selected() -> dict` / `_apply_snapshot(snap)`
+
+選択図形の現在ジオメトリ（`Line`: 参照点 2 点、`Circle`: 中心・半径・全円弧の角度ペア）を `id(obj)` キーの辞書として保存／復元する。ドラッグ中は毎フレーム「スナップショット復元 → 開始時からの累積変換を適用」の手順を踏むため、**累積誤差が発生しない**。
+
+#### `_bbox_apply_translate(dx, dy)` / `_bbox_apply_scale(factor, center)` / `_bbox_apply_rotate(angle_rad, center)`
+
+スナップショットから復元したうえで `effective_set(_selected)` の各図形に変換を適用する。
+
+- **translate**: `Line` の参照点 2 点と `Circle` の中心に `(dx, dy)` を加算
+- **scale**: 各点を `center + (p - center) * factor` に移動。`Circle.radius` も `|factor|` 倍。`|factor| < 1e-6` のとき何もしない
+- **rotate**: 各点を `center` 基準で回転。`Circle` の全円弧の `angle_start`/`angle_end` にも `angle_rad` を加算
+
+3 メソッドとも最後に `_recompute_after_bbox(moved_ids)` を呼ぶ。
+
+#### `_recompute_after_bbox(moved_ids: set)`
+
+移動した Line/Circle を参照するクロソイドの `compute()` を呼び、`_rebuild_handles()` と `update()` で表示を更新する。
+
+#### `_do_bbox_drag(w: Vec2)`
+
+AABB 変換ドラッグの毎フレーム処理。ドラッグ開始時に固定した `_bbox_drag_aabb` の中心 `center` を基準に、`_bbox_drag_mode` に応じて分岐する:
+
+- **`edge_*`（平行移動）**: `Δ = w - _bbox_drag_start_w` で `_bbox_apply_translate(dx, dy)`
+- **`vertex_*`（拡縮）**: 元の頂点と現在マウス位置それぞれの中心からの X/Y 距離比 `fx`・`fy` を求め、**大きい方** `factor = max(fx, fy)` で XY 同率の `_bbox_apply_scale()` を呼ぶ
+- **`diagonal`（回転）**: ドラッグ開始点→中心の角度と現在点→中心の角度の差を回転角として `_bbox_apply_rotate()` を呼ぶ
+
+#### `_draw_bbox_handles(painter)`
+
+複数選択時の AABB を描画する: 矩形枠（実線）、2 本の対角線（1点鎖線）、AABB 中心の十字マーカー、4 頂点の塗り潰し円ハンドル。
+
 #### `is_shared(pt: Vec2) -> bool`（`_rebuild_handles` 内ヘルパー）
 
 点 `pt` が他の線分・円弧・クロソイドの端点と `SNAP_TOL` 以内かどうかを確認する。`True` のとき当該端点のハンドルを生成しない（snap 済みマーカーとして扱う）。
@@ -958,6 +1165,35 @@ screen_y = -p.y * scale + offset.y   # y 反転
 - `l2 = AB·AB < 1e-24` → 点 A との距離を返す（縮退した線分）
 - そうでない場合: パラメータ `t = clamp((p-a)·(b-a)/l2, 0, 1)` で射影点を求め距離を返す
 
+### 3.3c ラバーバンド選択（Shift+ドラッグ）
+
+選択モードで Shift を押しながら空白部分をドラッグすると、矩形に**完全に含まれる**図形を一括選択できる。ドラッグ中は対角線のワールド距離が `measure_dist_changed` で右パネルに通知されるため、**簡易測距ツール**としても機能する。
+
+#### `_arc_in_rect(ci, arc, wx0, wy0, wx1, wy1) -> bool`
+
+円弧がワールド矩形に完全に含まれるか判定する。始点・終点に加え、弧上を約 10° 刻みでサンプリングした全点が矩形内にあるとき `True`。
+
+#### `_objects_in_world_rect(wx0, wy0, wx1, wy1) -> list`
+
+ワールド矩形に含まれる図形リストを返す。選択ルール:
+
+| 図形 | 条件 | 追加されるもの |
+|---|---|---|
+| `Clothoid` | 全描画点が矩形内 | Clothoid |
+| `Arc` | `_arc_in_rect()` が `True` | Arc と親 Circle |
+| `Circle`（弧なし） | 上下左右 4 点が矩形内 | Circle |
+| `Segment` | 両端点が矩形内 | Segment と親 Line |
+
+重複は `id()` で排除し、追加順を保持する。「子と親を両方追加する」のは、右パネルの `_is_rubber_select()` がこの共存パターンを検出して複数選択操作パネルを表示するため。
+
+#### `_complete_rubber_select() -> list`
+
+スクリーン矩形をワールド座標に変換して `_objects_in_world_rect()` を呼ぶ。矩形サイズが 4px 未満のときは空リスト（クリック扱い）。
+
+#### `_draw_rubber_select(painter)`
+
+Shift+ドラッグ中のラバーバンド矩形を青系の破線枠 + 半透明塗りで描画する。
+
 #### `fit_all()`
 
 全図形の AABB（Axis-Aligned Bounding Box）を計算し、10% マージンを付けて画面全体に収まるようスケールとオフセットを設定する。
@@ -973,8 +1209,10 @@ screen_y = -p.y * scale + offset.y   # y 反転
 3. 線分
 4. 円（弧なし）/ 円弧
 5. クロソイド + 接点マーカー
-6. ラバー線（入力中）
-7. ハンドル
+6. AABB 変換ハンドル（複数選択時: 矩形枠 + 対角線 + 中心十字 + 頂点ハンドル、`_draw_bbox_handles`）
+7. ラバー線（直線/円モードの入力中、`_draw_rubber`）
+8. ラバーバンド選択矩形（Shift+ドラッグ中、`_draw_rubber_select`）
+9. ハンドル（`_draw_handles`）
 
 #### `_color_for(obj, base) -> QColor`
 
@@ -1020,53 +1258,49 @@ screen_y = -p.y * scale + offset.y   # y 反転
 
 #### `mousePressEvent(event)`
 
-左ボタン + **選択モード**:
-1. `_hit_handle(sw)` でハンドルヒット判定 → ヒットすれば `push_undo()` を呼んでから `_drag_obj` に設定（ドラッグ前の状態を Undo スタックに保存）
-2. ハンドルなし → `_hit_object(sw)` で図形ヒット判定
+左ボタン + **選択モード**（判定順）:
+1. 複数選択中なら `_hit_bbox(sw)` で AABB ハンドルヒット判定 → ヒットすれば `push_undo()` を呼んでから `_bbox_drag_mode` を設定し、`_bbox_drag_start_w`・`_bbox_drag_snapshot`・`_bbox_drag_aabb` を記録して AABB 変換ドラッグ開始
+2. `_hit_handle(sw)` で通常ハンドルヒット判定 → ヒットすれば `push_undo()` を呼んでから `_drag_obj`/`_drag_tag` に設定（ドラッグ前の状態を Undo スタックに保存）
+3. ハンドルなし → `_hit_object(sw)` で図形ヒット判定
    - `Shift` なし: ヒットした図形のみ選択（`_selected = [obj]`）
    - `Shift` あり: `_selected` に追加または除去（トグル）
-   - ヒットなし: `_selected = []`（選択解除）
-3. `_rebuild_handles()` → `selection_changed.emit()`
-4. パン開始のための `_pan_start`, `_pan_offset_start` を記録
+4. 図形ヒットなし:
+   - `Shift` あり: ラバーバンド選択開始（`_rubber_select_start = sw`）
+   - `Shift` なし: 左ボタンパン開始（`_is_panning = True`）
 
 左ボタン + **直線モード**: `_line_click(w)` を呼ぶ
 
 左ボタン + **円モード**: `_circle_center = w`（中心点を記憶）。リリースで半径を確定する
 
-中ボタン: `_pan_start = sw`, `_pan_offset_start = Vec2(_offset)` を記録してパン開始
+中ボタン: `_pan_start_screen = sw`, `_pan_offset_start` を記録してパン開始
 
 #### `mouseMoveEvent(event)`
 
-**ドラッグ中**（`_drag_handle` が設定済み）:
-- `_mouse_moved_px += distance` を累積
-- `_mouse_moved_px > 2` になった時点で `_do_drag(w)` を呼ぶ（微小移動でのノイズ防止）
-- `mouse_world_pos.emit(x, y)` でマウス座標を右パネルに通知
+処理優先順:
 
-**パン中**（`_pan_start` が設定済み + 中ボタンまたは左ボタン）:
-- 移動量 `(dx, dy)` を `_offset` に加算
-- 選択モードで左ボタンパン: 移動量が 4px 未満のうちはパンしない（クリックと区別）
+1. **パン中**: 移動量 `(dx, dy)` を `_offset` に加算して再描画
+2. **ラバーバンド選択中**: `_rubber_select_end = sw` を更新し、始点〜現在点のワールド距離を `measure_dist_changed.emit(dist)` で通知（簡易測距）
+3. **AABB 変換ドラッグ中**: `_do_bbox_drag(w)` を呼ぶ
+4. **ハンドルドラッグ中**: 移動量が 2px を超えた時点で `_do_drag(w)` を呼ぶ（微小移動でのノイズ防止）
+5. **それ以外**: 直線/円モードのラバー線を更新。`_hit_object(sw)` でホバー対象を更新し、変わったときのみ `update()` + `hover_changed.emit()` を呼ぶ
 
-**ドラッグなし・パンなし**:
-- `_hit_object(sw)` でホバーオブジェクトを更新
-- `_hover_obj` が変わった場合のみ `update()` を呼ぶ（不要な再描画を避ける）
-- `mouse_world_pos.emit(x, y)` でマウス座標を通知
+いずれの場合も `mouse_world_pos.emit(x, y)` でマウス座標を右パネルに通知する。
 
 #### `mouseReleaseEvent(event)`
 
-**ドラッグ終了**（`_drag_obj` が設定済み）:
-- `_mouse_moved_px > 2` のとき（実際に移動した場合）: `scene_changed.emit()` でコミット
-- ドラッグが完了したとき `selection_changed.emit(self._selected)` を発行し、右パネルのプロパティを即座に更新する
-- `_drag_obj = None` でドラッグ状態をリセット
+左ボタンリリース時、以下を順に判定する:
 
-**円モード左ボタンリリース**:
-- `_circle_center` が設定済みの場合: `radius = (w - _circle_center).length()` を計算
-- `radius > 0.1` のとき `Circle(center, radius)` を生成して `scene.add_circle()` → `scene_changed.emit()`
-- `_circle_center = None` にリセット
+**AABB 変換ドラッグ完了**: `_bbox_drag_mode`・`_bbox_drag_start_w`・`_bbox_drag_snapshot`・`_bbox_drag_aabb` をリセットし、`scene_changed.emit()` でコミット → `selection_changed.emit()` で右パネルを更新
 
-**選択モード左ボタンリリース（`_mouse_moved_px < 4`）**:
-- クリックとして扱い、ドラッグではなく選択操作の完了とみなす
+**ラバーバンド選択完了**: `_complete_rubber_select()` の結果を `_selected` に設定し、`_rebuild_handles()` → `selection_changed.emit()`。`measure_dist_changed.emit(-1.0)` で距離表示を消す
 
-**パン終了**: `_pan_start = None` にリセット
+**パン終了**: `_is_panning = False`。`_mouse_moved_px < 4` のときクリック扱いで選択解除（`selection_changed.emit([])`）
+
+**円モード**: `radius = (w - _circle_center).length()` を計算し、`radius > 1e-3` のとき `push_undo()` → `Circle` 生成 → `scene.add_circle()` → `scene_changed.emit()`
+
+**ハンドルドラッグ完了**（`_drag_obj` 設定済み）: `selection_changed.emit(self._selected)` で右パネルを即時更新してから `_drag_obj`/`_drag_tag` をリセット
+
+中ボタンリリース: パンを終了してカーソルを戻す
 
 #### `wheelEvent(event)`
 
@@ -1079,12 +1313,11 @@ screen_y = -p.y * scale + offset.y   # y 反転
 
 | キー | 処理 |
 |---|---|
-| `S` | `set_mode(MODE_SELECT)` |
-| `L` | `set_mode(MODE_LINE)` |
-| `C` | `set_mode(MODE_CIRCLE)` |
+| `Esc` | 直線モードの連続入力とラバーバンド選択をリセット（`measure_dist_changed.emit(-1.0)` で距離表示も消す） |
 | `Del` | `_delete_selected()` |
-| `Ctrl+0` | `fit_all()` |
-| `Esc` | 直線モードの連続入力リセット |
+| `Ctrl+Z` | `undo()` |
+
+モード切り替え（`S`/`L`/`C`）や `Ctrl+0`（全体表示）はメインウィンドウ側のショートカット/ツールバーで処理される。
 
 #### `_line_click(w: Vec2)`
 
@@ -1112,30 +1345,36 @@ screen_y = -p.y * scale + offset.y   # y 反転
 
 #### `_do_drag(w: Vec2)`
 
-ドラッグ中にアクティブハンドルの位置を更新する。ハンドルの `tag` によって処理を分岐する。
+ドラッグ中にアクティブハンドルの位置を更新する。図形の型ごとのサブメソッド（`_drag_line` / `_drag_segment` / `_drag_circle` / `_drag_arc` / `_drag_connection`）にディスパッチし、最後に伝播・再描画を行う。
 
-| tag | 処理 |
+| tag | サブメソッド / 処理 |
 |---|---|
-| `"ref_start"` / `"ref_end"` | 参照点を移動 → `_propagate_line()` |
-| `"shared_ref"` | 共有参照点を移動 → 両直線の参照点を更新 → 各直線を propagate |
-| `"circle_center"` | 中心を移動（スムーズ接続時は bisector 上に束縛）→ `_propagate_circle()` |
-| `"radius"` | 半径を更新（中心からの距離）→ `_propagate_circle()` |
-| `"seg_start"` / `"seg_end"` | `t_start` / `t_end` を直線に射影して更新 |
-| `"arc_start"` / `"arc_end"` | `angle_start` / `angle_end` を更新 → `_propagate_circle()` |
+| `"ref_start"` / `"ref_end"` | `_drag_line`: 参照点を移動 → `_propagate_line()` |
+| `"shared_ref"` | `_drag_connection`: 共有参照点を移動 → 両直線の参照点を更新 → 各直線を propagate |
+| `"circle_center"` | `_drag_circle`: 中心を移動（スムーズ接続時は bisector 上に束縛）→ `_propagate_circle()` |
+| `"radius"` | `_drag_circle`: 半径を更新（中心からの距離）→ `_propagate_circle()` |
+| `"seg_start"` / `"seg_end"` | `_drag_segment`: `t_start` / `t_end` を直線に射影して更新 |
+| `"arc_start"` / `"arc_end"` | `_drag_arc`: `angle_start` / `angle_end` を更新 → `_propagate_circle()` |
 
 #### `_propagate_line(ln, _updating_smooth=False)`
 
-直線 `ln` の参照点が変更されたあとに呼ばれる。「伝播」とは、直線の変形によって影響を受けるすべての従属オブジェクトを連鎖的に更新することを指す。具体的には:
+直線 `ln` の変更をクロソイドと接続先に伝播する。「伝播」とは、直線の変形によって影響を受けるすべての従属オブジェクトを連鎖的に更新することを指す。
 
-1. `ln` を参照するクロソイドに `compute()` を呼ぶ
-2. `_updating_smooth=False` かつスムーズ接続中のとき `_update_smooth_circle(conn)` を呼ぶ
+1. `ln` を参照する全クロソイドに `compute()` を呼ぶ
+2. `_updating_smooth=False` のとき:
+   - スムーズ接続中 → `_update_smooth_circle(conn)` で円を再配置
+   - 折れ線接続中 → `_follow_polyline_connection(conn, ln)` で相手直線を平行移動して共有端点を追従
+3. `_propagate_two_line_oc_for_line(ln)` で `TwoLineOffsetConstraint` の円を追従させる
+
+`_updating_smooth=True` は smooth 円の更新中の内部再帰を防ぐためのフラグ。
 
 #### `_propagate_circle(ci)`
 
-円 `ci` の中心・半径が変更されたあとに呼ばれる。円に接続しているクロソイドの接点・点列を再計算し、オフセット拘束（`OffsetConstraint`）で直線を追従させる。`_propagate_line()` と対になる存在。
+円 `ci` の中心・半径の変更をクロソイド・オフセット拘束に伝播する。`_propagate_line()` と対になる存在。伝播順序:
 
-1. `ci` を参照するクロソイドに `compute()` を呼ぶ
-2. `_propagate_offset_constraints(ci)` でオフセット拘束追従
+1. `ci` を参照する全クロソイドに `compute()` を呼ぶ
+2. `_propagate_two_line_offset_constraints(ci)` を**先に**呼んで `ci.center` を確定させる（半径変化時に 2 直線の縁からの距離を維持するため、OffsetConstraint より先行させる）
+3. `_propagate_offset_constraints(ci)` で、確定した `ci.center` を使って直線を追従させる
 
 #### `_propagate_offset_constraints(ci)`
 
@@ -1143,7 +1382,33 @@ screen_y = -p.y * scale + offset.y   # y 反転
 
 - `solve()` の成否にかかわらず `_propagate_line(oc.line)` を呼んで関連クロソイドも追従させる
 - `scene_changed.emit()` と `update()` を呼んで再描画する
+- 末尾で `_propagate_two_line_offset_constraints(ci)` も呼び、2直線-1円拘束への連鎖を行う
 - **設計意図**: `feasible=False`（矛盾状態）でも `_propagate_line` を呼ぶのは、Clothoid が直線の現在位置（変更されていない正しい位置）に追従し続けるため
+
+#### `_propagate_two_line_offset_constraints(ci)`
+
+**円側の変化**（主に半径変更）を `TwoLineOffsetConstraint` に伝播する。`ci` が `circle` として含まれる拘束に `solve()` を呼んで円中心を再計算し（2 直線は動かさない）、`ci` に付属するクロソイドを再計算する。
+
+#### `_propagate_two_line_oc_for_line(ln)`
+
+**直線側の移動**を `TwoLineOffsetConstraint` に伝播する。`ln` が `line_a`/`line_b` として含まれる拘束に `solve()` を呼んで円中心を再計算し、その円に付属するクロソイドを再計算する。さらに `_propagate_offset_constraints(oc.circle)` を呼んで、更新された円を参照する `OffsetConstraint` への連鎖伝播も行う。
+
+**ループ防止**: 拘束の追加時点で `detect_constraint_cycle()`（1.14d 節）が循環を拒否しているため、実行時の伝播チェーンは必ず有限で停止する。また `TwoLineOffsetConstraint.solve()` は冪等（同じ入力なら同じ円中心を返す）なので、重複呼び出しでも値が発散しない。
+
+#### `propagate_from_circle(ci)` / `propagate_from_line(ln)`（公開メソッド）
+
+プロパティパネル等の外部から円/直線の変化をチェーン伝播させるための公開エントリーポイント。それぞれ `_propagate_offset_constraints(ci)` / `_propagate_line(ln)` を呼んだあと、`_rebuild_handles()`（ハンドルキャッシュを最新ジオメトリで更新）→ `scene_changed.emit()` → `update()` を実行する。
+
+#### `_follow_polyline_connection(conn, moved)`
+
+折れ線接続で `moved` 直線が動いたとき、接続相手の直線を**平行移動**して共有端点を追従させる。
+
+1. `moved` 側の共有端点の新しい座標と `conn.shared_point` の差分 `delta` を計算
+2. `delta.length() < 1e-9` なら何もしない（**再帰終端**）
+3. `conn.shared_point` を先に更新してから、相手直線の参照点 2 点に `delta` を加算
+4. 相手直線に `_propagate_line()` を再帰的に呼ぶ（クロソイド・TwoLineOC も追従）
+
+再帰防止は手順 2〜3 の順序で実現する: 共有点を先に更新するため、相手直線の `_propagate_line` が再び本メソッドを呼んでも `delta ≈ 0` で即座に返る。
 
 #### `_update_smooth_circle(conn)`
 
@@ -1335,6 +1600,30 @@ screen_y = -elev * scale_y + offset.y   # y 反転
 
 スクリーン座標でハンドルヒット判定を行う。選択モード以外は常に `None`。距離 `HANDLE_R + 2 = 9px` 以内。
 
+#### `_hit_test(sx, sy) -> Optional[object]`
+
+スクリーン座標に最も近い `GradeLine` または `VerticalCurve` を返す（許容距離 8px）。勾配直線は線分との距離、縦断曲線は 32 分割の折れ線近似で最短距離を計算する。
+
+#### `set_mode(mode)`
+
+描画モード（`"select"` / `"grade"`）を変更し、入力途中の状態（`_grade_first` 等）をリセットする。
+
+#### `_apply_handle_drag(h, new_dist, new_elev)`
+
+ハンドルのドラッグ位置を `GradeLine` と `VerticalCurve` に反映する。ハンドル辞書の `partners` に含まれるすべての GradeLine 端点を `new_dist`/`new_elev` に更新するため、共有ハンドル（境界点）では隣接 2 本が同時に追従する。ドラッグした点を PVI とする縦断曲線があれば `pvi_dist`/`pvi_elev` も追従させ、`_recalc_vc_gradients()` で g1/g2 を再計算する。最後に `_snap_grade_lines()` で隙間をゼロに揃える。
+
+#### `_recalc_vc_gradients(vc)`
+
+縦断曲線 `vc` の前後に位置する GradeLine から `g1`・`g2` を再計算する。`pvi_dist` を基準に、前（`≤ pvi_dist`）の最後の GradeLine から g1 を、後（`≥ pvi_dist`）の最初の GradeLine から g2 を取得する。端点のドラッグ・数値入力の後に呼ばれる。
+
+#### `_push_undo()` / `_undo()` / `_redo()`
+
+縦断ウィンドウ独自の Undo/Redo。`_push_undo` は操作の**直前**に呼び、`_grade_lines` と `_vertical_curves` のディープコピーをスタックに積む（積んだ時点で Redo スタックはクリア）。`_undo`/`_redo` はスタック間で状態を移し替えて復元する。
+
+#### `_delete_grade_line(gl)`
+
+勾配直線を削除する。`gl` の `dist_start`/`dist_end` と `pvi_dist` が 0.01m 以内の縦断曲線を**先に**除去してから `gl` を `_grade_lines` から除去し、`selection_changed` を emit して右パネルを更新する。
+
 #### `paintEvent(event)`
 
 描画順:
@@ -1489,9 +1778,41 @@ Redo 判定（`Ctrl+Y` / `Ctrl+Shift+Z`）を Undo（`Ctrl+Z`）より先にチ�
 
 ### 5.1 モジュールレベルユーティリティ
 
-#### `_make_spinbox(val, lo, hi, step, decimals) -> _FlexSpinBox`
+#### 始点/終点ペアのコピー＆ペースト関数群
 
-`_FlexSpinBox`（ホイール操作をオーバーライドした `QDoubleSpinBox` サブクラス）を生成するファクトリ関数。フォーカス中のみホイール操作を受け付ける（誤操作防止）。
+線分・円弧などの「始点・終点ペア」をクリップボード経由で図形間コピーするための関数群。
+
+| 関数 | 役割 |
+|---|---|
+| `_encode_point_pair(start, end) -> str` | `{"sx","sy","ex","ey"}` 形式の JSON 文字列にエンコード |
+| `_decode_point_pair(text) -> Optional[tuple]` | JSON 文字列から `(Vec2, Vec2)` を復元。解析失敗時 `None` |
+| `_clipboard_has_point_pair() -> bool` | クリップボードのテキストがペアとして解析可能か |
+| `_copy_point_pair(start, end)` | クリップボードへコピー |
+| `_paste_point_pair() -> Optional[tuple]` | クリップボードから取り出す |
+| `_transform_pair(start, end, mode) -> tuple` | 原点基準の回転・線対称変換を適用して返す |
+
+`_transform_pair` の `mode`: `"rot90"` / `"rot180"` / `"rot270"`（原点回転）、`"flip_y"`（y=0 対称）/ `"flip_x"`（x=0 対称）/ `"flip_yx"`（y=x 対称）/ `"flip_y_neg_x"`（y=−x 対称）。
+
+#### `_add_copy_paste_buttons(lay, get_start, get_end, set_start, set_end, on_change, push_undo)`
+
+「⧉ Copy」「⧈ Paste」ボタン行をレイアウトに追加するヘルパー。
+
+- **Copy**: 現在の始点・終点ペアをクリップボードへ
+- **Paste 左クリック**: そのままペースト（`push_undo()` → `set_start/set_end` → `on_change()`）
+- **Paste 右クリック**: コンテキストメニューから回転・対称変換（`_transform_pair` の 7 モード）を選んでペースト
+- Paste ボタンの有効/無効はクリップボードの `dataChanged` シグナルで自動追従する。ウィジェット破棄時にシグナル接続を切断して `RuntimeError` を防ぐ
+
+#### `FocusSpinBox`
+
+`QDoubleSpinBox` のサブクラス。フォーカスポリシーを `StrongFocus` に変更し（デフォルトの `WheelFocus` はホイール操作だけでフォーカスが付与されてしまう）、`wheelEvent` で `hasFocus()` のときのみ値を変更する。フォーカスがないときは `event.ignore()` で親へ伝播させるため、スクロールエリア上のホイールスクロールと競合しない。
+
+#### `_FlexSpinBox`
+
+`FocusSpinBox` のサブクラス。デフォルト実装の `minimumSizeHint`（約 120px）が右パネルの水平スクロールを引き起こすため、`minimumSizeHint` を幅 40px、`sizeHint` を幅 60px にオーバーライドしてパネル幅に追従させる。
+
+#### `_make_spinbox(val, lo=-1e6, hi=1e6, step=0.1, decimals=3) -> _FlexSpinBox`
+
+設定済みの `_FlexSpinBox` を生成するファクトリ関数。最大幅 120px を設定して内側の `QLineEdit` が GroupBox 幅を押し広げないようにする。
 
 > `vertical_window.py` にも同名の `_make_spinbox` が存在するが、そちらは `QDoubleSpinBox` を直接使用しており独立した実装。
 
@@ -1504,6 +1825,30 @@ Redo 判定（`Ctrl+Y` / `Ctrl+Shift+Z`）を Undo（`Ctrl+Z`）より先にチ�
 ボタンの `setEnabled` を設定し、無効時にグレースタイルを適用する。
 
 ### 5.2 `PropBuilderMixin` の主要メソッド
+
+#### `_make_prop_row(label, value, ...) -> _FlexSpinBox`
+
+「ラベル + スピンボックス 1 行」を生成して接続する共通ヘルパー。`_block` チェックと初回のみの `push_undo` を内蔵しているため、呼び出し側は単純な setter だけを渡せばよい。
+
+#### `_add_vec2_rows(lay, label, ...)`
+
+`Vec2` フィールド用に X/Y の 2 行を `lay` に追加するヘルパー。
+
+#### `_add_related_constraints(obj)`
+
+`obj` に関連するオフセット拘束（`OffsetConstraint` と `TwoLineOffsetConstraint` の両方）の一覧を右パネルに追加する。各拘束行の「選択」ボタンを押すと、その拘束に含まれる全図形がキャンバスで選択され、拘束のプロパティパネルに切り替わる。
+
+#### `_build_child_segments_list(ln)`
+
+直線に属する線分を始点順に一覧表示するパネルを構築する。各行にニックネーム・始点/終点座標・長さを表示し、「選択」ボタンで線分を選択できる。
+
+#### `_build_child_arcs_list(ci)`
+
+円に属する円弧を始点角度順に一覧表示するパネルを構築する。各行にニックネーム・始点/終点角度・弧長を表示し、「選択」ボタンで円弧を選択できる。
+
+#### `_calc_free_arc_intervals(ci) -> list[Arc]`
+
+円 `ci` の空き区間（円弧がない部分）を `Arc` オブジェクトのリストで返す。クロソイドの接点（`_circle_pt`）がある場合はその角度で区切る。既存の弧が全周を覆っている場合は空リストを返す。「空き区間に円弧を追加」機能（`request_add_arcs`）の候補生成に使う。
 
 #### `_build_snap_checkboxes(clo, lay) -> None`
 
@@ -1520,6 +1865,32 @@ Redo 判定（`Ctrl+Y` / `Ctrl+Shift+Z`）を Undo（`Ctrl+Z`）より先にチ�
 #### `_build_two_segments(seg_a, seg_b)` / `_build_two_arcs(arc_a, arc_b)`
 
 同一直線上の 2 線分 / 同一円上の 2 円弧の結合パネルを構築する（詳細は 8 章参照）。
+
+#### `_build_two_line_offset_constraint(ln_a, ln_b, ci)`
+
+直線 2 本と円 1 個が選択されたときの `TwoLineOffsetConstraint` 操作パネルを構築する。
+
+**既存拘束の検索**: `scene.two_line_offset_constraints` から `{oc.line_a, oc.line_b} == {ln_a, ln_b} and oc.circle is ci` を満たす拘束を検索する。
+
+**未設定時のパネル構成**:
+- 直線 A・直線 B・円のニックネームを `QLabel` で表示
+- 「2直線+1円 拘束を設定」ボタン → `request_set_two_line_offset.emit(ln_a, ln_b, ci)`
+
+**設定済み時のパネル構成**:
+- `off_a`・`off_b` のスピンボックス（現在値で初期化）
+  - `valueChanged` → `existing.off_a/off_b` を更新して `existing.solve()` → `scene_changed.emit()`
+- 「2直線+1円 拘束を解除」ボタン → `request_clear_two_line_offset.emit(ln_a, ln_b)`
+
+#### `_build_multi_select(sel)`
+
+複数図形が選択されたときの操作パネルを構築して `_prop_layout` に追加する。選択図形の概要を表示したあと、各操作グループを追加する。**各操作の実体は `RightPanel` の `_do_*` メソッドに委譲する**（8.4 節参照）。
+
+| 操作 | UI 要素 | 委譲先 |
+|---|---|---|
+| コピー | 「選択図形をコピー」ボタン | `RightPanel._do_copy()` |
+| 平行移動 | ΔX / ΔY スピンボックス + 「適用」ボタン | `RightPanel._do_translate(dx, dy)` |
+| 回転 | 角度スピンボックス + 回転中心ラジオボタン（AABB中心 / 原点）+ 「適用」ボタン | `RightPanel._do_rotate(angle_deg, use_bbox_center)` |
+| 拡大縮小 | 倍率スピンボックス + 基準点ラジオボタン（AABB中心 / 原点）+ 「適用」ボタン | `RightPanel._do_scale(factor, use_bbox_center)`（XY 同率のみ — クロソイド形状を保持するため） |
 
 ---
 
@@ -1576,6 +1947,18 @@ Redo 判定（`Ctrl+Y` / `Ctrl+Shift+Z`）を Undo（`Ctrl+Z`）より先にチ�
 - `exit_clo_ref` がある場合: `clothoid_id` + `side` の両方が一致する要素を最優先で収集（座標距離判定より優先）
 - `exit_clo_ref` がない場合: 末端座標から `ad_tol` m 以内の端点を持つ要素を収集
 - `elem["id"] == cur_id` の要素は除外
+
+#### `_build_display_segs(scene, all_display) -> list`
+
+背景表示用の中心線セグメント群を生成して返す。`all_display` が `None` または空のとき空リストを返す。`prepare_viewer_data()` の内部で使われる。
+
+#### `_build_clo_ref_map(clothoids) -> dict`
+
+Clothoid 接点の「座標 → 参照」辞書を構築する。キーは `(round(x, 3), round(y, 3))`、値は `{"clothoid_id": int, "side": "line"|"circle"}`。要素グラフの `start_clo_ref`/`end_clo_ref` の解決に使う。
+
+#### `_build_elem_graph(...) -> list`
+
+全要素からオートドライブ用の `elem_graph` を構築する。各エントリは `{id, type, nickname, start, end, plan_length, heights, points_xy, start_clo_ref, end_clo_ref}` の辞書。
 
 #### `prepare_viewer_data(scene, elements, profiles, rev_flags, all_display=None) -> dict`
 
@@ -1715,6 +2098,8 @@ Panda3D の `ShowBase` を継承した走行ビューア。走行アニメーシ
 
 **`_step_traffic_car(car, dt)`**: `dist += speed * speed_mul * dt`。末端超過時に次の要素に遷移（`_find_next_candidates` を使用）。候補なしのときワープ。
 
+**`_chain_advance_fwd(...)`**: チェーン末端から次の要素に前進遷移する共通ロジック。`_step_traffic_car` と `_add_traffic_car` の前進ループで使う。候補が見つかればランダムに選択して遷移し、なければワープする。
+
 #### 補間・座標変換（薄いラッパー）
 
 | メソッド | 委譲先 |
@@ -1739,6 +2124,20 @@ Panda3D の `ShowBase` を継承した走行ビューア。走行アニメーシ
 **`_overview_pan()`**: 右クリック or 中クリックドラッグで `_overview_pos` を移動。
 
 **`_overview_zoom_in()` / `_overview_zoom_out()`**: `CAM_OVERVIEW_H` を 0.8 倍 / 1.25 倍（`I` / `K` キー）。
+
+#### 照明・HUD
+
+**`_setup_lighting()`**: 環境光（明度 0.45 のグレー、全方向一様）と平行光（明度 0.85 のやや暖色、斜め上方 HPR=45/-45/0 から照射）をシーンに設定する。
+
+**`_setup_hud()`**: 左上に `OnscreenText` を配置し、`_update_hud()` で毎フレーム更新する。
+
+**`_update_hud()`**: 一時停止状態・オートドライブ情報（走行要素名・方向・進捗）・現在座標・方位・累積距離・速度・カメラモード・路面状態・周囲車両台数を表示する。非 ASCII のニックネームは ASCII 安全なフォールバック形式で表示する。
+
+**`_setup_steering_wheel()`**: 右下にステアリングホイールグラフィック（`LineSegs` で描いたリム・スポーク・ハブ + 12 時位置の固定マーカー）を作成する。`_steer_np` ノードを毎フレーム `set_r()` で回転させてハンドル切れ角を視覚表示し、ホイール下に回転角・タイヤ切れ角テキストを表示する。
+
+**`_curvature_at(cl, dist) -> float`**（staticmethod）: 中心線上の `dist` における符号付き曲率 [1/m] を返す。隣接する接線ベクトルの変化量 Δθ/Δs で近似し、左曲がりを正とする。ステアリングホイールの切れ角計算に使う。
+
+**`_update_car_pose(dist)` / `_update_car_pose_cl(cl, dist)`**: 自車ダミーの位置・姿勢を中心線上の `dist` に合わせて更新する。前者は固定チェーン `self.cl` 用の後方互換ラッパー。
 
 ---
 
@@ -1868,6 +2267,12 @@ Panda3D の `ShowBase` を継承した走行ビューア。走行アニメーシ
 | `request_flip_clothoid` | `(object)` | クロソイド反転要求 |
 | `request_select` | `list` | 図形選択要求 |
 | `request_delete` | `list` | 図形削除要求 |
+| `request_set_offset` | `(object, object, object)` | OffsetConstraint 設定要求（直線, 円A, 円B） |
+| `request_clear_offset` | `(object,)` | OffsetConstraint 解除要求（直線） |
+| `request_set_two_line_offset` | `(object, object, object)` | TwoLineOffsetConstraint 設定要求（直線A, 直線B, 円） |
+| `request_clear_two_line_offset` | `(object, object)` | TwoLineOffsetConstraint 解除要求（直線A, 直線B） |
+| `request_add_arcs` | `(object, list)` | 円への円弧追加要求（円, 円弧リスト） |
+| `request_push_undo` | — | Undo スタックへの保存要求（プロパティ編集の初回変更時） |
 | `scene_changed` | — | シーン変更通知 |
 
 #### `_on_combo_changed(idx: int)`
@@ -1899,6 +2304,32 @@ UIを構築する。構成（上から順）:
 
 マウスのワールド座標を右パネル上部のラベルに表示する（小数点以下3桁）。
 
+#### `update_measure_dist(dist)`
+
+`Canvas.measure_dist_changed` シグナルを受け取り、ラバーバンド対角線のワールド距離 [m] を「距離: x.xxx m」形式で表示する。`dist < 0` のときラベルを隠す。
+
+#### `update_hovered(obj)`
+
+`Canvas.hover_changed` シグナルを受け取り、ホバー中の図形情報を表示する。表示形式は `ニックネーム (型#id)`（ニックネーム未設定なら `(型#id)` のみ）。`Segment`/`Arc` は親 `Line`/`Circle` の行も、`Clothoid` は参照する直線・円の行も併記する。`obj` が `None` のとき表示を消す。
+
+#### `_road_follow(combo_idx)`
+
+「道なり」ボタンのハンドラ。`combo_idx` 番目以降のコンボに対して高優先候補（セパレータより前のアイテム）からの自動選択を繰り返す。選択ルール:
+
+1. 高優先候補が 1 件 → それを選ぶ
+2. 複数件のうち `[順]` ラベル付きが 1 件だけ → それを選ぶ
+3. それ以外 → 停止
+
+選べた場合は次のコンボに進み、最後のコンボなら `_add_nick_combo()` で新しいコンボを追加して継続する。一本道のチェーンをワンクリックで末端まで選択できる。
+
+#### `_trim_trailing_none_combos()`
+
+末尾に「(なし)」が 2 個以上続く場合、1 個になるよう余剰コンボを削除する。最低 1 個のコンボは常に保持する。
+
+#### `set_canvas(canvas)` / `_canvas_update()`
+
+`set_canvas`: キャンバスへの直接参照を設定する（`MainWindow._connect_signals` から呼ばれる）。`_canvas_update`: 参照が設定されていれば `repaint()` で即時再描画する（シグナル経由の `update()` では遅延が見える場合があるため、オフセット拘束のスピンボックス変更など即時性が必要な箇所で使う）。未設定の場合は `scene_changed` シグナルで代替する。
+
 #### `update_selection(selected, scene)`
 
 選択図形が変わったとき呼ばれる。プロパティパネルを再構築し、コンボボックスの選択肢を更新する。
@@ -1909,7 +2340,7 @@ Scene 内の全図形のラベル文字列リストを返す。空要素 `"(な�
 
 #### `_label_for_obj(obj) -> str`
 
-図形の表示ラベルを返す。形式は仕様書 5.2 節を参照。
+図形の表示ラベルを返す。`scene.display_name(obj.id, type_label)` を使用する。ニックネームが設定されていれば「ニックネーム」、未設定なら `(型ラベル#ID)` 形式の文字列を返す。
 
 #### `_find_by_nick_label(text) -> Optional[object]`
 
@@ -2028,6 +2459,46 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 
 接続している図形の一覧と「選択」「選択追加」ボタンを構築する。
 
+### 8.1b 複数選択操作（コピー・移動・回転・拡縮）
+
+`_prop_builder.py` の `_build_multi_select()` が UI を構築し、実際の変換処理は以下のメソッドが担う。すべて `effective_set(self._selected)` で操作対象を確定し、`request_push_undo.emit()` → 変換 → `_recompute_clothoids()` → `scene_changed.emit()` → `_rebuild_props()` の順で実行する。
+
+#### `_is_rubber_select(sel) -> bool`
+
+選択リストに `Segment`/`Arc` とその親 `Line`/`Circle` が共存するか判定する。ラバーバンド選択は子と親を一緒に選択する仕様のため、この共存状態を「ラバーバンド由来の複数選択」とみなして複数選択操作パネルの表示判断に使う。
+
+#### `_selection_bbox_center(effective) -> Vec2`
+
+有効図形セットの AABB 中心を返す（回転・拡縮の「AABB中心」基準点）。寄与点の集め方は `Canvas._selection_aabb()` と同じ。有効点がなければ `Vec2(0, 0)`。
+
+#### `_recompute_clothoids(moved_ids: set)`
+
+`id(line)`/`id(circle)` が `moved_ids` に含まれるクロソイドの `compute()` を呼ぶ。
+
+#### `_do_translate(dx, dy)`
+
+`Line` の参照点 2 点と `Circle` の中心を `(dx, dy)` 平行移動する。
+
+#### `_do_rotate(angle_deg, use_bbox_center)`
+
+指定角度（度数、正 = 反時計回り）で回転する。基準点は `use_bbox_center=True` なら AABB 中心、`False` なら原点。`Circle` は中心の回転に加えて全円弧の `angle_start`/`angle_end` にも回転角を加算する。
+
+#### `_do_scale(factor, use_bbox_center)`
+
+XY 同率で拡大縮小する（クロソイドの形状を保持できるのは等率変換のみのため）。`Circle.radius` も `factor` 倍。`|factor| < 1e-9` のとき何もしない。
+
+#### `_do_copy()`
+
+選択図形を複製し、**複製した図形だけ**を選択状態にする（`request_select.emit(new_objs)`）。
+
+- `Line` は参照点・全線分ごと、`Circle` は中心・半径・全円弧ごと複製（すべて `new_id()` で採番）
+- `Clothoid` は、参照する Line/Circle が同時に複製されていればその複製物を、されていなければ元の図形を参照する複製を作る
+- 旧要素 ID → 新要素 ID のマッピング（`elem_id_map`）を作り、`_copy_element_profiles()` で縦断線形情報も複製する
+
+#### `_copy_element_profiles(elem_id_map)`
+
+`elem_id_map` に含まれる要素の `ElementProfile` を複製する。`GradeLine`・`VerticalCurve` もすべて新 ID で複製し、`GradeLine ↔ VerticalCurve` の相互参照（`next_curve`/`prev_curve` のオブジェクト参照と `prev_line_id`/`next_line_id` の整数 ID）を新 ID 体系で再構築する。
+
 ---
 
 ## 9. main_window.py — メインウィンドウ
@@ -2046,24 +2517,32 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 
 #### `_on_selection_changed(selected: list)`
 
-`Canvas.selection_changed` シグナルを受けて呼ばれる。`RightPanel.update_selection(selected, scene)` を呼んでプロパティパネルを更新する。`MainWindow` 自体は選択状態を保持しない（`Canvas._selected` が唯一の選択状態）。
+`Canvas.selection_changed` シグナルを受けて呼ばれる。`RightPanel.update_selection(selected, scene)` を呼んでプロパティパネルを更新し、ステータスバーに選択状況（「選択なし」「選択: 型名」「N 個選択」）を表示する。`MainWindow` 自体は選択状態を保持しない（`Canvas._selected` が唯一の選択状態）。
 
-#### `_setup_signals()`
+#### `_connect_signals()`
 
 `Canvas` / `RightPanel` のシグナルを `MainWindow` のスロットに接続する。この配線を `__init__` から分離しているのは読みやすさのためで、初期化後に動的な変更は行わない。
 
 以下のシグナルを接続する:
-- `Canvas.selection_changed` → `_on_selection_changed` + `RightPanel.update_selection`
+- `Canvas.selection_changed` → `_on_selection_changed`
 - `Canvas.scene_changed` → `_on_scene_changed`
 - `Canvas.mouse_world_pos` → `RightPanel.update_mouse_pos`
-- `RightPanel` の各 `request_*` → 対応する `_do_*` メソッド
-- `RightPanel.request_set_offset` → `_do_set_offset_constraint`
-- `RightPanel.request_clear_offset` → `_do_clear_offset_constraint`
+- `Canvas.hover_changed` → `RightPanel.update_hovered`
+- `Canvas.measure_dist_changed` → `RightPanel.update_measure_dist`
+- `RightPanel` の各 `request_*` → 対応する `_do_*` メソッド（`request_set_offset` → `_do_set_offset_constraint` 等）
+- `RightPanel.request_set_two_line_offset` → `_do_set_two_line_offset_constraint`
+- `RightPanel.request_clear_two_line_offset` → `_do_clear_two_line_offset_constraint`
+- `RightPanel.request_add_arcs` → `_do_add_arcs`
 - `RightPanel.request_push_undo` → `Canvas.push_undo`
+- `RightPanel.set_canvas(canvas)` でキャンバスへの直接参照も渡す（即時 repaint 用）
 
 #### `_on_scene_changed()`
 
-`Canvas.scene_changed` シグナルを受けて呼ばれる。ウィンドウタイトルに `*` を付加して未保存状態を示す。プロパティパネルの更新は行わない（`selection_changed` シグナルを通じた `_on_selection_changed` が担当）。
+`Canvas.scene_changed` シグナルを受けて呼ばれる。`canvas.update()` で再描画し、`RightPanel._refresh_nick_combos()` を呼んでニックネームコンボの選択肢を常に最新に保つ。プロパティパネルの再構築は行わない（`selection_changed` 経由の `_on_selection_changed` が担当）。
+
+#### `_notify_scene_changed(selection=None)`
+
+`scene_changed.emit()` → `selection_changed.emit()` → `RightPanel.update_selection()` の 3 点セットを一括実行する共通メソッド。多くの `_do_*` ハンドラが末尾で呼ぶ。`selection=None` のとき現在の `Canvas._selected` を使い、空リスト `[]` を渡すと選択解除として扱う。
 
 #### `_save() / _save_as()`
 
@@ -2134,16 +2613,62 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 
 `push_undo()` 後に `clo.reversed_flag = not clo.reversed_flag` を設定し `clo.compute()` を呼ぶ。
 
+#### `_save_initialized()` / `_build_initialized_dict()`
+
+`Ctrl+Shift+I`（子図形を初期化して保存）。「名前を付けて保存」ダイアログでパスを取得し、`_build_initialized_dict()` の結果を JSON で書き出す。**現在の Scene は変更しない**（`to_dict()` の deepcopy を操作する）。
+
+`_build_initialized_dict()` が行う初期化:
+
+- **直線**: 線分を `t_start=0.0, t_end=1.0` の 1 本だけに置き換える（ID は元の最初の線分の ID を再利用してニックネームを維持）
+- **円**: `arcs` を空にする
+- **クロソイド**: `snap_segment`/`snap_arc` を `False` にする
+- **円の `bisector_origin`/`bisector_dir`**: 削除する（snap off で不要になるため）
+- **折れ線/スムーズ接続・オフセット拘束**: そのまま維持する
+
+**目的**: クロソイド snap による分割状態を持たないシンプルなファイルを保存し、再利用や受け渡しをしやすくする。
+
+#### `_merge()`
+
+`Ctrl+Shift+O`（追加で読み込む）。ファイル選択後に `push_undo()` → `scene.merge_from_dict(data)` を呼び、既存の選択をすべて解除して**追加した図形のみ**を選択状態にする（`_notify_scene_changed()`）。
+
+#### `_open_file(path) -> bool`
+
+指定パスのファイルを読み込んで Scene を置き換える共通ロジック。`_open()` と起動オプション `-i`/`--input-file` の両方から呼ばれる。成功時は選択・ハンドルをクリアし `fit_all()` を呼んで `True` を返す。失敗時は `QMessageBox.critical` を表示して `False` を返す。
+
+#### `_clear_all()`
+
+全削除操作。`QMessageBox.question` で確認し、承認時に `push_undo()` を呼んでから `canvas.scene = Scene()` で空シーンに置き換える（Undo で復元可能）。
+
+#### `_renumber_ids()`
+
+メニュー「ID を振り直す」のハンドラ。「この操作は元に戻せません」という確認ダイアログを表示し、OK のとき `scene.renumber_ids()` を実行する（**Undo には記録しない**）。実行後はコンボボックスと右パネルを再構築する。
+
+#### `_do_add_arcs(ci, arcs)`
+
+`request_add_arcs` シグナルを受けて、`RightPanel._calc_free_arc_intervals()` が生成した `Arc` オブジェクト群を `ci.arcs` に追加する。`push_undo` は RightPanel 側で発行済みのためここでは呼ばない。
+
+#### `_do_set_two_line_offset_constraint(ln_a, ln_b, ci)`
+
+`request_set_two_line_offset` シグナルを受けて `TwoLineOffsetConstraint` を新規設定する。
+
+1. 同じ `({ln_a, ln_b}, ci)` の組み合わせが既に存在すれば何もしない（重複防止）
+2. `detect_constraint_cycle(scene, inputs={ln_a, ln_b}, outputs={ci})` で循環依存チェック。循環が検出されたら警告ダイアログ「拘束のループが生まれます」を表示してキャンセル
+3. `push_undo()` → 拘束を生成して `calc_offsets_from_current()` → `scene.two_line_offset_constraints` に追加 → `_notify_scene_changed()`
+
+#### `_do_clear_two_line_offset_constraint(ln_a, ln_b)`
+
+`request_clear_two_line_offset` シグナルを受けて、`{oc.line_a, oc.line_b} == {ln_a, ln_b}` を満たす全拘束を削除する。`push_undo()` 後にフィルタリングして `_notify_scene_changed()`。
+
 #### `_do_set_offset_constraint(ln, ci_a, ci_b)`
 
-`RightPanel.request_set_offset` シグナルを受けてオフセット拘束を新規設定する。
+`request_set_offset` シグナルを受けてオフセット拘束を新規設定する。
 
-1. 同じ組み合わせの既存拘束がある場合は何もしない（重複防止）
-2. `push_undo()` を呼ぶ
-3. `OffsetConstraint(line=ln, circle_a=ci_a, circle_b=ci_b)` を生成
-4. `oc.calc_offsets_from_current()` で初期 `off_a`・`off_b`・`_eps_a`・`_eps_b` を算出
-5. `scene.offset_constraints.append(oc)`
-6. `scene_changed.emit()` → `RightPanel.update_selection()` で右パネルを更新
+1. 同じ `(ln, {ci_a, ci_b})` の組み合わせの既存拘束がある場合は何もしない（重複防止）
+2. `detect_constraint_cycle(scene, inputs={ci_a, ci_b}, outputs={ln})` で循環依存チェック。循環が検出されたら警告ダイアログを表示してキャンセル
+3. `push_undo()` を呼ぶ
+4. `OffsetConstraint` を生成して `line`・`circle_a`・`circle_b` を設定
+5. `oc.calc_offsets_from_current()` で初期 `off_a`・`off_b`・`_eps_a`・`_eps_b` を算出
+6. `scene.offset_constraints.append(oc)` → `_notify_scene_changed()`
 
 #### `_do_clear_offset_constraint(ln)`
 
@@ -2152,6 +2677,12 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 1. `push_undo()` を呼ぶ
 2. `scene.offset_constraints = [oc for oc in ... if oc.line is not ln]` でフィルタリング
 3. `scene_changed.emit()` → `RightPanel.update_selection()` で右パネルを更新
+
+#### `_toggle_right_panel()` / `_set_right_panel_visible(visible)`
+
+`_toggle_right_panel`: 表示メニューのチェックアクション `_act_right_panel` の状態を読み取り `_set_right_panel_visible()` に委譲する。
+
+`_set_right_panel_visible(visible)`: 右パネルの `setVisible()`・ツールバーのチェックボックス（`_chk_right`）・メニュー項目のチェック状態の 3 つを一括で同期する。デフォルトは非表示。
 
 #### `scene` プロパティ
 
@@ -2163,26 +2694,7 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
 
 ### 8.2 モジュールレベル関数
 
-> これらの関数は現在 `_prop_builder.py` に定義されており、`right_panel.py` は `PropBuilderMixin` を継承することで間接的に利用する。詳細は 5 章参照。
-
-#### `_make_spinbox(val, lo=-1e6, hi=1e6, step=0.01, decimals=3) -> _FlexSpinBox`
-
-スピンボックス（`_FlexSpinBox`、フォーカス中のみホイール操作を受け付ける）を生成するファクトリ関数。`_prop_builder.py` に定義。
-
-- `val`: 初期値
-- `lo`, `hi`: 最小・最大値（デフォルト `−1e6`〜`+1e6`）
-- `step`: 単一ステップ量（デフォルト `0.01`）
-- `decimals`: 小数点以下桁数（デフォルト `3`）
-
-> `vertical_window.py` にも同名の `_make_spinbox` があるが、そちらは `QDoubleSpinBox` を直接生成する独立した実装（ホイール制御なし）。
-
-#### `_separator() -> QFrame`
-
-水平区切り線（`QFrame.Shape.HLine`）を返す。`_prop_builder.py` に定義。`vertical_window.py` が `from _prop_builder import _separator` でインポートして共有する。
-
-#### `_style_disabled(btn, disabled)`
-
-ボタンの `enabled` を設定し、無効時は薄いグレースタイルを適用する。`_prop_builder.py` に定義。
+`_make_spinbox`・`_separator`・`_style_disabled`・始点/終点ペアのコピー＆ペースト関数群は `_prop_builder.py` に定義されており、`right_panel.py` は `PropBuilderMixin` を継承することで間接的に利用する。各関数の詳細は 5.1 節を参照。
 
 ---
 
@@ -2198,6 +2710,20 @@ ElementProfile の縦断情報（平面長・始終端標高・GL/VC 一覧）�
   - `is_forward=True`: `cand` の始点で接続
   - `is_forward=False`: `cand` の終点で接続
 - **エッジケース**: `obj` 自身は除外。`cand_pts` が 2 点未満のものも除外
+
+#### `_directly_connected(obj_a, obj_b) -> bool`
+
+`obj_a` と `obj_b` が「直接接点」を持つか判定する（親図形が異なる場合に高優先候補へ含めるかの判断に使う）。「直接接点あり」とみなすケース:
+
+- **クロソイド接点**: 一方が `Clothoid` で、その `_line_pt`/`_circle_pt` が相手の端点と許容距離以内
+- **折れ線接続**: 両方が `Segment` で、`line.connection` が `"polyline"` であり共有点が両者の端点と許容距離以内
+- **オフセット拘束の接点**: `OffsetConstraint` の `off_a=0` または `off_b=0`（直線と円が接している）
+
+スムーズ接続（`bisector_dir` を持つ円経由）と、接点でないオフセット接続（`off != 0`）は除外する。
+
+#### `_parent_of(obj) -> Optional[object]`
+
+`obj` の親図形（`Segment` → `Line`、`Arc` → `Circle`）を返す。なければ `None`。
 
 #### `_free_endpoint(obj, shared_pt) -> Optional[Vec2]`
 
@@ -2300,7 +2826,8 @@ Canvas での選択をコンボボックスに反映する。コンボの数が�
 | 2 | Line + Circle（または Segment 経由） | `_build_line_circle()` |
 | 2 | その他 | 各図形に `_build_single()` を呼ぶ |
 | 3 | Circle + Circle + Line | `_build_offset_constraint()` |
-| 3以上 | — | 図形数とニックネーム一覧を表示 |
+| 3 | Line + Line + Circle | `_build_two_line_offset_constraint()` |
+| 3以上 / ラバーバンド選択 | — | `_build_multi_select()` を表示（コピー・移動・回転・拡縮） |
 
 #### `_build_single(obj)`
 
@@ -2321,7 +2848,7 @@ Canvas での選択をコンボボックスに反映する。コンボの数が�
 
 ニックネーム入力フィールドを構築する。
 
-- `QLineEdit` に `scene.get_nickname(obj.id, prefix)` で現在値を表示
+- `QLineEdit` に `scene.get_nickname(obj.id) or ""` で現在値を表示（`None` のとき空文字）
 - `textChanged` シグナルで `on_change(text)` を呼ぶ:
   - `scene.set_nickname(obj.id, text.strip())`（空文字のとき辞書から削除）
   - `scene_changed.emit()` は呼ばない（ニックネーム変更は Undo 対象外）
