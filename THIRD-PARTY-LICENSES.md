@@ -36,6 +36,12 @@ They are licensed under the **GNU Lesser General Public License v3.0 (LGPL-3.0-o
 ### coverage (Apache-2.0)
 - **coverage** — https://pypi.org/project/coverage/
 
+### flake8 (MIT)
+- **flake8** — https://pypi.org/project/flake8/
+
+### autopep8 (MIT)
+- **autopep8** — https://pypi.org/project/autopep8/
+
 ---
 
 ## Indirect / Transitive Dependencies
@@ -47,8 +53,11 @@ They are not imported directly by this project's source code.
 |---|---|---|
 | colorama | BSD-3-Clause | pytest |
 | iniconfig | MIT | pytest |
+| mccabe | MIT | flake8 |
 | packaging | Apache-2.0 | pytest |
 | pluggy | MIT | pytest |
+| pycodestyle | MIT | flake8, autopep8 |
+| pyflakes | MIT | flake8 |
 | pygments | BSD-2-Clause | pytest |
 | typing-extensions | PSF-2.0 | pytest-qt |
 
