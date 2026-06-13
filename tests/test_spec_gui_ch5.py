@@ -780,12 +780,6 @@ class TestSpec5_3_SegmentTInput:
         線分: 始点・終点の X/Y 座標と割合 t（数値入力、直線上に束縛）。
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="既知バグ: _build_segment_props の sb_t（t 値スピン"
-               "ボックス）が生成・シグナル接続されるだけでレイアウトに"
-               "追加されておらず、GUI から t を数値入力できない"
-               "（仕様 5.3 違反。lbl_t ラベルのみ表示されている）。")
     def test_t_spinbox_moves_endpoint(self, make_window_qt):
         """[5.3] t スピンボックスの変更で端点が直線上を移動する。"""
         from PySide6.QtWidgets import QDoubleSpinBox

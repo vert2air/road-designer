@@ -1230,8 +1230,12 @@ class PropBuilderMixin:
             row_x.addWidget(sb_x)
             row_y.addWidget(QLabel("Y:"))
             row_y.addWidget(sb_y)
+            row_t = QHBoxLayout()
+            row_t.addWidget(QLabel("t:"))
+            row_t.addWidget(sb_t)
             lay.addLayout(row_x)
             lay.addLayout(row_y)
+            lay.addLayout(row_t)
             lay.addWidget(lbl_t)
 
         def set_t_start(v): seg.t_start = v
