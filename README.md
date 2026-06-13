@@ -60,12 +60,20 @@ road_designer/
 └── tests/
     ├── conftest.py
     ├── test_models.py
+    ├── test_models_two_line_offset.py
+    ├── test_models_scene_ops.py
     ├── test_canvas.py
     ├── test_canvas_qtest.py
+    ├── test_canvas_multiselect.py
     ├── test_right_panel.py
+    ├── test_right_panel_multiops.py
     ├── test_vertical_window.py
     ├── test_road_viewer.py
+    ├── test_road_viewer_class.py
+    ├── test_road_mesh.py
     ├── test_main_window.py
+    ├── test_main_window_constraints.py
+    ├── test_gui_interactions.py
     ├── test_main.py
     ├── test_spec_gui_ch4.py   # 仕様適合テスト 第4章（-m spec）
     ├── test_spec_gui_ch5.py   # 仕様適合テスト 第5章（-m spec）
@@ -156,22 +164,32 @@ uv run pytest
 
 | ファイル | 対象 | 件数 |
 |---|---|---|
-| `test_models.py` | データモデル・計算ロジック | 280件 |
-| `test_canvas.py` | 座標変換・ヒット判定・UI ロジック | 94件 |
-| `test_canvas_qtest.py` | `QTest` を使ったイベント・描画 | 85件 |
-| `test_right_panel.py` | 隣接検索・接線判定・結合操作 | 204件 |
-| `test_vertical_window.py` | 縦断線形の計算・snap | 132件 |
-| `test_road_viewer.py` | 3D 中心線生成（Panda3D なしでスキップ） | 31件 |
-| `test_main_window.py` | ウィンドウの操作ロジック | 83件 |
+| `test_models.py` | データモデル・計算ロジック | 262件 |
+| `test_models_two_line_offset.py` | 2直線+1円オフセット拘束・循環依存検出 | 20件 |
+| `test_models_scene_ops.py` | ID 振り直し・マージ・effective_set | 25件 |
+| `test_canvas.py` | 座標変換・ヒット判定・UI ロジック | 122件 |
+| `test_canvas_qtest.py` | `QTest` を使ったイベント・描画 | 84件 |
+| `test_canvas_multiselect.py` | ラバーバンド選択・AABB 変換・折れ線追従 | 42件 |
+| `test_right_panel.py` | 隣接検索・接線判定・結合操作 | 272件 |
+| `test_right_panel_multiops.py` | 複数選択操作・拘束パネル | 27件 |
+| `test_vertical_window.py` | 縦断線形の計算・snap | 168件 |
+| `test_road_viewer.py` | 3D 中心線生成（Panda3D なしでスキップ） | 83件 |
+| `test_road_viewer_class.py` | RoadViewer クラス（ShowBase モック） | 140件 |
+| `test_road_mesh.py` | 3D メッシュ生成 | 39件 |
+| `test_main_window.py` | ウィンドウの操作ロジック | 101件 |
+| `test_main_window_constraints.py` | 拘束設定・ID 振り直し・マージのハンドラ | 11件 |
+| `test_gui_interactions.py` | GUI 相互作用 | 20件 |
 | `test_main.py` | エントリーポイント | 15件 |
+
+合計 1,431件（うち通常実行 1,372件、環境依存スキップあり）。
 
 #### 仕様適合テスト（手動・`-m spec`）
 
 | ファイル | 対象仕様書章 | 件数 |
 |---|---|---|
-| `test_spec_gui_ch4.py` | 第4章 平面線形編集（モード切替・直線/円・ラバーバンド選択・AABB 操作・オフセット拘束・Undo） | 34件 |
-| `test_spec_gui_ch5.py` | 第5章 右パネル（マウス座標・ホバー情報・道なり・Copy/Paste・複数選択パネル・ニックネーム） | 31件 |
-| `test_spec_gui_ch6.py` | 第6章 縦断線形ウィンドウ（モード切替・Undo/Redo） | 20件 |
+| `test_spec_gui_ch4.py` | 第4章 平面線形編集（モード切替・直線/円・ラバーバンド選択・AABB 操作・オフセット拘束・Undo・描画検証） | 37件 |
+| `test_spec_gui_ch5.py` | 第5章 右パネル（マウス座標・ホバー情報・道なり・Copy/Paste・複数選択パネル・ニックネーム） | 40件 |
+| `test_spec_gui_ch6.py` | 第6章 縦断線形ウィンドウ（モード切替・Undo/Redo・カラーバー・数値入力） | 23件 |
 | `test_spec_gui_ch8.py` | 第8章 メニュー・ショートカット（初期化保存・マージ・全削除・ID 振り直し・右パネル表示） | 12件 |
 
 ## CI
